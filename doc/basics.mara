@@ -80,8 +80,8 @@ example_module :: fun() {
 // in the scope that defines the union, or where that scope is used.
 //
 // Types are the other exception: a type this module defines is what its
-// bare name means, whatever a module used at the top of the file has by
-// that name (`State` beside a library's `State`; the library's is
+// bare name means, whatever a used module has by that name — a use at the
+// top of the file or in a body alike (`State` beside a library's `State`; the library's is
 // `gfx.State`). Handing one where the other is taken is a type error, so the
 // checker tells them apart for you. Where nothing does — `let(State, …)`,
 // `slice([:n]State, …)`, `size_of(State)` — the bare name is an error:

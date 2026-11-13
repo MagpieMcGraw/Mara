@@ -210,8 +210,8 @@ names_memo :: proc(r: ^Name_Table, sc: ^Scope, name: string, slot: i32) -> Names
 // out from there define or bring by a use. Two things of one name in sight are
 // neither (nothing hides anything) — but a variable declared beside what's in
 // sight already is itself from there on (that it hides it is said where it's
-// declared), and a type the text defines is itself whatever a use at the top
-// of its file brings by its name (r.hid: that it hid one, set and never
+// declared), and a type the text defines is itself whatever a use brings by
+// its name, in whichever scope the use is written (r.hid: that it hid one, set and never
 // cleared here — names_fill clears it before each name; `let`, `slice` and
 // `size_of`, where nothing checks which is meant, ask for it said). Nothing:
 // why — a local of a fun around, past its boundary; the scopes that each have
@@ -273,7 +273,7 @@ names_find_in :: proc(r: ^Name_Table, here: ^Scope, name: string, at: Token_Id) 
         hid: Name_Hid
         for x in used {
             if names_shares(r, first.ref, x.ref) { continue }
-            if first.ref.kind == .Type && (x.sc.kind == .File || x.sc.kind == .Module) {
+            if first.ref.kind == .Type {
                 if hid.own == "" { hid = {names_owner(first.sc), x.use.name} }
                 continue
             }

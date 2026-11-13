@@ -1,0 +1,14 @@
+module own_type_inner_use
+
+// A use is the same in whatever scope it's written: the module's own State
+// is the bare name's in a body that uses the library too, and the library's
+// is said through it.
+
+State :: struct { w: i64 = 7 }
+
+main :: fun() {
+	use own_inner_lib
+	s : State
+	theirs := own_inner_lib.State()
+	print(s.w, theirs.v, show(&theirs))   // 7 3 3
+}
