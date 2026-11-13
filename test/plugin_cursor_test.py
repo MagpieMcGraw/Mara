@@ -110,6 +110,13 @@ class View:
             b += 1
         return Region(a, b)
 
+    # (Enough of Sublime's: a comment runs from `//` to its line's end, a string
+    # between quotes on one line.)
+    def match_selector(self, point, selector):
+        line = self.substr(self.line(point))
+        before = line[:point - self.line(point).begin()]
+        return "//" in before or before.count('"') % 2 == 1
+
     def click(self, word):
         self.caret = self.text.index(word) + 1
         return self
@@ -191,6 +198,27 @@ other = View(path, disk)
 other.click("second")
 other.active = View(path, disk)
 check("saved, another file being worked in: nothing asked", save(other), [])
+
+# --- an operator: what it calls ---------------------------------------------
+
+ops_path = os.path.join(folder, "ops.mara")
+ops = 'module ops\n\nfull := name ++ "a + b"\nsame := full == "x" // a + b\nf :: fun() -> i64\n'
+with open(ops_path, "w", encoding="utf-8", newline="\n") as f:
+    f.write(ops)
+view = View(ops_path, ops)
+check("on `++`: what's at it", rest(view.click("++")), ["-cursor what at ops.mara:3:14"])
+view.caret = ops.index("++ ") + 2
+check("just past `++`: the same", mara_ask._rest_words(view), ("++", ops.index("++")))
+view.caret = ops.index("==")
+check("on `==`: what's at it", rest(view), ["-cursor what at ops.mara:4:14"])
+view.caret = ops.index("+ b\"")
+check("a `+` in a string: nothing", rest(view), [])
+view.caret = ops.index("+ b\n")
+check("a `+` in a comment: nothing", rest(view), [])
+view.caret = ops.index(":=") + 1
+check("`:=`: nothing", rest(view), [])
+view.caret = ops.index("->") + 1
+check("`->`: nothing", rest(view), [])
 
 text = View(os.path.join(folder, "notes.txt"), "second")
 check("not a Mara file saved: nothing asked", save(text.click("second")), [])
