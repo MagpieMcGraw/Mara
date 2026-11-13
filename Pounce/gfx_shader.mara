@@ -15,14 +15,15 @@ Shader_Error :: error {
 }
 
 VERSION_TAG :: "#version"
-INCLUDE_TAG :: "#include \""
+INCLUDE_TAG :: "#include "
 
 // A shader file's text as GL gets it, added to `out`; the result is where in
 // `out` the fragment shader starts. The file holds the vertex shader, then
 // the fragment shader, each starting at a `#version` line. A line
-// `#include "name"` is replaced by that file's text, a file in the same
-// folder. Both kinds of line start at the line's first character. A `#line`
-// after each of them keeps the line numbers GL reports the file's own.
+// `#include name` is replaced by that file's text, a file in the same
+// folder: the name is the rest of the line. Both kinds of line start at the
+// line's first character. A `#line` after each of them keeps the line
+// numbers GL reports the file's own.
 expand :: fun(out: ^[]utf8, text: []utf8, filepath: []utf8) -> i64, err {
 	fragment_at : i64 = 0
 	versions : i64 = 0
@@ -33,8 +34,8 @@ expand :: fun(out: ^[]utf8, text: []utf8, filepath: []utf8) -> i64, err {
 		this := text[at:end]
 		renumber := false
 		if this.starts_with(INCLUDE_TAG) {
-			name, _, closed := cut(this[INCLUDE_TAG.len:.len], '"')
-			if not closed do return 0, Bad_Text
+			name := trimmed(this[INCLUDE_TAG.len:.len])
+			if name.len == 0 do return 0, Bad_Text
 			path := get_dir(filepath)
 			&path ++ name
 			bytes : [32 * KB]byte = void
