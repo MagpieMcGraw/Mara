@@ -99,6 +99,15 @@ names_seen_owner :: proc(x: Names_Seen) -> string {
     return x.use.name if x.use != nil else names_owner(x.sc)
 }
 
+// A name's number (Resolver.slots), made the first time it's asked.
+names_slot :: proc(r: ^Resolver, name: string) -> i32 {
+    if slot, ok := r.slots[name]; ok { return slot }
+    slot := r.slot_count
+    r.slot_count += 1
+    r.slots[name] = slot
+    return slot
+}
+
 // The nearest variable named by `slot` in sight at `at` in a body (nil: none).
 names_nearest_var :: proc(body: ^Scope, slot: i32, at: Token_Id) -> ^Name_Var {
     if body == nil || slot < 0 { return nil }
@@ -184,8 +193,15 @@ names_memo :: proc(r: ^Resolver, sc: ^Scope, name: string, slot: i32) -> Names_M
 names_find :: proc(r: ^Resolver, name: string, at: Token_Id) -> (ref: Ref, ok: bool, miss: Rs_Miss) {
     here := names_record_at(r, at)
     if here == nil { return }
+    return names_find_in(r, here, name, at)
+}
+
+// ... asked from a scope's record: `at` is in its text (the walk's: its
+// current one).
+names_find_in :: proc(r: ^Resolver, here: ^Scope, name: string, at: Token_Id) -> (ref: Ref, ok: bool, miss: Rs_Miss) {
+    if here == nil { return }
     body := names_body_of(here)
-    slot := r.slots[name] or_else -1   // (none: nothing anywhere is named so)
+    slot := names_slot(r, name)
     v := names_nearest_var(body, slot, at)
     defs := &r.seen_defs   // (defined out from here, nearest first)
     used := &r.seen_used   // (brought by uses, nearest first)
@@ -206,7 +222,7 @@ names_find :: proc(r: ^Resolver, name: string, at: Token_Id) -> (ref: Ref, ok: b
     for s := here; s != nil; s = s.parent {
         // (A file's scope and its module's: the same for every name asked in
         // the file, found once.)
-        if s.kind == .File || s.kind == .Module {
+        if (s.kind == .File || s.kind == .Module) && !r.walking {
             m := names_memo(r, s, name, slot)
             append(defs, ..m.defs)
             for x in m.used {
