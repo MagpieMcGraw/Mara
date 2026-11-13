@@ -56,7 +56,7 @@ Name_Table :: struct {
     captured: bool,
     dispatch_names: map[string]bool,    // every dispatch group's name (a call by another isn't one)
     field_types: map[Tree_Id]Name_Field_Type,   // a type name `S.T` that's a field reference's type, by its node
-    type_names: map[Token_Id]bool,      // the definitions `A :: B` that name a type, by the token that declares them (record_settle_aliases)
+    type_names: map[Token_Id]bool,      // the definitions `A :: B` that name a type, by the token that declares them (record_settle)
     block_of:   map[Tree_Id]Name_Def,     // a definition in a block of its scope's body, by its node: which, and where it is in sight
     file_rank:  int,                    // the file being resolved: its place among its module's
     records:    [dynamic]^Scope,        // every scope's record that covers text, by where it starts once sorted (names_record_at)
@@ -67,8 +67,8 @@ Name_Table :: struct {
     begun:      map[string]bool,        // the modules whose names are being or have been recorded
     all_new:    [dynamic]Token_Id,      // each `all` declared since the checker last said so
     new_vars:   [dynamic]Names_Open,    // the variables recorded since names_fill last found what each runs into
-    alias_sites: [dynamic]Alias_Site,   // the bodies whose definitions may name types (`A :: B`), settled once the modules they use are checked
-    alias_mark:  int,                      // ... where the module being recorded's start
+    def_scope:  map[Token_Id]^Scope,       // a definition, by the token that declares it: the record it's in (a file's, a body's, a block's)
+    settled:    map[Token_Id]bool,         // the definitions record_settle has looked at (or is looking at: a cycle stops there)
     open_vars:  [dynamic]Names_Open,    // the variables recorded in the levels entered, for their ends (record_leave)
     levels_entered: int,                // (each level's id)
     seen_defs, seen_used: [dynamic]Names_Seen,   // names_find's scratch
@@ -181,7 +181,7 @@ Scope :: struct {
     filled:   bool,
     variants: map[string]Ref,   // its enums' variants: what `m.X` reaches past its definitions
     dispatches: map[string][dynamic]Token_Id,   // its dispatch groups, by name (one name's join)
-    aliases:  bool,             // some definition of it may be another name for a type: `A :: B`, `A :: alias B`
+    alias_defs: [dynamic]Token_Id,  // a module's: its definitions that may be other names for types (`A :: B`, `A :: alias B`), any scope's
     list:     Name_Defs,          // its definition statements, as written (names_defs)
     // What it uses.
     uses:     [dynamic]^Scope,          // the scopes it uses: their definitions in sight in it, behind its own
@@ -445,7 +445,7 @@ record_each_def :: proc(r: ^Name_Table, stmts: []Tree_Id, into: ^map[string]Ref 
             value := Tree_Id(t.b[s])
             kind := names_def_kind(t, value)
             if kind == .Module { continue }
-            if kind == .Const && r.type_names[t.main[s]] { kind = .Type }   // (`A :: B`, B a type: record_settle_aliases)
+            if kind == .Const && r.type_names[t.main[s]] { kind = .Type }   // (`A :: B`, B a type: record_settle)
             if t.tag[value] == .Dispatch_Def { r.dispatches[t.main[s]] = true }
             def(r, into, dups, tc_text(t.main[s]), {t.main[s], kind})
             r.defs[t.main[s]] = s
@@ -473,72 +473,80 @@ record_each_def :: proc(r: ^Name_Table, stmts: []Tree_Id, into: ^map[string]Ref 
     }
 }
 
-// Which of a scope's definitions are other names for types — a module's
-// file's, a body's, a block's: its statements, with its names and uses in
-// sight. `A :: B`, `A :: m.B`, a name by itself, names a type when what it
-// names is one (else it is a constant: `K :: Shape.Rect`, a variant). `A ::
-// alias B`, B a type a scope defines, is one type with it, past any aliases
-// between (r.alias_of: two names for it are one — names_same — and `A.X` reaches
-// what `B.X` does), and B's variants are its scope's too (`m.X`, as `m.B.X`).
-// Again until nothing changes: `A :: B`, `B :: C`. Kept in the scope's names
-// too (`space`; nil: none made). Whether any was found.
-@(private="file")
-record_settle_aliases :: proc(r: ^Name_Table, live: []Tree_Id, space: ^Scope) -> (any: bool) {
+// Whether a definition is another name for a type, settled the first time
+// it's asked, from the record it's in: `A :: B`, `A :: m.B`, a name by itself,
+// names a type when what it names is one (else it is a constant: `K ::
+// Shape.Rect`, a variant). `A :: alias B`, B a type a scope defines, is one
+// type with it, past any aliases between (r.alias_of: two names for it are one
+// — names_same — and `A.X` reaches what `B.X` does), and B's variants are its
+// scope's too (`m.X`, as `m.B.X`). What it names, when that's another name
+// too, is settled first. A cycle stops at the one asked again: left a
+// constant, the checker says it's defined in terms of itself.
+record_settle :: proc(r: ^Name_Table, tok: Token_Id) {
+    if tok in r.settled { return }
+    r.settled[tok] = true
+    s, has := r.defs[tok]
+    here := r.def_scope[tok] or_else nil
     t := r.t
-    for changed := true; changed; {
-        changed = false
-        for s in live {
-            if t.tag[s] != .Define || t.a[s] != 0 { continue }
-            value := Tree_Id(t.b[s])
-            if value == 0 { continue }
-            tok := t.main[s]
-            name := tc_text(tok)
-            #partial switch t.tag[value] {
-            case .Ident, .Field:
-                if r.type_names[tok] { continue }
-                if own, _, _ := record_find(r, name, tok); own.decl != tok { continue }
-                named: Ref
-                if t.tag[value] == .Ident {
-                    named, _, _ = record_find(r, tc_text(t.main[value]), t.main[value])
-                } else if base := Tree_Id(t.a[value]); t.tag[base] == .Ident {
-                    if bref, ok, _ := record_find(r, tc_text(t.main[base]), t.main[base]); ok {
-                        if m, has := record_members(r, bref); has { named = m[tc_text(Token_Id(t.b[value]))] or_else Ref{} }
-                    }
-                }
-                if named.kind != .Type || named.decl == tok { continue }
-                r.type_names[tok] = true
-                if space != nil { space.defs[name] = {tok, .Type} }
-                changed = true
-            case .Alias_Def:
-                if tok in r.alias_of || t.tag[Tree_Id(t.a[value])] != .Type_Name { continue }
-                // (No parts: `X :: alias` half-written, the editor's text — the parse error says so.)
-                parts := tree_token_list(t, t.a[Tree_Id(t.a[value])])
-                ref: Ref
-                if len(parts) == 1 { ref, _, _ = record_find(r, tc_text(parts[0]), parts[0]) } else if len(parts) > 1 { ref, _ = record_parts(r, parts) }
-                def, ok := r.defs[ref.decl]
-                if ref.kind != .Type || !ok || ref.decl == tok { continue }
-                // (An alias of a type name: its target, once known; of any
-                // other type, `[512]utf8`, it is the one named.)
-                target := ref.decl
-                named_value := Tree_Id(t.b[def])
-                if t.tag[named_value] == .Alias_Def && t.tag[Tree_Id(t.a[named_value])] == .Type_Name {
-                    target = r.alias_of[ref.decl] or_else 0
-                    if target == 0 { continue }
-                }
-                r.alias_of[tok] = target
-                changed = true
-                if space == nil { continue }
-                e := Tree_Id(t.b[r.defs[target]])
-                if t.tag[e] == .Error_Def {
-                    for v in tree_token_list(t, t.a[e]) { if tc_text(v) not_in space.variants { space.variants[tc_text(v)] = {v, .Variant} } }
-                } else if t.tag[e] == .Union_Def && !record_union_has_data(t, e) {
-                    for vr in tree_list(t, t.b[e]) { if tc_text(t.main[vr]) not_in space.variants { space.variants[tc_text(t.main[vr])] = {t.main[vr], .Variant} } }
-                }
+    if !has || here == nil || t.tag[s] != .Define || t.a[s] != 0 { return }
+    value := Tree_Id(t.b[s])
+    if value == 0 { return }
+    name := tc_text(tok)
+    outer := r.here
+    r.here = here
+    defer r.here = outer
+    // (Where its names go: a module's file's, its module's; a fun's or a
+    // struct's, its own. A block's are found by r.type_names alone.)
+    space := here.parent if here.kind == .File else here if here.kind == .Fun || here.kind == .Struct else nil
+    // (What it names, settled first when it's another name too.)
+    settled :: proc(r: ^Name_Table, ref: Ref, tok: Token_Id) -> Ref {
+        ref := ref
+        if ref.decl == 0 || ref.decl == tok { return ref }
+        record_settle(r, ref.decl)
+        if ref.kind == .Const && r.type_names[ref.decl] { ref.kind = .Type }
+        return ref
+    }
+    #partial switch t.tag[value] {
+    case .Ident, .Field:
+        if own, _, _ := record_find(r, name, tok); own.decl != tok { return }
+        named: Ref
+        if t.tag[value] == .Ident {
+            named, _, _ = record_find(r, tc_text(t.main[value]), t.main[value])
+        } else if base := Tree_Id(t.a[value]); t.tag[base] == .Ident {
+            if bref, ok, _ := record_find(r, tc_text(t.main[base]), t.main[base]); ok {
+                if m, members := record_members(r, bref); members { named = m[tc_text(Token_Id(t.b[value]))] or_else Ref{} }
             }
         }
-        any = any || changed
+        named = settled(r, named, tok)
+        if named.kind != .Type || named.decl == tok { return }
+        r.type_names[tok] = true
+        if space != nil { space.defs[name] = {tok, .Type} }
+    case .Alias_Def:
+        if t.tag[Tree_Id(t.a[value])] != .Type_Name { return }
+        // (No parts: `X :: alias` half-written, the editor's text — the parse error says so.)
+        parts := tree_token_list(t, t.a[Tree_Id(t.a[value])])
+        ref: Ref
+        if len(parts) == 1 { ref, _, _ = record_find(r, tc_text(parts[0]), parts[0]) } else if len(parts) > 1 { ref, _ = record_parts(r, parts) }
+        ref = settled(r, ref, tok)
+        def, ok := r.defs[ref.decl]
+        if ref.kind != .Type || !ok || ref.decl == tok { return }
+        // (An alias of a type name: its target; of any other type,
+        // `[512]utf8`, it is the one named.)
+        target := ref.decl
+        named_value := Tree_Id(t.b[def])
+        if t.tag[named_value] == .Alias_Def && t.tag[Tree_Id(t.a[named_value])] == .Type_Name {
+            target = r.alias_of[ref.decl] or_else 0
+            if target == 0 { return }
+        }
+        r.alias_of[tok] = target
+        if space == nil { return }
+        e := Tree_Id(t.b[r.defs[target]])
+        if t.tag[e] == .Error_Def {
+            for v in tree_token_list(t, t.a[e]) { if tc_text(v) not_in space.variants { space.variants[tc_text(v)] = {v, .Variant} } }
+        } else if t.tag[e] == .Union_Def && !record_union_has_data(t, e) {
+            for vr in tree_list(t, t.b[e]) { if tc_text(t.main[vr]) not_in space.variants { space.variants[tc_text(t.main[vr])] = {t.main[vr], .Variant} } }
+        }
     }
-    return
 }
 
 // A loop's name, declared in its block (what it runs into: names_clash).
@@ -685,9 +693,6 @@ record_space_fill :: proc(r: ^Name_Table, m: ^Scope, stmts: []Tree_Id) {
                 append(&m.dispatches[name], t.main[s])
                 r.dispatch_names[name] = true
             }
-            if value := Tree_Id(t.b[s]); value != 0 && t.a[s] == 0 {
-                #partial switch t.tag[value] { case .Ident, .Field, .Alias_Def: m.aliases = true }
-            }
         }
     }
 }
@@ -742,28 +747,6 @@ names_same :: proc(r: ^Name_Table, a, b: Ref) -> bool {
     return (r.alias_of[a.decl] or_else a.decl) == (r.alias_of[b.decl] or_else b.decl)
 }
 
-// A body whose definitions may be other names for types, to settle (record_settle_aliases)
-// from its record once the modules its module uses are checked: its statements,
-// and its definitions' table (nil: a block's).
-Alias_Site :: struct {
-    here:  ^Scope,
-    stmts: []Tree_Id,
-    space: ^Scope,
-}
-
-// Whether a scope's statements define a name by another (`A :: B`, `A :: m.B`,
-// `A :: alias B`): what record_settle_aliases looks at.
-@(private="file")
-record_has_aliases :: proc(t: ^Tree, live: []Tree_Id) -> bool {
-    for s in live {
-        if t.tag[s] != .Define || t.a[s] != 0 { continue }
-        if value := Tree_Id(t.b[s]); value != 0 {
-            #partial switch t.tag[value] { case .Ident, .Field, .Alias_Def: return true }
-        }
-    }
-    return false
-}
-
 // A module's names, recorded as the checker reaches it — before its uses are
 // checked (what it needs checked first is among them: a `use` in any scope of
 // it): its files' definitions and uses, then their statements — each scope
@@ -786,7 +769,6 @@ names_module_begin :: proc(r: ^Name_Table, name: string) {
         record_body_names(r, record_live(r, tree_list(t, t.a[f])))
         record_leave(r)
     }
-    r.alias_mark = len(r.alias_sites)
     for f, rank in m.files {
         record_enter(r, .File, m.parts[rank], t.end[f])
         m.parts[rank].level = r.scopes[len(r.scopes) - 1].id
@@ -798,34 +780,16 @@ names_module_begin :: proc(r: ^Name_Table, name: string) {
 }
 
 // ... once the modules it uses are checked (what it names in them is settled
-// by then): which of its definitions are other names for types — its files'
-// (again until nothing changes: one file's `A :: B` may name another's `B ::
-// C`), then its bodies', outer first — then what each name written in it
-// means (names_fill). A file is a scope as a body is; its module's scope,
-// around it, has every file's definitions: the files of one module see each
-// other's.
+// by then): which of its definitions are other names for types, each by need
+// (record_settle); then what each name written in it means (names_fill). A
+// file is a scope as a body is; its module's scope, around it, has every
+// file's definitions: the files of one module see each other's.
 names_module_ready :: proc(r: ^Name_Table, name: string) {
     t := r.t
     m := r.modules[name]
     if m == nil { return }
     r.walking = true
-    record_enter_module(r, m)
-    for changed := m.aliases; changed; {
-        changed = false
-        for f, rank in m.files {
-            record_enter(r, .File, m.parts[rank], t.end[f])
-            if record_settle_aliases(r, record_live(r, tree_list(t, t.a[f])), m) { changed = true }
-            record_leave(r)
-        }
-    }
-    record_leave(r)
-    outer := r.here
-    for site in r.alias_sites[r.alias_mark:] {
-        r.here = site.here
-        record_settle_aliases(r, record_live(r, site.stmts), site.space)
-    }
-    r.here = outer
-    resize(&r.alias_sites, r.alias_mark)
+    for tok in m.alias_defs { record_settle(r, tok) }
     r.walking = false
     for f in m.files { names_fill(r, tree_lo(t, f), f) }
     names_fill_clashes(r)
@@ -980,7 +944,6 @@ record_body :: proc(r: ^Name_Table, stmts: []Tree_Id, space: ^Scope = nil) {
     // — then which of its definitions are other names for types: what they
     // name may come from a use.)
     record_body_names(r, live)
-    if record_has_aliases(r.t, live) { append(&r.alias_sites, Alias_Site{r.here, stmts, space}) }
     record_body_stmts(r, live)
 }
 
@@ -1035,6 +998,12 @@ record_note_defs :: proc(r: ^Name_Table, live: []Tree_Id) {
             r.block_of[s] = def
         }
         append(&d.list, def)
+        if t.tag[s] == .Define {
+            r.def_scope[t.main[s]] = def.scope if def.scope != nil else r.here
+            if value := Tree_Id(t.b[s]); value != 0 && t.a[s] == 0 {
+                #partial switch t.tag[value] { case .Ident, .Field, .Alias_Def: append(&r.module.alias_defs, t.main[s]) }
+            }
+        }
     }
 }
 
