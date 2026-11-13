@@ -78,7 +78,6 @@ Void_Code :: struct {
     g:        ^Program_Graph,
     fun:      ^Type_Scope,
     ci:       int,
-    file:     string,
     keys:     [dynamic]Void_Key,
     key_of:   map[Void_Place]i32,
     of_var:   map[Node_Id][dynamic]i32,    // each var's keys
@@ -184,7 +183,7 @@ Void_Summary :: struct {
 
 @(private="file")
 void_summarize :: proc(vf: ^Void_Facts, g: ^Program_Graph, ci: int, sm: ^Void_Summary) {
-    c := Void_Code{vf = vf, g = g, fun = graph_type(g, 0).(^Type_Scope), ci = ci, file = span_file(graph_origin(g, 0))}
+    c := Void_Code{vf = vf, g = g, fun = graph_type(g, 0).(^Type_Scope), ci = ci}
     add :: proc(c: ^Void_Code, sm: ^Void_Summary, id: int) {
         if id < 0 { return }
         r := &c.vf.readers[id]
@@ -414,7 +413,7 @@ void_handed :: proc(c: ^Void_Code, call: Node_Id, cf: ^Type_Scope) {
         if x == NO_NODE { continue }
         ft, is_fun := graph_type(g, x).(^Type_Scope)
         if !is_fun || ft.kind != .Fun { continue }
-        at := void_where(c, graph_origin(g, x))
+        at := void_where(graph_origin(g, x))
         if x < CONST && graph_kind_of(g, x) == .Op && graph_op_of(g, x) == .Global {
             void_raise_params(c, ft, fmt.tprintf("'%s' is handed to '%s', a C function, at %s, which can call it with void", void_fun_name(ft), cname, at))
         } else {
@@ -432,7 +431,6 @@ void_code :: proc(vf: ^Void_Facts, g: ^Program_Graph, ci: int, found: ^[dynamic]
     graph_code_runs(g, 0, &runs)
     if len(runs) == 0 { return }
     c := Void_Code{vf = vf, g = g, fun = graph_type(g, 0).(^Type_Scope), ci = ci, found = found}
-    c.file = span_file(graph_origin(g, 0))
     defer {
         for k in c.keys { delete(k.path) }
         delete(c.keys)
@@ -720,7 +718,7 @@ void_place_is :: proc(c: ^Void_Code, p: Node_Id, state: []u64) -> (bool, string)
 void_value_is :: proc(c: ^Void_Code, x: Node_Id, out: i32, state: []u64) -> (bool, string) {
     g := c.g
     if x == NO_NODE { return false, "" }
-    if void_is_void(g, x) { return true, fmt.tprintf("it's set to void at %s", void_where(c, graph_origin(g, x))) }
+    if void_is_void(g, x) { return true, fmt.tprintf("it's set to void at %s", void_where(graph_origin(g, x))) }
     if p := void_value_place(g, x); p != NO_NODE { return void_place_is(c, p, state) }
     if x >= CONST || graph_kind_of(g, x) != .Op { return false, "" }
     #partial switch graph_op_of(g, x) {
@@ -749,17 +747,34 @@ void_value_is :: proc(c: ^Void_Code, x: Node_Id, out: i32, state: []u64) -> (boo
         ops := graph_operands(g, x)
         if len(ops) == 0 { return false, "" }
         if void_is_value(graph_type(g, ops[0].op)) { return void_value_is(c, ops[0].op, ops[0].out, state) }
-        return true, fmt.tprintf("it's made from a number at %s", void_where(c, graph_origin(g, x)))
+        return true, fmt.tprintf("it's made from a number at %s", void_where(graph_origin(g, x)))
     }
     return false, ""
 }
 
-// "line 12", or "file.mara:12" for another file's.
+// A place in a why, marked: what's made void program-wide is said in other
+// files' errors, each saying it from its own (void_said).
 @(private="file")
-void_where :: proc(c: ^Void_Code, s: Span) -> string {
-    file := span_file(s)
-    if file == c.file || file == "" { return fmt.tprintf("line %d", span_line(s)) }
-    return fmt.tprintf("%s:%d", filepath.base(file), span_line(s))
+void_where :: proc(s: Span) -> string {
+    return fmt.tprintf("\x1f%s\x1f%d\x1f", span_file(s), span_line(s))
+}
+
+// A why's places (void_where) said from file: "line 12" there, else "other.mara:12".
+@(private="file")
+void_said :: proc(why: string, file: string) -> string {
+    b := strings.builder_make(context.temp_allocator)
+    rest := why
+    for {
+        i := strings.index_byte(rest, 0x1f)
+        if i < 0 { break }
+        parts := strings.split_n(rest[i + 1:], "\x1f", 3, context.temp_allocator)
+        if len(parts) < 3 { break }
+        strings.write_string(&b, rest[:i])
+        if parts[0] == file || parts[0] == "" { fmt.sbprintf(&b, "line %s", parts[1]) } else { fmt.sbprintf(&b, "%s:%s", filepath.base(parts[0]), parts[1]) }
+        rest = parts[2]
+    }
+    strings.write_string(&b, rest)
+    return strings.to_string(b)
 }
 
 // What a value or a place is called, as it's written: `b.next`, `ks[0]`.
@@ -895,7 +910,7 @@ void_construct :: proc(c: ^Void_Code, state: []u64, dest: Node_Id, ts: ^Type_Sco
     var, path, ok := void_place_path(c, dest)
     if !ok { return }
     name := ts.source_name if ts.source_name != "" else ts.name
-    why := fmt.tprintf("%s's constructor leaves it void (at %s)", name, void_where(c, span))
+    why := fmt.tprintf("%s's constructor leaves it void (at %s)", name, void_where(span))
     for l in leaves {
         if k, has := c.key_of[Void_Place{var, strings.concatenate({path, l}, context.temp_allocator)}]; has { void_set_zeroed(c, state, k, why) }
     }
@@ -1037,7 +1052,7 @@ Void_Zero :: enum u8 {
 
 void_zero :: proc(c: ^Void_Code, state: []u64, dest: Node_Id, mode: Void_Zero, span: Span) {
     var, path, ok := void_place_path(c, dest)
-    why := fmt.tprintf("it's zeroed at %s", void_where(c, span))
+    why := fmt.tprintf("it's zeroed at %s", void_where(span))
     if !ok {
         // (Somewhere else: every pointer field under its type may be void.)
         if mode == .All { void_raise_zeroed(c, graph_type(c.g, dest), why, 0) }
@@ -1116,7 +1131,7 @@ void_write :: proc(c: ^Void_Code, state: []u64, dest: Node_Id, val: Operand, spa
             }
             // (A constructor's own field: the struct's, wherever it's read.)
             if is_void && key.var <= g.end && g.kind[key.var] == .Field {
-                void_raise(c, key.home, fmt.tprintf("%s is set to void at %s", void_field_name(c, c.fun, graph_name(g, key.var)), void_where(c, span)))
+                void_raise(c, key.home, fmt.tprintf("%s is set to void at %s", void_field_name(c, c.fun, graph_name(g, key.var)), void_where(span)))
             }
             return
         }
@@ -1153,15 +1168,15 @@ void_store_why :: proc(c: ^Void_Code, dest: Node_Id, span: Span) -> string {
     if !graph_is_leaf(dest) && graph_kind_of(g, dest) == .Op {
         #partial switch graph_op_of(g, dest) {
         case .Field:
-            return fmt.tprintf("%s is set to void at %s", void_field_name(c, graph_type(g, graph_operands(g, dest)[0].op), graph_name(g, dest)), void_where(c, span))
+            return fmt.tprintf("%s is set to void at %s", void_field_name(c, graph_type(g, graph_operands(g, dest)[0].op), graph_name(g, dest)), void_where(span))
         case .Index, .View, .Slice:
             base := graph_operands(g, dest)[0].op
             if base != NO_NODE && !graph_is_leaf(base) && graph_kind_of(g, base) == .Op && graph_op_of(g, base) == .Field {
-                return fmt.tprintf("an item of %s is set to void at %s", void_field_name(c, graph_type(g, graph_operands(g, base)[0].op), graph_name(g, base)), void_where(c, span))
+                return fmt.tprintf("an item of %s is set to void at %s", void_field_name(c, graph_type(g, graph_operands(g, base)[0].op), graph_name(g, base)), void_where(span))
             }
         }
     }
-    return fmt.tprintf("a `%s` is written as void through a pointer at %s", type_name(graph_type(g, dest)), void_where(c, span))
+    return fmt.tprintf("a `%s` is written as void through a pointer at %s", type_name(graph_type(g, dest)), void_where(span))
 }
 
 // A call's (or a construction's) arguments: what each param may be given.
@@ -1194,7 +1209,7 @@ void_args :: proc(c: ^Void_Code, state: []u64, op: Node_Id) {
         if void_is_value(sig.params[k].type_) {
             is_void, _ := void_value_is(c, x, a.out, state)
             if !is_void { continue }
-            at := void_where(c, graph_origin(g, x))
+            at := void_where(graph_origin(g, x))
             if callee != nil {
                 why := fmt.tprintf("'%s' is given void for '%s' at %s", void_fun_name(callee), sig.params[k].name, at)
                 void_raise(c, void_fact(c.vf, {.Param, rawptr(callee), "", k}), why)
@@ -1330,7 +1345,8 @@ void_read_through :: proc(c: ^Void_Code, state: []u64, op: Node_Id, x: Node_Id, 
     if !is_void { return }
     if reporting && c.found != nil {
         name := void_text(c, x)
-        append(c.found, Flow_Finding{.Void_Read, graph_origin(g, x), fmt.aprintf(TYPE_VOID_READ, name, name, name, why)})
+        at := graph_origin(g, x)
+        append(c.found, Flow_Finding{.Void_Read, at, fmt.aprintf(TYPE_VOID_READ, name, name, name, void_said(why, span_file(at)))})
     }
     if p != NO_NODE { void_set(c, state, void_key(c, p), false, "") }
 }

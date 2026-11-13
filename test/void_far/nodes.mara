@@ -1,0 +1,10 @@
+module void_far
+
+// (Its void is said in void_far.mara's error, by this file's name.)
+
+Node :: struct {
+	x: i64
+	next: ^Node
+}
+
+first :: fun() -> ^Node { return void }

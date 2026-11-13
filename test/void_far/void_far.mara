@@ -1,0 +1,11 @@
+module void_far
+
+//@ expect-fail: 'first' can return void (it's set to void at nodes.mara:10)
+
+// A void made in another file is said with that file's name, the error
+// being in this one (one in its own file: by its line).
+
+main :: fun() {
+	n := first()
+	print(n.x)
+}
