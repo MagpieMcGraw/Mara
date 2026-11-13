@@ -43,7 +43,7 @@ for f in tools/*; do
 done
 
 echo "release: building Mara.exe from $SHORT"
-odin build . -o:speed -out:"$STAGE/Mara.exe" 2>&1 | grep -v 'deprecated' || true
+odin build src -o:speed -out:"$STAGE/Mara.exe" 2>&1 | grep -v 'deprecated' || true
 if [ ! -f "$STAGE/Mara.exe" ]; then
   echo "release: the build failed; release/ unchanged"
   exit 1

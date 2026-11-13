@@ -5,12 +5,14 @@ The goal is a production ready compiler for under 50k lines.
 
 ## Building and running
 
+The compiler's source is in src/; both builds go in the repo root, beside code/, runtime/ and tools/.
+
 The compiler (Mara.exe, optimized — the one on the path):
-odin build . -o:speed
+odin build src -o:speed -out:Mara.exe
 
 The dev build beside it (mara_dev.exe, debug — what the test scripts run;
 MARA_EXE=... names another):
-odin build . -debug -out:mara_dev.exe
+odin build src -debug -out:mara_dev.exe
 
 Mara code:
 mara build game    	# build module "game" from all .mara files with `module game`

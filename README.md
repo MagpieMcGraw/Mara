@@ -27,11 +27,13 @@ NEW! Mara now has error handling! Define an error enum, and return it when you h
 ## Building the compiler
 
 The Mara compiler is written in [Odin](https://odin-lang.org/). You need
-Odin on PATH to compile it. From the repo root:
+Odin on PATH to compile it. Its source is in `src`. From the repo root:
 
 ```
-odin build .
+odin build src -out:Mara.exe
 ```
+
+(On Linux, `-out:mara`.) The compiler finds `code`, `runtime` and `tools` beside its executable, so keep it in the repo root.
 
 Mara uses clang and lld to build it's executables. For the windows build, I placed these in the tools folder so you don't have to download LLVM. For the linux build, I recommend you download them via the package manager.
 
