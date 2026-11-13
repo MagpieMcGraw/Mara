@@ -368,7 +368,8 @@ class MaraAskClearHighlightsCommand(sublime_plugin.TextCommand):
 #     and read; anything else named, what it is, its type, where it's declared.
 # The words: what's highlighted, when something is (one line; a whole fun isn't
 # words); else the name or the operator under the cursor (`++`: what it calls),
-# or an index's `]` beside it; else, in a call's parentheses, the fun
+# or an index's `]` beside it, a call's `)` just before it; else, in a call's
+# parentheses, the fun
 # being called (signature help). The point: the cursor — with a highlight, its
 # cursor end, so what's under the cursor shows as well. An unsaved file's
 # places may be stale: Docs then shows the text matches alone. Ask answers from
@@ -418,10 +419,14 @@ def _rest_words(view):
     op = _operator_at(view, caret)
     if op is not None:
         return op
-    # (Next to an index's `]`: what's at it, `items[i]` and its type.)
+    # (Next to an index's `]`, just past a call's `)`: what's at it, `items[i]`,
+    # `twice(n)` and its type. Before a `)` is in the call: signature help's.)
     for p in (caret - 1, caret):
-        if 0 <= p < view.size() and view.substr(p) == "]" and not view.match_selector(p, "comment, string"):
-            return "]", p
+        if p < 0 or p >= view.size() or view.match_selector(p, "comment, string"):
+            continue
+        c = view.substr(p)
+        if c == "]" or (c == ")" and p == caret - 1 and not _closes_params(view, p)):
+            return c, p
     if _settings().get("signature_help", True):
         callee = _callee_at(view, caret)
         if callee is not None:
@@ -573,6 +578,25 @@ def _operator_at(view, caret):
     if text[lo:hi] not in _OPERATORS or view.match_selector(line.begin() + lo, "comment, string"):
         return None
     return text[lo:hi], line.begin() + lo
+
+
+# Whether the `)` at p closes a fun's params, `fun(x: i64)`: what's at it is
+# the `)` alone.
+_FUN_END_RE = re.compile(r"(?:^|\W)(?:fun|fn)\s*$")
+
+
+def _closes_params(view, p):
+    start = view.line(p).begin()
+    text = view.substr(sublime.Region(start, p))
+    depth = 0
+    for i in range(len(text) - 1, -1, -1):
+        if text[i] == ")":
+            depth += 1
+        elif text[i] == "(":
+            if depth == 0:
+                return _FUN_END_RE.search(text[:i]) is not None
+            depth -= 1
+    return False
 
 
 # The call being typed at the caret: the name before its unclosed `(` on the

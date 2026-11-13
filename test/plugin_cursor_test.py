@@ -240,6 +240,19 @@ check("beside a number: the `]`", rest(view), ["-cursor what at ops.mara:4:17"])
 view.caret = idx.index('"]"') + 2
 check("a `]` in a string: nothing", rest(view), [])
 
+calls = 'module ops\n\nn := twice(it.count)\nm := (n + 1) * 2\ntwice :: fun(x: i64) -> i64 {\n'
+with open(ops_path, "w", encoding="utf-8", newline="\n") as f:
+    f.write(calls)
+view = View(ops_path, calls)
+view.caret = calls.index("count)") + 6
+check("just past a call's `)`: what's at it", rest(view), ["-cursor what at ops.mara:3:20"])
+view.caret = calls.index("1)") + 2
+check("just past a `)` around a value: what's at it", rest(view), ["-cursor what at ops.mara:4:12"])
+view.caret = calls.index("i64)") + 4
+check("just past a fun's params: nothing", rest(view), [])
+view.caret = calls.index("count)") + 5
+check("before a call's `)`: the name beside it", rest(view), ["-cursor what at ops.mara:3:15"])
+
 text = View(os.path.join(folder, "notes.txt"), "second")
 check("not a Mara file saved: nothing asked", save(text.click("second")), [])
 
