@@ -2,10 +2,12 @@ module void_read_tests
 
 //@ expect-output: tests: 3 0 4 0 3 6 3 3
 //@ expect-output: refs: true false true
+//@ expect-output: values: -1 2 true
 
 // Each way a test says a value isn't void, so a read through it is fine:
 // `!=` and `==` with an early return, `and`, `or`, `not`, a loop's
-// condition, an assert, a field reference tested (from_text's too).
+// condition, an assert, a field reference tested (from_text's too), a fun
+// used as a value testing what a call through one gives.
 
 Node :: struct {
 	x: i64
@@ -51,6 +53,17 @@ held :: fun(p: ^Node) -> i64 {
 	return p.x
 }
 
+// (Used as a value, which a call gives void: tested.)
+or_none :: fun(p: ^Node) -> i64 {
+	if p == void do return -1
+	return p.x
+}
+
+// (Used as a value, never given void: read as it is. Of or_none's signature,
+// it would be tested too: any fun used as a value of the signature a call
+// gives void may be the one called.)
+plain :: fun(p: ^Node) -> bool { return p.x > 0 }
+
 main :: fun() {
 	a := Node{x = 1, next = void}
 	b := Node{x = 2, next = &a}
@@ -63,4 +76,7 @@ main :: fun() {
 	m := Flag.from_text("nope")
 	if m != void do s[m] = true
 	print("refs:", s.a, s.quit, k == void)
+	f : fun(^Node) -> i64 = or_none
+	h := plain
+	print("values:", f(void), f(&b), h(&a))
 }

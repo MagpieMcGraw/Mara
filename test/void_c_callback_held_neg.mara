@@ -1,0 +1,23 @@
+module void_c_callback_held_neg
+
+//@ expect-fail: a fun value is handed to 'visit_nodes', a C function, at line 22, which can call it with void
+
+// A fun value held in a variable, handed to C: any fun used as a value of
+// its signature may be the one handed, so each needs a test before a read
+// through a pointer param. (Never linked: the check stops it first.)
+
+Node :: struct {
+	x: i64
+	next: ^Node
+}
+
+foreign static_lib "no_such_lib" {
+	fun visit_nodes(each: fun(^Node) -> i64, first: ^Node) -> i64
+}
+
+on_node :: fun(n: ^Node) -> i64 { return n.x }
+
+main :: fun() {
+	each := on_node
+	print(visit_nodes(each, void))
+}

@@ -1,0 +1,21 @@
+module void_c_callback_neg
+
+//@ expect-fail: 'on_node' is handed to 'visit_nodes', a C function, at line 20, which can call it with void
+
+// A fun handed to C: C may call it with anything, so a read through a
+// pointer param needs a test. (Never linked: the check stops it first.)
+
+Node :: struct {
+	x: i64
+	next: ^Node
+}
+
+foreign static_lib "no_such_lib" {
+	fun visit_nodes(each: fun(^Node) -> i64, first: ^Node) -> i64
+}
+
+on_node :: fun(n: ^Node) -> i64 { return n.x }
+
+main :: fun() {
+	print(visit_nodes(on_node, void))
+}

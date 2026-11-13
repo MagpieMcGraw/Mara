@@ -3,6 +3,7 @@ package mara
 import "core:fmt"
 import "core:mem/virtual"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 
 // void_flow.odin — reads through what may be void. A pointer's `void` (a fun
@@ -21,9 +22,12 @@ import "core:strings"
 // != void`), which a test makes not void on the way it says so (a branch's
 // edge). What the program's other codes may make void are facts (Void_Facts):
 // a struct's field, a fun's param or result, what's written through a pointer
-// of a type, a signature's param or result for calls through fun values. A
-// code reads some and makes some void; the codes are run until no fact
-// changes (a code again when a fact it read did), then once more to report.
+// of a type, a signature's result for calls through fun values. A call
+// through a fun value giving void makes the param so of every fun used as a
+// value of its signature; a fun value handed to C, every param of it that can
+// be void (C may call it with anything). A code reads some facts and makes
+// some void; the codes are run until no fact changes (a code again when a
+// fact it read did), then once more to report.
 //
 // A pointer void only because it was zeroed — a bare declaration, a literal
 // that doesn't give it, a constructor's bare field (void_ctor_leaves) — is
@@ -33,11 +37,12 @@ import "core:strings"
 //
 // Not followed: a write through one pointer to what another pointer's test
 // said (they may alias); a call between a test and a read, writing void where
-// the test looked; a fun value C calls back; a struct built at a heap place
+// the test looked; a fun value C gets other than as a call's argument (in a
+// struct), or an intrinsic calls (thread_run); a struct built at a heap place
 // whose constructor leaves a pointer field bare.
 
 // What may be void, program-wide.
-Void_Fact_Kind :: enum u8 { Field, Param, Result, Typed, Sig_Param, Sig_Result }
+Void_Fact_Kind :: enum u8 { Field, Param, Result, Typed, Sig_Result }
 
 Void_Fact_Key :: struct {
     kind:  Void_Fact_Kind,
@@ -54,6 +59,8 @@ Void_Facts :: struct {
     why:     [dynamic]string,           // what made it void: said after the error
     readers: [dynamic][dynamic]int,     // the codes that read it (by index)
     changed: [dynamic]int,              // made void since their readers ran
+    taken:   map[string][dynamic]^Type_Scope,  // the funs used as values, by signature (void_sig)
+    handed:  [dynamic][2]string,        // fun values handed to C by signature, and why (void_handed)
 }
 
 // One place a code follows: var's value at path ("": var itself; `.f` a
@@ -130,6 +137,11 @@ void_flow_program :: proc(checked: ^Checked_Program) -> []Flow_Finding {
         append(&work, i)
         queued[i] = true
     }
+    // (Every fun used as a value now known: those a fun value handed to C may be.)
+    for h in vf.handed {
+        hc := Void_Code{vf = &vf}
+        for f in vf.taken[h[0]] { void_raise_params(&hc, f, h[1]) }
+    }
     for head := 0; head < len(work); head += 1 {
         ci := work[head]
         queued[ci] = false
@@ -155,6 +167,9 @@ void_flow_program :: proc(checked: ^Checked_Program) -> []Flow_Finding {
     delete(vf.void)
     delete(vf.why)
     delete(vf.changed)
+    for _, l in vf.taken { delete(l) }
+    delete(vf.taken)
+    delete(vf.handed)
     return found[:]
 }
 
@@ -169,7 +184,7 @@ Void_Summary :: struct {
 
 @(private="file")
 void_summarize :: proc(vf: ^Void_Facts, g: ^Program_Graph, ci: int, sm: ^Void_Summary) {
-    c := Void_Code{vf = vf, g = g, fun = graph_type(g, 0).(^Type_Scope), ci = ci}
+    c := Void_Code{vf = vf, g = g, fun = graph_type(g, 0).(^Type_Scope), ci = ci, file = span_file(graph_origin(g, 0))}
     add :: proc(c: ^Void_Code, sm: ^Void_Summary, id: int) {
         if id < 0 { return }
         r := &c.vf.readers[id]
@@ -216,6 +231,15 @@ void_summarize :: proc(vf: ^Void_Facts, g: ^Program_Graph, ci: int, sm: ^Void_Su
                 if void_holds(t, 0) { sm.sources = true }
             case .Cast:
                 if void_is_value(t) { sm.sources = true }
+            case .Global:
+                if ft, is_fun := t.(^Type_Scope); is_fun && ft.kind == .Fun {
+                    if _, src := ft.origin.(Origin_Source); src {
+                        sig := void_sig(ft)
+                        if sig not_in vf.taken { vf.taken[strings.clone(sig)] = {} }
+                        l := &vf.taken[sig]
+                        if !slice.contains(l[:], ft) { append(l, ft) }
+                    }
+                }
             case .Call:
                 callee := graph_called(g, id)
                 if callee == nil {
@@ -227,6 +251,7 @@ void_summarize :: proc(vf: ^Void_Facts, g: ^Program_Graph, ci: int, sm: ^Void_Su
                 #partial switch o in callee.origin {
                 case Origin_Foreign:
                     for r in callee.return_types { if void_is_value(r) && !o.fails { sm.sources = true } }
+                    void_handed(&c, id, callee)
                     continue
                 case Origin_Field_From_Text:
                     sm.sources = true
@@ -357,6 +382,42 @@ void_sig :: proc(ft: ^Type_Scope) -> string {
         strings.write_string(&b, type_name(r))
     }
     return strings.to_string(b)
+}
+
+// A fun's name as written (a C function's, a generic's instance: its declaration's).
+@(private="file")
+void_fun_name :: proc(f: ^Type_Scope) -> string {
+    if f.source_name != "" { return f.source_name }
+    if f.decl != 0 { return tc_text(f.decl) }
+    return f.name
+}
+
+// Each param of fun f that can be void, made so.
+@(private="file")
+void_raise_params :: proc(c: ^Void_Code, f: ^Type_Scope, why: string) {
+    for p, k in f.params { if void_is_value(p.type_) { void_raise(c, void_fact(c.vf, {.Param, rawptr(f), "", k}), why) } }
+}
+
+// The fun values a call hands to C function cf, which may call them with
+// anything: a fun named, its params; one held in a variable, every fun used
+// as a value of its signature (once all are known: void_flow_program).
+@(private="file")
+void_handed :: proc(c: ^Void_Code, call: Node_Id, cf: ^Type_Scope) {
+    g := c.g
+    cname := void_fun_name(cf)
+    for a in du_call_args(g, call) {
+        x := a.op
+        for x != NO_NODE && x < CONST && graph_kind_of(g, x) == .Op && graph_op_of(g, x) == .Cast { x = graph_operands(g, x)[0].op }
+        if x == NO_NODE { continue }
+        ft, is_fun := graph_type(g, x).(^Type_Scope)
+        if !is_fun || ft.kind != .Fun { continue }
+        at := void_where(c, graph_origin(g, x))
+        if x < CONST && graph_kind_of(g, x) == .Op && graph_op_of(g, x) == .Global {
+            void_raise_params(c, ft, fmt.tprintf("'%s' is handed to '%s', a C function, at %s, which can call it with void", void_fun_name(ft), cname, at))
+        } else {
+            append(&c.vf.handed, [2]string{strings.clone(void_sig(ft)), fmt.aprintf("a fun value is handed to '%s', a C function, at %s, which can call it with void", cname, at)})
+        }
+    }
 }
 
 // --- a code ---------------------------------------------------------------------
@@ -672,7 +733,7 @@ void_value_is :: proc(c: ^Void_Code, x: Node_Id, out: i32, state: []u64) -> (boo
         #partial switch o in callee.origin {
         case Origin_Foreign:
             if o.fails || int(out) >= len(callee.return_types) || !void_is_value(callee.return_types[out]) { return false, "" }
-            return true, fmt.tprintf("it comes from '%s', a C function, which can give void", callee.source_name if callee.source_name != "" else callee.name)
+            return true, fmt.tprintf("it comes from '%s', a C function, which can give void", void_fun_name(callee))
         case Origin_Field_From_Text:
             if out == 0 { return true, "it comes from from_text, which gives void when the text names no field" }
             return false, ""
@@ -728,7 +789,7 @@ void_text :: proc(c: ^Void_Code, x: Node_Id, depth := 0) -> string {
     case .View, .Slice:
         return fmt.tprintf("%s[_]", void_text(c, ops[0].op, depth + 1))
     case .Call:
-        if callee := graph_called(g, x); callee != nil { return fmt.tprintf("%s()", callee.source_name if callee.source_name != "" else callee.name) }
+        if callee := graph_called(g, x); callee != nil { return fmt.tprintf("%s()", void_fun_name(callee)) }
     }
     return "it"
 }
@@ -742,7 +803,7 @@ void_fact_text :: proc(c: ^Void_Code, id: int) -> string {
         case .Field:
             ts := (^Type_Scope)(key.owner)
             return fmt.tprintf("%s.%s", ts.source_name if ts.source_name != "" else ts.name, key.name)
-        case .Param, .Sig_Param:
+        case .Param:
             return "a param"
         case .Result, .Sig_Result:
             return "a result"
@@ -1111,7 +1172,6 @@ void_args :: proc(c: ^Void_Code, state: []u64, op: Node_Id) {
     if callee != nil {
         _, to_c = callee.origin.(Origin_Foreign)
     }
-    name := callee.source_name if callee != nil && callee.source_name != "" else callee.name if callee != nil else "a fun value"
     for a, k in du_call_args(g, op) {
         x := a.op
         if x == NO_NODE { continue }
@@ -1131,11 +1191,15 @@ void_args :: proc(c: ^Void_Code, state: []u64, op: Node_Id) {
         if void_is_value(sig.params[k].type_) {
             is_void, _ := void_value_is(c, x, a.out, state)
             if !is_void { continue }
-            why := fmt.tprintf("'%s' is given void for '%s' at %s", name, sig.params[k].name, void_where(c, graph_origin(g, x)))
+            at := void_where(c, graph_origin(g, x))
             if callee != nil {
+                why := fmt.tprintf("'%s' is given void for '%s' at %s", void_fun_name(callee), sig.params[k].name, at)
                 void_raise(c, void_fact(c.vf, {.Param, rawptr(callee), "", k}), why)
             } else {
-                void_raise(c, void_fact(c.vf, {.Sig_Param, nil, void_sig(sig), k}), why)
+                // (Any fun used as a value of its signature may be the one called.)
+                for f in c.vf.taken[void_sig(sig)] {
+                    void_raise(c, void_fact(c.vf, {.Param, rawptr(f), "", k}), fmt.tprintf("a call through a fun value gives '%s' void at %s", f.params[k].name, at))
+                }
             }
         } else if p := void_value_place(g, x); p != NO_NODE {
             void_escape(c, state, p, true)   // (a struct passed by value: its fields, there)
@@ -1219,7 +1283,7 @@ void_op :: proc(c: ^Void_Code, op: Node_Id, state: []u64, reporting: bool) {
             if void_is_value(c.fun.return_types[k]) {
                 is_void, why := void_value_is(c, o.op, o.out, state)
                 if !is_void { continue }
-                what := fmt.tprintf("'%s' can return void (%s)", c.fun.source_name if c.fun.source_name != "" else c.fun.name, why)
+                what := fmt.tprintf("'%s' can return void (%s)", void_fun_name(c.fun), why)
                 void_raise(c, void_fact(c.vf, {.Result, rawptr(c.fun), "", k}), what)
                 void_raise(c, void_fact(c.vf, {.Sig_Result, nil, void_sig(c.fun), k}), what)
             } else if p := void_value_place(g, o.op); p != NO_NODE {

@@ -894,6 +894,7 @@ use mara.string
 	// A new thread's first fun, as Windows calls it: its start read and freed,
 	// its work run on an arena of its own, the arena released after.
 	thread_entry :: fun(start: ^Thread_Start) -> u32 {
+		if start == void do return 0
 		s := start^
 		_ = HeapFree(GetProcessHeap(), 0, start)
 		base := thread_run(s.work, s.data, s.arena_size)

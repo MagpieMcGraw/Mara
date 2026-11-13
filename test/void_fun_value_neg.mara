@@ -1,0 +1,18 @@
+module void_fun_value_neg
+
+//@ expect-fail: a call through a fun value gives 'p' void at line 17
+
+// A call through a fun value giving void: every fun used as a value of its
+// signature may be the one called, so a read through that param needs a test.
+
+Node :: struct {
+	x: i64
+	next: ^Node
+}
+
+walk :: fun(p: ^Node) -> i64 { return p.x }
+
+main :: fun() {
+	f : fun(^Node) -> i64 = walk
+	print(f(void))
+}

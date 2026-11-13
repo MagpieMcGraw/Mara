@@ -802,6 +802,7 @@ use mara.string
 	// freed, its work run on an arena of its own, the arena released after.
 	// (Its result, 0: pthreads' void* result, nothing.)
 	thread_entry :: fun(start: ^Thread_Start) -> u64 {
+		if start == void do return 0
 		s := start^
 		free(start)
 		base := thread_run(s.work, s.data, s.arena_size)
