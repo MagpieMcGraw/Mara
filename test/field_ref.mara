@@ -9,6 +9,7 @@ use mara.core
 //@ expect-output: text: mouse.x keys.held[W]
 //@ expect-output: from_text: 7 true
 //@ expect-output: from_text miss: false
+//@ expect-output: from_text written out: keys.held[W] mouse true
 //@ expect-output: bind: quit false
 //@ expect-output: bind: mouse.pressed[1] true
 //@ expect-output: bind: keys.held[A] false
@@ -78,6 +79,8 @@ main :: fun() {
 	print("from_text:", events.mouse.y, g != void)
 	none := Look.from_text("mouse.z") != void
 	print("from_text miss:", none)
+	w, ms := Events.bool.from_text("keys.held[W]"), Events.Mouse.from_text("mouse")
+	print("from_text written out:", w, ms, Events.f32.from_text("quit") == void)
 	binds : [3!]Button = [Events.quit, Events.mouse.pressed[1], Events.keys.held[A]]
 	events.mouse.pressed[1] = true
 	for bind in binds { print("bind:", bind, events[bind]) }

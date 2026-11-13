@@ -669,8 +669,8 @@ Place :: struct { x: f32  y: f32 }
 // value with one doesn't build.
 //
 // `f.text()` is the path as text, "mouse.x" (an atom), "void" for void, and
-// print shows that. `R.from_text(s)`, with `R :: alias Input.f32`, gives the
-// reference s names; void when no f32 field of Input has that path, so test
+// print shows that. `Input.f32.from_text(s)`, or `R.from_text(s)` with
+// `R :: alias Input.f32`, gives the reference s names; void when no f32 field of Input has that path, so test
 // it (`if g != void`) before reading through it.
 // A field through a `using` field is named without it (`hp`, not `base.hp`;
 // both are read back), and an enum-indexed array's item by its variant, the
@@ -856,7 +856,7 @@ example_utf8 :: fun() {
 // checker sees that every variant is handled.
 //
 // A field reference comes back from text the same way, one value:
-// `R.from_text(s)` with `R :: alias Input.bool` gives the reference s names,
+// `Input.bool.from_text(s)` (or an alias's, `R.from_text(s)`) gives the reference s names,
 // or void when it names none (see `field_refs`).
 example_from_text :: fun() {
 	cmd := Command.from_text("run")

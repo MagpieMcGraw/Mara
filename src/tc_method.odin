@@ -30,7 +30,17 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
     qual: ^Type_Scope
     qual_dispatch: []TC_Member
     resolved, failed := false, false
-    if q := tc_unparen(k, recv); addressed == 0 && tr.tag[q] == .Ident {
+    // (`S.bool.from_text(s)`, `S.Vec.from_text(s)`: a field reference's type
+    // written out, as a loop takes one — tc_looped_field_type.)
+    if q := tc_unparen(k, recv); addressed == 0 && name == "from_text" {
+        if qt, is_type := tc_looped_field_type(k, q, span); is_type {
+            ft := tc_from_text_fun(qt)
+            if ft == nil { return Type_Error{} }
+            qual, resolved = ft, true
+            k.annot.call_names[tc_sid(k, n)] = ft.name
+        }
+    }
+    if q := tc_unparen(k, recv); !resolved && addressed == 0 && tr.tag[q] == .Ident {
         qname := tc_name(k, q)
         qref := k.names.refs[q]
         qt, found := tc_ref_type(k, qref, qname)
