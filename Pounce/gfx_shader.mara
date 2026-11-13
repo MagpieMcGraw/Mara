@@ -13,7 +13,11 @@ Shader_Error :: error {
     Failed_Link
 }
 
-load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
+// Compiles a file's two shaders: the vertex shader, then the fragment
+// shader, each starting at its `#version` line. `shared` is text put after
+// each one's `#version` line: what several shaders have in common. What the
+// GL compiler says is printed, its line numbers the file's.
+load_and_compile :: fun(filepath: []utf8, shared: []utf8 = "") -> u32, u32, err {
 	// filled by the read — skip the zero-init
 	data: [32 * KB]byte = void
 	read_entire_file(filepath, &data)?
@@ -30,17 +34,33 @@ load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
 	vtext := text[:fs_tag]
 	ftext := text[fs_tag:.len]
 
-	compile :: fun(text: ^[]utf8, shader_type: gl.GL_Shader_Type) -> u32, err {
+	// `part` is a shader's text, `line` the file's line it starts on.
+	compile :: fun(name: []utf8, part: []utf8, line: i64, shared: []utf8, shader_type: gl.GL_Shader_Type) -> u32, err {
 		shader := gl.CreateShader(shader_type)
-		gl.ShaderSource(shader, text^)
+		if shared.len == 0 {
+			gl.ShaderSource(shader, part)
+		else
+			// Up to the end of the #version line, what's shared, then the
+			// rest, numbered as the file's lines are.
+			src : [128 * KB]utf8
+			tag, _ := part.find(VERSION_TAG)
+			eol, _ := part.find("\n", tag)
+			next := line + 1
+			for c in part[:eol] do if c == '\n' do next += 1
+			&src ++ part[:eol + 1] ++ shared ++ "\n#line " ++ int_text(next) ++ "\n" ++ part[eol + 1:.len]
+			gl.ShaderSource(shader, src)
+		}
 		gl.CompileShader(shader)
 
 		status : i32
 		gl.GetShaderiv(shader, gl.COMPILE_STATUS, &status)
 
-		log : [512]utf8
+		log : [2048]utf8
 		gl.GetShaderInfoLog(shader, &log)
-		if log.len > 0 do print(log)
+		if log.len > 0 {
+			print(name, shader_type, "says:")
+			print(log)
+		}
 
 		if status == 0 {
 			gl.DeleteShader(shader)
@@ -48,14 +68,17 @@ load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
 		}
 		return shader
 	}
-	vshader := compile(&vtext, gl.VERTEX_SHADER)?
-	fshader, ferr := compile(&ftext, gl.FRAGMENT_SHADER)
+	fs_line : i64 = 1
+	for c in vtext do if c == '\n' do fs_line += 1
+	vshader := compile(filepath, vtext, 1, shared, gl.VERTEX_SHADER)?
+	fshader, ferr := compile(filepath, ftext, fs_line, shared, gl.FRAGMENT_SHADER)
 	if bool(ferr) {gl.DeleteShader(vshader) return 0, 0, ferr}
 	return vshader, fshader
 }
 
-make_program :: fun(filepath: []utf8) -> u32, err {
-	vshader, fshader, e := load_and_compile(filepath)
+// A program linked from a file's two shaders (load_and_compile).
+make_program :: fun(filepath: []utf8, shared: []utf8 = "") -> u32, err {
+	vshader, fshader, e := load_and_compile(filepath, shared)
 	defer gl.DeleteShader(vshader)
 	defer gl.DeleteShader(fshader)
 	if bool(e) do return 0, e
@@ -68,11 +91,14 @@ make_program :: fun(filepath: []utf8) -> u32, err {
 
 	status: i32
 	gl.GetProgramiv(program, gl.LINK_STATUS, &status)
-	
+
 	// we could add an additional 448 slice type
 	log : [1024]utf8
 	gl.GetProgramInfoLog(program, &log)
-	if log.len > 0 do print(log)
+	if log.len > 0 {
+		print(filepath, "linking says:")
+		print(log)
+	}
 
 	if status == 0 {
 		gl.DeleteProgram(program)
