@@ -201,14 +201,10 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     base := Tree_Id(tr.a[target])
     field := tc_text(Token_Id(tr.b[target]))
     bt := tc_check(k, base)
-    tc_struct_of(k, bt)   // (its fields known: a nested struct's, checked first)
-    sd := as_scope_body(bt)
-    if sd == nil || len(sd.fields) == 0 {
-        sd = nil
-        if pt, is_ptr := bt.(^Type_Ptr); is_ptr {
-            if psd := as_scope_body(pt.elem); psd != nil && len(psd.fields) > 0 { sd = psd }
-        }
-    }
+    // (Its struct, its fields known — through a pointer, through `alias` and a
+    // named type, as a read's: tc_field_type.)
+    sd := tc_struct_of(k, bt)
+    if sd != nil && len(sd.fields) == 0 { sd = nil }
     // (A union's: a variant's field is written where a match knows it's
     // that variant — `box.height = 3`, box a Shape, passed the checker and
     // stopped lowering.)

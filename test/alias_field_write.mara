@@ -1,0 +1,41 @@
+module alias_field_write
+
+//@ expect-output: 13 4
+//@ expect-output: 5
+//@ expect-output: 6
+//@ expect-output: Vec { x: 13, y: 4 }
+
+// A struct's fields are written through another name for it as they're read:
+// `alias` (a chain of them too, and through a pointer), one in a body, and a
+// type of its own (`D :: Vec`).
+
+use mara.core
+
+P :: alias Q
+Q :: alias Vec
+D :: Vec
+Vec :: struct {
+	x: i64
+	y: i64
+}
+
+move :: fun(p: ^P) {
+	p.x += 10
+}
+
+main :: fun() {
+	v : P
+	v.x = 3
+	v.y = 4
+	move(&v)
+	print(v.x, v.y)
+	W :: alias Vec
+	w : W
+	w.x = 5
+	print(w.x)
+	d : D
+	d.x = 6
+	print(d.x)
+	pv : Vec = v
+	print(pv)
+}
