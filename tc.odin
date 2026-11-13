@@ -467,7 +467,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         slice.sort(names[:])
         for name in names { k.module_nodes[name] = tree_module_scope(t, modules[name]) }
     }
-    names_check_begin()
     k.rs = resolve_program(k)
     // (`all` declared: a keyword — each said where it's declared, in order.)
     all_named := make([dynamic]Token_Id, context.temp_allocator)
@@ -564,7 +563,6 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     }
     annot_check(k.annot, t, &checked.code, c.errors)
     resolve_check(k)
-    names_check(k)
     checked.rs, checked.bound, checked.binds = k.rs, k.bound, k.binds[:]
     checked.errors = c.errors
     return checked

@@ -1,6 +1,7 @@
 package mara
 
 import "core:slice"
+import "core:strings"
 
 // ---------------------------------------------------------------------------
 // Every form a name is written in, answered from the table (names_find): a
@@ -35,7 +36,7 @@ names_ref :: proc(r: ^Resolver, n: Tree_Id, base := false) -> Ref {
         if ref, ok := names_member(r, q, field); ok { return ref }
         // (A module's, a struct's, a fun's enum's variant, by its name alone.)
         if t.tag[q] == .Ident || t.tag[q] == .Field {
-            qref := names_ref(r, q, base = true)
+            qref := names_base_ref(r, q)
             if rs_names_def(qref) {
                 if _, has := names_members(r, qref); has {
                     if sp := rs_space_of(r, qref); sp != nil { if ref, found := sp.variants[field]; found { return ref } }
@@ -101,13 +102,21 @@ tc_is_primitive_name :: proc(name: string) -> bool {
     return primitive
 }
 
+// A qualified name's base's ref: filled already (names_fill, in node order —
+// a base before what it qualifies), else found.
+@(private="file")
+names_base_ref :: proc(r: ^Resolver, q: Tree_Id) -> Ref {
+    if ref := r.refs[q]; ref.kind != .None { return ref }
+    return names_ref(r, q, base = true)
+}
+
 // What a qualified name's base (a module, a type, a fun, by its name) has by
 // `name`.
 @(private="file")
 names_member :: proc(r: ^Resolver, q: Tree_Id, name: string) -> (Ref, bool) {
     t := r.t
     if t.tag[q] != .Ident && t.tag[q] != .Field { return {}, false }
-    qref := names_ref(r, q, base = true)
+    qref := names_base_ref(r, q)
     if !rs_names_def(qref) { return {}, false }
     m, ok := names_members(r, qref)
     if !ok { return {}, false }
@@ -194,7 +203,7 @@ names_members :: proc(r: ^Resolver, ref: Ref) -> (map[string]Ref, bool) {
     case .Distinct_Def, .Alias_Def:
         base := Tree_Id(t.a[value])
         if t.tag[base] != .Type_Name { return nil, false }
-        bref := names_ref(r, base)
+        bref := r.refs[base] if r.refs[base].kind != .None else names_ref(r, base)
         if bref.kind == .None || bref.decl == ref.decl { return nil, false }
         return names_members(r, bref)
     case:
@@ -214,7 +223,7 @@ names_field_type :: proc(r: ^Resolver, n: Tree_Id) -> (Rs_Field_Type, bool) {
         q := Tree_Id(t.a[n])
         field := rs_text(Token_Id(t.b[n]))
         if t.tag[q] != .Ident && t.tag[q] != .Field { return {}, false }
-        qref := names_ref(r, q, base = true)
+        qref := names_base_ref(r, q)
         if !rs_names_def(qref) { return {}, false }
         m, ok := names_members(r, qref)
         if !ok { return {}, false }
@@ -252,18 +261,20 @@ names_clash :: proc(r: ^Resolver, v: Name_Var, body: ^Scope) -> (c: Rs_Clash) {
     name := v.name
     at := v.ref.decl
     if name == "_" { return }
+    found, ok, miss := names_find(r, name, at)
     if v.ref.kind == .Param || v.ref.kind == .Result {
-        ref, ok := names_lookup(r, name, at)
         if ok {
-            #partial switch ref.kind { case .Fun, .Type, .Module: c.hides = ref }
+            #partial switch found.kind { case .Fun, .Type, .Module: c.hides = found }
         }
         return
     }
+    // (Nothing of its name in sight: it runs into nothing.)
+    if !ok && len(miss.owners) == 0 { return }
     // (The nearest thing of its name in sight: a variable of its body, or a
     // definition — whichever came in sight later.)
     near: ^Name_Var
     for &x in body.vars {
-        if x.name == name && x.ref.decl != at && x.from <= at && (x.to == 0 || at < x.to) && (near == nil || x.from > near.from) { near = &x }
+        if x.slot == v.slot && x.ref.decl != at && x.from <= at && (x.to == 0 || at < x.to) && (near == nil || x.from > near.from) { near = &x }
     }
     def: Ref
     def_sc: ^Scope
@@ -291,8 +302,7 @@ names_clash :: proc(r: ^Resolver, v: Name_Var, body: ^Scope) -> (c: Rs_Clash) {
             c.before, c.shadows = near.ref.decl if use_var else def.decl, true
         }
     }
-    ref, ok, miss := names_find(r, name, at)
-    if !ok { ref = miss.first }
+    ref := found if ok else miss.first
     #partial switch ref.kind {
     case .Const:              c.constant = true
     case .Fun, .Type, .Module: c.hides = ref
@@ -300,10 +310,102 @@ names_clash :: proc(r: ^Resolver, v: Name_Var, body: ^Scope) -> (c: Rs_Clash) {
     return
 }
 
-// (The variables declared in a body's record, for names_check.)
-names_vars_of :: proc(r: ^Resolver) -> [dynamic]^Scope {
-    out := make([dynamic]^Scope, context.temp_allocator)
-    for sc in r.records { if len(sc.vars) > 0 { append(&out, sc) } }
-    slice.sort_by(out[:], proc(a, b: ^Scope) -> bool { return a.text_lo < b.text_lo })
-    return out
+// What every name written means, from the records the walk made: each
+// node's, why one means nothing, a field reference's type, each name written
+// as a token, each declaration's clash — the tables the checker and the tools
+// read. (A declaration's own name the walk gave already.) mara lsp's
+// completion: the names in sight where its placeholder is.
+names_fill :: proc(r: ^Resolver) {
+    t := r.t
+    // (A name that qualifies another: a module's own name may name it.)
+    base := make([]bool, len(t.tag), context.temp_allocator)
+    for n in 1 ..< len(t.tag) {
+        #partial switch t.tag[n] {
+        case .Field:       base[Tree_Id(t.a[n])] = true
+        case .Method_Call: base[method_view(t, Tree_Id(n)).receiver] = true
+        }
+    }
+    token :: proc(r: ^Resolver, tok: Token_Id, plain: bool) {
+        if tok == 0 { return }
+        if ref := names_token_ref(r, tok); ref.kind != .None {
+            r.token_refs[tok] = ref
+        } else if plain {
+            if m := names_token_miss(r, tok); m.hidden != "" || len(m.owners) > 0 { r.token_misses[tok] = m }
+        }
+    }
+    for n in 1 ..< len(t.tag) {
+        nid := Tree_Id(n)
+        if resolve_completing && !r.captured && t.main[nid] != 0 && strings.contains(rs_text(t.main[nid]), COMPLETE_HERE) { names_capture(r, t.main[nid]) }
+        #partial switch t.tag[nid] {
+        case .Ident, .Call, .Method_Call, .Field, .Type_Name, .Type_Keyword, .Type_Dollar, .Type_Of, .Type_Generic:
+            if r.refs[nid].kind != .None { continue }
+            ref := names_ref(r, nid, base[nid])
+            r.refs[nid] = ref
+            if ref.kind == .None {
+                #partial switch t.tag[nid] {
+                case .Ident, .Call, .Type_Name, .Type_Generic:
+                    if m := names_miss(r, nid); m.hidden != "" || len(m.owners) > 0 { r.misses[nid] = m }
+                }
+            }
+            #partial switch t.tag[nid] {
+            case .Field, .Type_Name:
+                if ft, ok := names_field_type(r, nid); ok { r.field_types[nid] = ft }
+            }
+            #partial switch t.tag[nid] {
+            case .Type_Name:
+                if parts := tree_token_list(t, t.a[nid]); len(parts) > 1 { token(r, parts[0], false) }
+            case .Type_Of:
+                if parts := tree_token_list(t, t.a[nid]); len(parts) > 0 { token(r, parts[0], false) }
+            case .Method_Call:
+                if ref.kind == .None { token(r, method_view(t, nid).name, true) }
+            }
+        case .Dispatch_Def:
+            for tok in tree_token_list(t, t.a[nid]) { token(r, tok, true) }   // (its members)
+        case .Overload:
+            token(r, Token_Id(t.b[nid]), true)   // (the dispatch's or the fun's name)
+        case .Type_Tilde:
+            token(r, Token_Id(t.a[nid]), true)   // (`~Shape`: the shape)
+        }
+    }
+    // (What each declaration runs into.)
+    for sc in r.records {
+        for v in sc.vars {
+            if !v.clashes { continue }
+            c := names_clash(r, v, sc)
+            keep := c.hides.kind != .None if v.ref.kind != .Local else c.taken || c.before != 0 || c.constant || c.hides.kind != .None
+            if keep { r.clashes[v.ref.decl] = c }
+        }
+    }
+}
+
+// mara lsp's completion: the names in sight at `at` — each name's nearest,
+// then what the scopes out from there use.
+names_capture :: proc(r: ^Resolver, at: Token_Id) {
+    r.captured = true
+    here := names_record_at(r, at)
+    if here == nil { return }
+    seen := make(map[string]bool, context.temp_allocator)
+    if body := names_body_of(here); body != nil {
+        vars := make([dynamic]Name_Var, context.temp_allocator)
+        for x in body.vars { if x.from <= at && (x.to == 0 || at < x.to) { append(&vars, x) } }
+        slice.sort_by(vars[:], proc(a, b: Name_Var) -> bool { return a.from > b.from })
+        for x in vars {
+            if x.name in seen { continue }
+            seen[x.name] = true
+            append(&r.in_sight, Rs_Seen{x.name, x.ref})
+        }
+    }
+    for s := here; s != nil; s = s.parent {
+        for name, ref in s.declared { if name not_in seen { seen[name] = true; append(&r.in_sight, Rs_Seen{name, ref}) } }
+        for name, ref in s.defs { if name not_in seen { seen[name] = true; append(&r.in_sight, Rs_Seen{name, ref}) } }
+        for name, ref in s.params { if name not_in seen { seen[name] = true; append(&r.in_sight, Rs_Seen{name, ref}) } }
+        if s.kind == .Module {
+            for b in ([]string{"std", "void"}) { if b not_in seen { seen[b] = true; append(&r.in_sight, Rs_Seen{b, {kind = .Builtin}}) } }
+        }
+    }
+    for s := here; s != nil; s = s.parent {
+        for u in s.uses {
+            for name, ref in u.defs { if name not_in seen { seen[name] = true; append(&r.in_sight, Rs_Seen{name, ref}) } }
+        }
+    }
 }
