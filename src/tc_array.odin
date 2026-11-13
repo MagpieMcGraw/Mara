@@ -1,6 +1,8 @@
 package mara
 
 import "core:fmt"
+import "core:slice"
+import "core:strings"
 
 // Arrays in the checker: an element read or written, an array literal.
 
@@ -25,6 +27,7 @@ tc_index :: proc(k: ^TC, n: Tree_Id) -> Type {
     }
     if fa, ok := target.(^Type_Fixed_Array); ok && fa.index_type != nil { k.hint = fa.index_type }
     it := tc_check_at(k, idx_n, slice_header_width_type)
+    if fa, ok := target.(^Type_Fixed_Array); ok { tc_index_kind(k, base_n, idx_n, fa, it, span) }
     if !is_numeric(it) {
         tc_error(k, span, TYPE_INDEX_NUMBER, type_name(it))
     } else if !coerces_to_index_width(it) {
@@ -44,6 +47,31 @@ tc_index :: proc(k: ^TC, n: Tree_Id) -> Type {
         if !is_any(target) { tc_error(k, span, TYPE_CANNOT_INDEX_INTO, type_name(target)) }
     }
     return t
+}
+
+// An index into a `[K]T` is a K or a plain integer: another enum's or
+// union's value there is a slip — `actions[Escape]` for `escape`, finding
+// SDL's scancode instead. A variant of K differing only in case is named.
+tc_index_kind :: proc(k: ^TC, base_n, idx_n: Tree_Id, fa: ^Type_Fixed_Array, it: Type, span: Span) {
+    if fa.index_type == nil { return }
+    #partial switch _ in distinct_base(it) {
+    case ^Type_Enum, ^Type_Union:
+    case: return
+    }
+    if types_equal(distinct_base(it), distinct_base(fa.index_type)) { return }
+    names: []string
+    #partial switch kt in distinct_base(fa.index_type) {
+    case ^Type_Union: names = kt.variants[:]
+    case ^Type_Enum:  names, _ = slice.map_keys(kt.variants, context.temp_allocator)
+    }
+    written := tc_written(k, idx_n)
+    for v in names {
+        if v != written && strings.equal_fold(v, written) {
+            tc_error(k, span, TYPE_INDEX_OTHER_KIND_NEAR, tc_written(k, base_n), type_name(fa.index_type), written, type_name(it), v)
+            return
+        }
+    }
+    tc_error(k, span, TYPE_INDEX_OTHER_KIND, tc_written(k, base_n), type_name(fa.index_type), written, type_name(it), type_name(fa.index_type))
 }
 
 // A list declared with nothing in it that no code gives a len stays empty:
@@ -137,6 +165,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     tc_set_type(k, target, elem)
     if fa, ok := tt.(^Type_Fixed_Array); ok && fa.index_type != nil { k.hint = fa.index_type }
     it := tc_check_at(k, idx_n, slice_header_width_type)
+    if fa, ok := tt.(^Type_Fixed_Array); ok { tc_index_kind(k, base_n, idx_n, fa, it, span) }
     #partial switch v in tt {
     case ^Type_Fixed_Array:   k.hint = v.elem
     case ^Type_Partial_Array: if _, is_byte := v.elem.(Type_Byte); !is_byte { k.hint = v.elem }

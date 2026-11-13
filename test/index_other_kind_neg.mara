@@ -1,0 +1,24 @@
+module index_other_kind_neg
+
+//@ expect-fail: 'actions' is indexed by Action, but 'Escape' is of type Key — did you mean 'escape'?
+
+// An index into a `[K]T` is a K or a plain integer. Another union's value
+// is a slip: `Escape` for Action's `escape` finds Key's, 41, past the end.
+
+Action :: union {
+	jump
+	escape
+	none = 0
+}
+
+Key :: union(tag u32) {
+	Space = 44
+	Escape = 41
+}
+
+main :: fun() {
+	actions : [Action]bool
+	actions[jump] = true
+	actions[1] = true
+	print(actions[Escape])
+}

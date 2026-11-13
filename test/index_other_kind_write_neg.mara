@@ -1,0 +1,23 @@
+module index_other_kind_write_neg
+
+//@ expect-fail: 'counts' is indexed by Action, but 'k' is of type Key: index it with Action's values or an integer
+
+// A write into a `[K]T` through another union's value: an error as a read is.
+
+Action :: union {
+	jump
+	escape
+	none = 0
+}
+
+Key :: union(tag u32) {
+	Space = 44
+	Escape = 41
+}
+
+main :: fun() {
+	counts : [Action]i64
+	k := Key.Space
+	counts[k] = 1
+	print(counts[jump])
+}
