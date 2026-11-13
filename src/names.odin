@@ -210,8 +210,12 @@ names_memo :: proc(r: ^Name_Table, sc: ^Scope, name: string, slot: i32) -> Names
 // out from there define or bring by a use. Two things of one name in sight are
 // neither (nothing hides anything) — but a variable declared beside what's in
 // sight already is itself from there on (that it hides it is said where it's
-// declared). Nothing: why — a local of a fun around, past its boundary; the
-// scopes that each have it.
+// declared), and a type the text defines is itself whatever a use at the top
+// of its file brings by its name (r.hid: that it hid one, set and never
+// cleared here — names_fill clears it before each name; `let`, `slice` and
+// `size_of`, where nothing checks which is meant, ask for it said). Nothing:
+// why — a local of a fun around, past its boundary; the scopes that each have
+// it.
 names_find :: proc(r: ^Name_Table, name: string, at: Token_Id) -> (ref: Ref, ok: bool, miss: Name_Miss) {
     here := names_record_at(r, at)
     if here == nil { return }
@@ -266,7 +270,16 @@ names_find_in :: proc(r: ^Name_Table, here: ^Scope, name: string, at: Token_Id) 
     if len(defs) > 0 {
         first := defs[0]
         for x in defs[1:] { if !names_shares(r, first.ref, x.ref) { return {}, false, past(r, body, name, slot, at, max(first.at, x.at)) } }
-        for x in used { if !names_shares(r, first.ref, x.ref) { return {}, false, past(r, body, name, slot, at, max(first.at, x.at)) } }
+        hid: Name_Hid
+        for x in used {
+            if names_shares(r, first.ref, x.ref) { continue }
+            if first.ref.kind == .Type && (x.sc.kind == .File || x.sc.kind == .Module) {
+                if hid.own == "" { hid = {names_owner(first.sc), x.use.name} }
+                continue
+            }
+            return {}, false, past(r, body, name, slot, at, max(first.at, x.at))
+        }
+        if hid.own != "" { r.hid = hid }
         return first.ref, true, {}
     }
     if len(used) == 0 {

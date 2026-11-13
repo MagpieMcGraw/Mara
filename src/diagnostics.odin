@@ -266,6 +266,7 @@ TYPE_MOVE_BELOW_ALL_DECLARATIONS_CLASS :: "Move '%s' below all of the declaratio
 TYPE_ONLY_VALID_TYPE_GENERIC_PARAMETER :: "`~%s` only valid as the type of a generic parameter (e.g. `Foo :: struct (s: ~%s)`)"
 TYPE_TYPE_INT_RESERVED_USE_I64 :: "type 'int' is reserved — use 'i64' (or 'isize' for word-sized)"
 TYPE_TYPE_UINT_RESERVED_USE_U64 :: "type 'uint' is reserved — use 'u64' (or 'usize' for word-sized)"
+TYPE_BARE_TYPE_UNCHECKED :: "'%s' is %s's here, and %s has one too: nothing in `%s` checks which is meant. Say which: `%s.%s` or `%s.%s`"
 TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE :: "type name '%s' is ambiguous (defined in: %s). Name the one you mean through its module: `m.%s`."
 TYPE_UNKNOWN_TYPE :: "unknown type '%s'"
 TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE :: "array size must be a compile-time constant (element type %s) — pick a fixed upper bound"

@@ -964,7 +964,8 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
             if an := tc_diag_name(k, a); an != "" { clause = fmt.tprintf(" ('%s')", an) }
             hint := tc_partial_hint(k, a, at, pt)
             if hint == "" { hint = tc_items_hint(at, pt) }
-            tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), type_name(at), hint)
+            want, got := type_names_apart(pt, at)
+            tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, want, got, hint)
         }
         // (A runtime string into a `cstring` param: `cstring(s)`, written —
         // the copy and the terminator seen. A literal, or a constant one,
@@ -1398,9 +1399,24 @@ tc_size_of :: proc(k: ^TC, n: Tree_Id) -> Type {
     span := tree_span(k.t, n)
     t := tc_type(k, Tree_Id(k.t.a[n]), span)
     if _, is_error := t.(Type_Error); is_error { tc_error(k, span, TYPE_SIZE_UNKNOWN_TYPE) }
+    tc_type_said(k, Tree_Id(k.t.a[n]), "size_of")
     tc_ensure_layout(k, t)
     k.annot.size_of[tc_sid(k, n)] = t
     return Type_Infer_Int{}
+}
+
+// A type written where nothing checks which type is meant (`let`, `slice`,
+// `size_of`): a bare name in it that hides a used scope's type of that name
+// (Name_Table.hides) is an error — said through its module, it's one or the
+// other.
+tc_type_said :: proc(k: ^TC, ty: Tree_Id, what: string) {
+    if len(k.names.hides) == 0 || ty == 0 { return }
+    for n in tree_lo(k.t, ty) ..= ty {
+        h, has := k.names.hides[n]
+        if !has { continue }
+        name := tc_text(tree_token_list(k.t, k.t.a[n])[0])
+        tc_error(k, tree_span(k.t, n), TYPE_BARE_TYPE_UNCHECKED, name, h.own, h.other, what, h.own, name, h.other, name)
+    }
 }
 
 // A type's layout known: each struct in it checked (its fields found).

@@ -1,0 +1,36 @@
+module own_type_hides
+
+// A type the module defines is what its bare name means, whatever a module
+// used at the top of the file has by that name; the other is said through
+// its module. Where nothing checks which is meant (let, slice, size_of) the
+// module is written.
+
+use mara.core
+use mara.memory
+use own_hides_lib
+
+#allocator Arena_Basic(1 * MB)
+
+twice :: fun(s: State) -> i64 { return s.w * 2 }
+
+main :: fun() {
+	mine : State
+	theirs := own_hides_lib.State()
+	print(mine.w, twice(mine), theirs.v, show(&theirs))          // 7 14 3 3
+	also := own_type_hides.State(){w = 9}
+	one := State(){w = 1}
+	print(twice(also), one.w)                                    // 18 1
+	bytes : [64]byte
+	bytes.len = 64
+	a := let(own_type_hides.State, &bytes[0])
+	b := let(own_hides_lib.State, &bytes[8])
+	print(a.w, b.v, size_of(own_type_hides.State), size_of(own_hides_lib.State))   // 0 0 8 8
+
+	// (A type a fun's body defines, likewise.)
+	inner :: fun() -> i64 {
+		Thing :: struct { z: i64 = 5 }
+		s : Thing
+		return s.z
+	}
+	print(inner())                                               // 5
+}

@@ -764,10 +764,11 @@ tc_return :: proc(k: ^TC, s: Tree_Id) {
         if tc_array_returned_as_slice(k, val, vt, want, span) { continue }
         if !is_any(vt) && !is_any(want) && !coerce_deferred(k.c, vt, want, span) &&
            !types_equal(want, vt) {
+            got, wanted := type_names_apart(vt, want)
             if expected > 1 {
-                tc_error(k, span, TYPE_RETURN_VALUE_TYPE_MATCH_EXPECTED, i + 1, type_name(vt), type_name(want))
+                tc_error(k, span, TYPE_RETURN_VALUE_TYPE_MATCH_EXPECTED, i + 1, got, wanted)
             } else {
-                tc_error(k, span, TYPE_RETURN_TYPE_MATCH_EXPECTED, type_name(vt), type_name(want))
+                tc_error(k, span, TYPE_RETURN_TYPE_MATCH_EXPECTED, got, wanted)
             }
         }
         tc_value_at(k, val, vt, want, span)

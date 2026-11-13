@@ -1655,6 +1655,30 @@ type_home :: proc(t: Type) -> string {
     return ""
 }
 
+// Two types' names for an error that sets them apart: when they read the
+// same though the types differ (two modules' `State`), each through its
+// module.
+type_names_apart :: proc(a, b: Type) -> (string, string) {
+    an, bn := type_name(a), type_name(b)
+    if an != bn { return an, bn }
+    full :: proc(t: Type, name: string) -> string {
+        base := t
+        peel: for {
+            #partial switch v in base {
+            case ^Type_Ptr:           base = v.elem
+            case ^Type_Slice:         base = v.elem
+            case ^Type_Fixed_Array:   base = v.elem
+            case ^Type_Partial_Array: base = v.elem
+            case: break peel
+            }
+        }
+        home, own := type_home(base), type_name(base)
+        if home == "" || !strings.has_suffix(name, own) { return name }
+        return fmt.tprintf("%s%s.%s", name[:len(name) - len(own)], home, own)
+    }
+    return full(a, an), full(b, bn)
+}
+
 byte_reference_reason :: proc(c: ^Checker, t: Type, path: string = "") -> string {
     #partial switch v in distinct_base(t) {
     case ^Type_Slice:

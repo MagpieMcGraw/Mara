@@ -1,0 +1,7 @@
+module own_hides_lib
+
+State :: struct { v: i64 = 3 }
+Thing :: struct { y: i64 = 4 }
+MAX :: 10
+
+show :: fun(s: ^State) -> i64 { return s.v }

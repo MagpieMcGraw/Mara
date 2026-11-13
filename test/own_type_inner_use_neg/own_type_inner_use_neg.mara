@@ -1,0 +1,13 @@
+module own_type_inner_use_neg
+//@ expect-fail: is ambiguous
+
+// A use in a fun's body brings the library's State there on purpose: the
+// module's own doesn't hide it, and the bare name means neither.
+
+State :: struct { w: i64 }
+
+main :: fun() {
+	use own_inner_lib
+	s : State
+	print(s)
+}

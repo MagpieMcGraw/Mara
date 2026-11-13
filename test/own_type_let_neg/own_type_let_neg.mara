@@ -1,0 +1,13 @@
+module own_type_let_neg
+//@ expect-fail: nothing in `let` checks which is meant
+
+use own_let_lib
+
+State :: struct { w: i64 }
+
+main :: fun() {
+	bytes : [64]byte
+	bytes.len = 64
+	a := let(State, &bytes[0])
+	print(a.w)
+}

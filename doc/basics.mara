@@ -79,6 +79,14 @@ example_module :: fun() {
 // all their members. A union's variants are found the same way as any name:
 // in the scope that defines the union, or where that scope is used.
 //
+// Types are the other exception: a type this module defines is what its
+// bare name means, whatever a module used at the top of the file has by
+// that name (`State` beside a library's `State`; the library's is
+// `gfx.State`). Handing one where the other is taken is a type error, so the
+// checker tells them apart for you. Where nothing does — `let(State, …)`,
+// `slice([:n]State, …)`, `size_of(State)` — the bare name is an error:
+// write `basics.State` or `gfx.State`.
+//
 // A variable, a param or a field may have the name of a fun, a type, a
 // module, a constant or a variant in sight, but where that name is written
 // by itself it means both, and that's an error naming both: `filter := 3`

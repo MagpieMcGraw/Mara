@@ -1,0 +1,14 @@
+module own_type_wrong_neg
+//@ expect-fail: expects ^own_wrong_lib.State, got ^own_type_wrong_neg.State
+
+// The module's own State handed to a fun that takes the library's: two
+// types, whatever their names.
+
+use own_wrong_lib
+
+State :: struct { v: i64 = 1 }
+
+main :: fun() {
+	mine : State
+	print(show(&mine))
+}

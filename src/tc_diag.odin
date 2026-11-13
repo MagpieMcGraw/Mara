@@ -153,9 +153,10 @@ tc_wide_clause :: proc(k: ^TC, target: Type, roots: ..Tree_Id) -> string {
 
 // "cannot assign X to variable 'v' of type Y" (— from the wide operands).
 tc_assign_error :: proc(k: ^TC, span: Span, vt: Type, name: string, target: Type, values: ..Tree_Id) {
+    got, want := type_names_apart(vt, target)
     if clause := tc_wide_clause(k, target, ..values); clause != "" {
-        tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE_FROM, type_name(vt), name, type_name(target), clause)
+        tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE_FROM, got, name, want, clause)
         return
     }
-    tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(target))
+    tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, got, name, want)
 }

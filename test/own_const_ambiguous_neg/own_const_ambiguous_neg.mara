@@ -1,0 +1,13 @@
+module own_const_ambiguous_neg
+//@ expect-fail: is ambiguous
+
+// Only a type hides a used module's: a constant of the module's own and a
+// used module's of its name are neither.
+
+use own_const_lib
+
+MAX :: 20
+
+main :: fun() {
+	print(MAX)
+}

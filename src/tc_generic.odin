@@ -364,13 +364,13 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
         if own || coerce_deferred(k.c, at, pt, span) || !arg_incompatible(pt, at) { continue }
         clause := ""
         if an := tc_diag_name(k, a); an != "" { clause = fmt.tprintf(" ('%s')", an) }
-        got := type_name(at)
+        want, got := type_names_apart(pt, at)
         if fs, is_fun := at.(^Type_Scope); is_fun && fs.kind == .Fun && fs.name != "" {
             shape := fs^
             shape.name = ""
             got = fmt.tprintf("%s, a %s", got, type_name(&shape))
         }
-        tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, type_name(pt), got, "")
+        tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, want, got, "")
     }
     for a, i in args { if i < len(ft.params) && !left_off(k, a) { tc_settle(k, a, ft.params[i].type_) } }   // (each at its param's type, now known)
     return fn_primary_return(ft)

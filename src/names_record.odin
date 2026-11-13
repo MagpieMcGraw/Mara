@@ -72,6 +72,8 @@ Name_Table :: struct {
     open_vars:  [dynamic]Names_Open,    // the variables recorded in the levels entered, for their ends (record_leave)
     levels_entered: int,                // (each level's id)
     seen_defs, seen_used: [dynamic]Names_Seen,   // names_find's scratch
+    hid:        Name_Hid,                         // ... what its last answer hid (own ""; nothing)
+    hides:      map[Tree_Id]Name_Hid,             // a type's bare name that hides a used scope's, by its node
     sight_memo: map[Names_Key]Names_Memo,         // what a file's scope and its module see of a name (names_memo)
     walking:    bool,                             // the walk is on: a file's or a module's names may still change (no memo)
     slot_count: i32,
@@ -223,6 +225,12 @@ Names_In_Sight :: struct {
 // Why a name resolved to nothing — for the checker to say, once nothing it
 // knows by type means it either: whose local it is, past a fun's boundary;
 // the modules that each have it, at the nearest scope that uses any.
+// A type's bare name that means its module's own though a scope used there
+// has one too: whose it is, and whose the other is.
+Name_Hid :: struct {
+    own, other: string,
+}
+
 Name_Miss :: struct {
     hidden: string,
     owners: []string,

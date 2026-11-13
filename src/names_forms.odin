@@ -339,8 +339,10 @@ names_fill :: proc(r: ^Name_Table, lo, hi: Tree_Id) {
         #partial switch t.tag[nid] {
         case .Ident, .Call, .Method_Call, .Field, .Type_Name, .Type_Keyword, .Type_Dollar, .Type_Of, .Type_Generic:
             if r.refs[nid].kind != .None { continue }
+            r.hid = {}
             ref := names_ref(r, nid, base[nid] or_else false)
             r.refs[nid] = ref
+            if t.tag[nid] == .Type_Name && r.hid.own != "" { r.hides[nid] = r.hid }
             if ref.kind == .None {
                 #partial switch t.tag[nid] {
                 case .Ident, .Call, .Type_Name, .Type_Generic:

@@ -1,0 +1,10 @@
+module own_type_size_of_neg
+//@ expect-fail: nothing in `size_of` checks which is meant
+
+use own_size_lib
+
+State :: struct { w: i64 }
+
+main :: fun() {
+	print(size_of([4!]State))
+}

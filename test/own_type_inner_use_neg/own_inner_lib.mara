@@ -1,0 +1,6 @@
+module own_inner_lib
+
+State :: struct { v: i64 = 3 }
+MAX :: 10
+
+show :: fun(s: ^State) -> i64 { return s.v }

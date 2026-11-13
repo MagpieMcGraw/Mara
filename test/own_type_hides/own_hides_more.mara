@@ -1,0 +1,5 @@
+module own_type_hides
+
+// (The module's own State, in another file of it than the one that uses the
+// library.)
+State :: struct { w: i64 = 7 }
