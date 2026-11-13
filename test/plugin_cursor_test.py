@@ -53,7 +53,8 @@ def run_mara(args, cwd):
 
 
 mara_ask._run_mara = run_mara
-mara_ask._docs_send = lambda *a, **k: True
+docs = []   # (the words each rest gave Docs)
+mara_ask._docs_send = lambda mara, cwd, words, *a, **k: docs.append(words) or True
 mara_ask._tell_editor = lambda *a: None
 mara_ask._tell_colors = lambda *a: None
 
@@ -90,6 +91,8 @@ class View:
         return [Region(self.caret)]
 
     def substr(self, region):
+        if isinstance(region, int):   # (a point: its character)
+            return self.text[region:region + 1]
         return self.text[region.begin():region.end()]
 
     def rowcol(self, point):
@@ -137,6 +140,7 @@ def check(what, got, want):
 
 def rest(view):
     del asked[:]
+    del docs[:]
     cursor.on_selection_modified_async(view)
     while timers:
         timers.pop()()
@@ -219,6 +223,22 @@ view.caret = ops.index(":=") + 1
 check("`:=`: nothing", rest(view), [])
 view.caret = ops.index("->") + 1
 check("`->`: nothing", rest(view), [])
+view.caret = ops.index("++")
+check("on `++`: asked, Docs not (no word to look up)", (rest(view), docs), (["-cursor what at ops.mara:3:14"], []))
+
+idx = 'module ops\n\nn := items[i]\nm := items[i + 1].x\ns := "]"\n'
+with open(ops_path, "w", encoding="utf-8", newline="\n") as f:
+    f.write(idx)
+view = View(ops_path, idx)
+view.caret = idx.index("i]") + 2
+check("just past an index's `]`: what's at it", rest(view), ["-cursor what at ops.mara:3:13"])
+view.caret = idx.index("i]") + 1
+check("before it, beside a name: the name", rest(view), ["-cursor what at ops.mara:3:12"])
+check("... and Docs looks the name up", docs, ["i"])
+view.caret = idx.index("1]") + 1
+check("beside a number: the `]`", rest(view), ["-cursor what at ops.mara:4:17"])
+view.caret = idx.index('"]"') + 2
+check("a `]` in a string: nothing", rest(view), [])
 
 text = View(os.path.join(folder, "notes.txt"), "second")
 check("not a Mara file saved: nothing asked", save(text.click("second")), [])

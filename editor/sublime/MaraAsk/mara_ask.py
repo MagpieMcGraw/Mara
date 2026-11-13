@@ -367,8 +367,8 @@ class MaraAskClearHighlightsCommand(sublime_plugin.TextCommand):
 #     variable's or a field's types along its path, where it's declared, written
 #     and read; anything else named, what it is, its type, where it's declared.
 # The words: what's highlighted, when something is (one line; a whole fun isn't
-# words); else the name or the operator under the cursor (`++`: what it calls);
-# else, in a call's parentheses, the fun
+# words); else the name or the operator under the cursor (`++`: what it calls),
+# or an index's `]` beside it; else, in a call's parentheses, the fun
 # being called (signature help). The point: the cursor — with a highlight, its
 # cursor end, so what's under the cursor shows as well. An unsaved file's
 # places may be stale: Docs then shows the text matches alone. Ask answers from
@@ -380,6 +380,7 @@ _cursor_pending = [0]   # the latest rest's number: older ones don't send
 _cursor_sent = [None]   # (file, words, point) last sent: the same again isn't
 
 _NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_WORDY_RE = re.compile(r"[A-Za-z_]")
 _NOT_CALLS = frozenset(("fun", "if", "elif", "for", "match", "return", "and", "or", "not", "do"))
 
 
@@ -417,6 +418,10 @@ def _rest_words(view):
     op = _operator_at(view, caret)
     if op is not None:
         return op
+    # (Next to an index's `]`: what's at it, `items[i]` and its type.)
+    for p in (caret - 1, caret):
+        if 0 <= p < view.size() and view.substr(p) == "]" and not view.match_selector(p, "comment, string"):
+            return "]", p
     if _settings().get("signature_help", True):
         callee = _callee_at(view, caret)
         if callee is not None:
@@ -705,7 +710,8 @@ def _cursor_send(number, key, cwd, words, at, view):
     mara = _settings().get("mara_path", "mara")
     _tell_editor(mara, cwd)
     _tell_colors(mara, cwd, view)
-    if _settings().get("docs_at_cursor", True):
+    # (`++`, `]`: no word for Docs to look up — what it shows stays.)
+    if _settings().get("docs_at_cursor", True) and _WORDY_RE.search(words):
         _docs_send(mara, cwd, words, at, say=False)
     _ask_cursor(mara, cwd, view, at)
 
