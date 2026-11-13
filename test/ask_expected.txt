@@ -2608,6 +2608,55 @@ pointer taken 1
 read 1
   askcando.mara:26  main
     print(bind_count(binds), s.float_text(speed, 1), m.count, Action.jump)
+=== test/askop.mara | what at askop.mara:20:8
+++ — calls slice_add
+  declared  <root>/code/core.mara:50
+  slice_add :: fun(dst: ^[]$T, src: []$T) -> ^[]T
+
+  &name ++ "dir"   : ^[]utf8
+  &name ++ "dir" ++ "/"   : ^[]utf8
+=== test/askop.mara | what at askop.mara:21:15
+++ — calls join
+  declared  <root>/code/core.mara:68
+  join :: fun(a: [$N]$T, b: []T) -> [N]T
+
+  name ++ "file"   : [64]utf8
+  full := name ++ "file"
+=== test/askop.mara | what at askop.mara:22:20
++ — calls vec_plus
+  declared  askop.mara:14
+  vec_plus :: fun(a: Vec, b: Vec) -> Vec
+
+  Vec(){x = 1} + Vec(){y = 2}   : Vec
+  v := Vec(){x = 1} + Vec(){y = 2}
+=== test/askop.mara | what at askop.mara:23:4
++= — calls vec_plus
+  declared  askop.mara:14
+  vec_plus :: fun(a: Vec, b: Vec) -> Vec
+
+  v += Vec(){x = 3}
+=== test/askop.mara | what at askop.mara:24:15
+== — calls slice_equal
+  declared  <root>/code/core.mara:27
+  slice_equal :: fun(a: []$T, b: []$T) -> bool
+
+  full == "dir/file"   : bool
+  same := full == "dir/file"
+=== test/askop.mara | what at askop.mara:25:13
+in — calls includes
+  declared  <root>/code/core.mara:91
+  includes :: fun(items: []$T, x: $U) -> bool
+
+  'd' in full   : bool
+  has := 'd' in full
+=== test/askop.mara | what at askop.mara:15:23
++
+
+  a.x + b.x   : i64
+  x = a.x + b.x
+  {x = a.x + b.x, y = a.y + b.y}
+  Vec(){x = a.x + b.x, y = a.y + b.y}   : Vec
+  return Vec(){x = a.x + b.x, y = a.y + b.y}
 === Pounce | Camera.view_and_projections
 Camera.view_and_projections — fun  camera.mara:25   (module camera)
 

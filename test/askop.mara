@@ -1,0 +1,27 @@
+module askop
+
+// `what at` an operator an `overload` gives a meaning: the function it calls.
+
+use mara.core
+
+Vec :: struct {
+	x: i64
+	y: i64
+}
+
+overload + vec_add
+vec_add :: dispatch{ vec_plus }
+vec_plus :: fun(a: Vec, b: Vec) -> Vec {
+	return Vec(){x = a.x + b.x, y = a.y + b.y}
+}
+
+main :: fun() {
+	name : [64]utf8
+	&name ++ "dir" ++ "/"
+	full := name ++ "file"
+	v := Vec(){x = 1} + Vec(){y = 2}
+	v += Vec(){x = 3}
+	same := full == "dir/file"
+	has := 'd' in full
+	print(full, v, same, has)
+}

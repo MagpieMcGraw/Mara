@@ -225,6 +225,16 @@ test/askcando.mara | what at askcando.mara:21:2
 test/askcando.mara | what at askcando.mara:22:2
 test/askcando.mara | what at askcando.mara:23:2
 
+# An operator an `overload` gives a meaning: the function it calls (`x op= v`
+# too); a number's says none.
+test/askop.mara | what at askop.mara:20:8
+test/askop.mara | what at askop.mara:21:15
+test/askop.mara | what at askop.mara:22:20
+test/askop.mara | what at askop.mara:23:4
+test/askop.mara | what at askop.mara:24:15
+test/askop.mara | what at askop.mara:25:13
+test/askop.mara | what at askop.mara:15:23
+
 # What a scope defines is that scope's: a fun in a struct's body is asked for
 # through the struct, as code names it, and by itself is a miss that says where
 # it is.

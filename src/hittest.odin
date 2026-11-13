@@ -610,19 +610,17 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
     written := span_text(p.src.source, token_span(p.tokens[p.tok_i]))
     fmt.sbprint(&sb, written)
     if refers { fmt.sbprintf(&sb, " — %s", ref_kind_word(r.kind)) }
+    // (An operator an `overload` gives a meaning: the function it calls.)
+    calls := hit_op_calls(t, a, hits, p.at) if !refers else nil
+    for decl, i in calls { fmt.sbprintf(&sb, "%s%s", " — calls " if i == 0 else ", ", token_text(build_tokens[decl])) }
     if own_type != "" { fmt.sbprintf(&sb, " : %s", own_type) }
     fmt.sbprint(&sb, "\n")
+    for decl in calls { hit_declared(&sb, t, decl) }
     if refers {
         if r.decl == 0 {
             fmt.sbprint(&sb, "  built into the compiler\n")
         } else {
-            fmt.sbprintf(&sb, "  declared  %s\n", ask_loc(token_span(build_tokens[r.decl])))
-            // (A definition's first line: a fun's signature, a struct's params.)
-            if def := tree_define_at(t, r.decl); def != 0 {
-                first := span_text(source_of(build_tokens[r.decl]), tree_span(t, def))
-                first = strings.trim_suffix(strings.trim_suffix(first, " …"), " {")
-                fmt.sbprintf(&sb, "  %s\n", first)
-            }
+            hit_declared(&sb, t, r.decl)
         }
         // (A type's name: what a value of it can do.)
         if checked != nil && r.kind == .Type {
@@ -669,6 +667,38 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
         if shown == 8 { break }
     }
     return strings.to_string(sb), true
+}
+
+// Where decl is declared, and its definition's first line: a fun's signature, a
+// struct's params.
+@(private="file")
+hit_declared :: proc(sb: ^strings.Builder, t: ^Tree, decl: Token_Id) {
+    fmt.sbprintf(sb, "  declared  %s\n", ask_loc(token_span(build_tokens[decl])))
+    if def := tree_define_at(t, decl); def != 0 {
+        first := span_text(source_of(build_tokens[decl]), tree_span(t, def))
+        first = strings.trim_suffix(strings.trim_suffix(first, " …"), " {")
+        fmt.sbprintf(sb, "  %s\n", first)
+    }
+}
+
+// The functions the operator at token `at` calls — an `overload`'s members the
+// checker picked for it, by their declarations, each once (in a generic's body
+// each instance picks its own).
+@(private="file")
+hit_op_calls :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int) -> []Token_Id {
+    out := make([dynamic]Token_Id, context.temp_allocator)
+    #reverse for n in hits {
+        op := t.main[n]
+        if t.tag[n] == .Compound { op = Token_Id(tree_rec(t, t.b[n], 2)[0]) }   // (`x op= v`, kept on the statement)
+        if int(op) != at { continue }
+        for inst, i in a.instances {
+            if n < inst.lo || n > inst.hi { continue }
+            ts := a.callees[annot_key(Instance_Id(i), n)] or_else nil
+            if ts != nil && ts.decl != 0 && !slice.contains(out[:], ts.decl) { append(&out, ts.decl) }
+        }
+        if len(out) > 0 { break }
+    }
+    return out[:]
 }
 
 // --- variants ------------------------------------------------------------------
