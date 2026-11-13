@@ -24,8 +24,8 @@ import "core:strings"
 // a struct's field, a fun's param or result, what's written through a pointer
 // of a type, a signature's result for calls through fun values. A call
 // through a fun value giving void makes the param so of every fun used as a
-// value of its signature; a fun value handed to C, every param of it that can
-// be void (C may call it with anything). A code reads some facts and makes
+// value of its signature; a fun value handed to C or a fun `#expose`d, every
+// param of it that can be void (C may call it with anything). A code reads some facts and makes
 // some void; the codes are run until no fact changes (a code again when a
 // fact it read did), then once more to report.
 //
@@ -195,6 +195,9 @@ void_summarize :: proc(vf: ^Void_Facts, g: ^Program_Graph, ci: int, sm: ^Void_Su
     for i in 0 ..< len(g.consts) {
         id := CONST + Node_Id(i)
         if graph_name(g, id) == "void" && void_is_value(graph_type(g, id)) { sm.sources = true }
+    }
+    if c.fun.kind == .Fun && c.fun.is_exposed {
+        void_raise_params(&c, c.fun, fmt.tprintf("'%s' is exposed (#expose), so C can call it with void", void_fun_name(c.fun)))
     }
     n := 0
     for id := Node_Id(1); id <= g.end; id += 1 {

@@ -1,0 +1,20 @@
+module void_expose_neg
+
+//@ expect-fail: 'node_x' is exposed (#expose), so C can call it with void
+
+// A fun `#expose`d (a DLL's): C may call it with anything, so a read through
+// a pointer param needs a test. (Only checked: the error stops it first.)
+
+Node :: struct {
+	x: i64
+	next: ^Node
+}
+
+#expose
+node_x :: fun(n: ^Node) -> i64 { return n.x }
+
+#expose
+node_x_or :: fun(n: ^Node, or_else: i64) -> i64 {
+	if n == void do return or_else
+	return n.x
+}
