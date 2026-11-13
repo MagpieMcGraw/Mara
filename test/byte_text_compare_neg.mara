@@ -1,0 +1,15 @@
+module byte_text_compare_neg
+//@ expect-fail: cannot compare byte with utf8
+
+// A byte beside a character that's a value, not written there, is still two
+// types: only a character literal is a byte's value.
+
+use mara.core
+
+main :: fun() {
+	data : [8]byte
+	&data ++ "ab"
+	text := "ab"
+	c := text[0]
+	print(data[0] == c)
+}

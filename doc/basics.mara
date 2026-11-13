@@ -843,6 +843,9 @@ example_f64 :: fun() {
 // a byte buffer goes in as its bytes, and a value read from one comes out of
 // them. A byte isn't a number either, but an int literal from 0 to 255
 // stands for one where a byte goes: `b == 0x7f`, `[1, 0, 0, 0]` into bytes.
+// A character written beside a byte stands for one too, `b == 'R'`, and a
+// fun that takes text takes bytes as they are: file contents are searched
+// and compared without being named text first.
 example_utf8 :: fun() {
 	c := 'A'
 	print(c, i64(c))                       // A 65
@@ -854,6 +857,7 @@ example_utf8 :: fun() {
 	print(code)                            // 105, the code of 'i'
 	magic : [4!]byte = [0x52, 0x49, 0x46, 0x46]   // R I F F
 	print(magic[0] == 0x52)                // true
+	print(magic[0] == 'R', magic[1] >= 'A') // true true
 }
 
 // `from_text`: an enum's variant from its name as text — `Mode.from_text(s)`, for command words and settings.

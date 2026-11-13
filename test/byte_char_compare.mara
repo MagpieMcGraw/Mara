@@ -1,0 +1,31 @@
+module byte_char_compare
+//@ expect-output: 2 3 1 1
+//@ expect-output: true false
+
+// A character written beside a byte is that byte's value: raw bytes are
+// looked through for a newline, a digit, without being named text first.
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic(1 * MB)
+
+main :: fun() {
+	data : [32]byte
+	&data ++ "a1\nb22\n"
+	lines, digits, bs, others : i64 = 0, 0, 0, 0
+	for b in data {
+		if b == '\n' {
+			lines += 1
+		elif b >= '0' and b <= '9'
+			digits += 1
+		elif 'b' == b
+			bs += 1
+		elif b != 'a'
+			others += 1
+		}
+	}
+	print(lines, digits, bs, data.len - lines - digits - bs + others)
+	first := data[0]
+	print(first == ('a'), first > 'a')
+}

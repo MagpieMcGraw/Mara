@@ -475,8 +475,9 @@ is_byte_or_utf8 :: proc(t: Type) -> bool {
 
 // A comparison with a byte or utf8 on a side (utf8 is bytes for now — no
 // codepoint type yet — and orders as bytes do, unsigned). A number written
-// beside one is a byte's value, settled to it; otherwise the other side is
-// the same type.
+// beside one is a byte's value, settled to it; a character written beside a
+// byte is its value too (`b == 'x'`); otherwise the other side is the same
+// type.
 tc_byte_compare :: proc(k: ^TC, span: Span, op: Token_Kind, sides: [2]Tree_Id, types: [2]Type) {
     u := types[0] if is_byte_or_utf8(types[0]) else types[1]
     for t, i in types {
@@ -487,6 +488,8 @@ tc_byte_compare :: proc(k: ^TC, span: Span, op: Token_Kind, sides: [2]Tree_Id, t
             }
             tc_settle(k, sides[i], u)
         } else if !types_equal(t, u) || !types_equal(u, t) {
+            written := k.t.tag[tc_unparen(k, sides[0])] == .Char || k.t.tag[tc_unparen(k, sides[1])] == .Char
+            if written && is_byte_or_utf8(t) { continue }
             tc_error(k, span, TYPE_CANNOT_COMPARE_USING, type_name(solidify_type(types[0])), type_name(solidify_type(types[1])), op_str(op))
             return
         }
