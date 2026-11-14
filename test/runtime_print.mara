@@ -1,0 +1,60 @@
+module runtime_print
+//@ expect-output: 0 1.5 -2.25 3.14159 1e+06 1.23457e+08 1e-05 2.5e-310 inf
+//@ expect-output: 3.14159265 123456789 1e-05 1.79769313486232e+308
+//@ expect-output: -9223372036854775808 18446744073709551615 000000007 x
+//@ expect-output: made at 7, passed at 8 and 9: 3 places
+
+// mara.runtime, the compiler's runtime written in Mara, called here as any
+// module: its printers give what print gives (C's %g at 6 digits, and at
+// 15), and an err's trace keeps where it was made and passed on.
+
+use mara.core
+use mara.memory
+use mara.runtime
+
+#allocator Arena_Basic(8 * MB)
+
+main :: fun() {
+	rt : Runtime
+	six : [16]f64
+	&six ++ 0.0 ++ 1.5 ++ -2.25 ++ 3.14159265 ++ 1000000.0 ++ 123456789.0 ++ 0.00001 ++ 2.5e-310
+	for f in six {
+		float_out(&rt, f, 6, 0)
+		put(&rt, " ", 0)
+	}
+	big : f64 = 1.7976931348623157e308
+	float_out(&rt, big * 10, 6, 0)
+	put(&rt, "\n", 0)
+	fifteen : [8]f64
+	&fifteen ++ 3.14159265 ++ 123456789.0 ++ 0.00001 ++ big
+	for f, i in fifteen {
+		if i > 0 do put(&rt, " ", 0)
+		float_out(&rt, f, 15, 0)
+	}
+	put(&rt, "\n", 0)
+	int_out(&rt, -9223372036854775807 - 1, 0)
+	put(&rt, " ", 0)
+	uint_out(&rt, 18446744073709551615, 0, 0)
+	put(&rt, " ", 0)
+	uint_out(&rt, 7, 9, 0)
+	put(&rt, " ", 0)
+	char_out(&rt, i32('x'), 0)
+	cstr_out(&rt, void, 0)
+	put(&rt, "\n", 0)
+
+	e := err_made(&rt, 5, 7)
+	e = err_passed(&rt, e, 8)
+	e = err_passed(&rt, e, 9)
+	sites : [SITES!]u32
+	n := err_trace(&rt, e, &sites)
+	put(&rt, "made at ", 0)
+	uint_out(&rt, u64(err_where(&rt, e, 0, 0)), 0, 0)
+	put(&rt, ", passed at ", 0)
+	uint_out(&rt, u64(sites[1]), 0, 0)
+	put(&rt, " and ", 0)
+	uint_out(&rt, u64(sites[2]), 0, 0)
+	put(&rt, ": ", 0)
+	int_out(&rt, n, 0)
+	put(&rt, " places\n", 0)
+	flush(&rt)
+}

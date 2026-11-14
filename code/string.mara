@@ -480,14 +480,15 @@ int_text :: fun(n: i64) -> str64 {
 // many digits after the point: 16.6667 with 2 is "16.67", 2.0 with 1 is "2.0".
 // A number too long for a str64 that way is written as print shows it. It
 // rounds to the nearest digit, and an exact half to the even one, as print
-// does: 2.5 with 0 is "2". A bare literal fits both kinds of float, so give
+// does: 2.5 with 0 is "2". `significant` is how many digits print's form
+// shows, 6 unless said. A bare literal fits both kinds of float, so give
 // it one: `float_text(f64(2.5))`.
 float_text :: dispatch {
 	float_text_f32
 	float_text_f64
 }
 float_text_f32 :: fun(x: f32, decimals: i64 = -1) -> str64 { return float_text_f64(f64(x), decimals) }
-float_text_f64 :: fun(x: f64, decimals: i64 = -1) -> str64 {
+float_text_f64 :: fun(x: f64, decimals: i64 = -1, significant: i64 = 6) -> str64 {
 	bits_of :: fun(v: f64) -> u64 { @llvm.bitcast.f64 }
 	// (A digit of the number the limbs spell, 9 digits to a limb, biggest
 	// first. Off either end it's 0.)
@@ -624,18 +625,18 @@ float_text_f64 :: fun(x: f64, decimals: i64 = -1) -> str64 {
 		return out
 	}
 
-	kept := rounded(digits, lead, lead + 6)
+	kept := rounded(digits, lead, lead + significant)
 	start := 1
 	if kept[0] != '0' {
 		start = 0
 		exponent += 1
 	}
-	shown := kept[start:start + 6]
+	shown := kept[start:start + significant]
 	n := shown.len
 	for n > 1 and shown[n - 1] == '0' {
 		n -= 1
 	}
-	if exponent < -4 or exponent >= 6 {
+	if exponent < -4 or exponent >= significant {
 		&out ++ shown[0]
 		if n > 1 {
 			&out ++ '.'

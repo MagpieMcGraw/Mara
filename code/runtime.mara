@@ -1,0 +1,247 @@
+module mara.runtime
+
+// The compiler's own runtime, in Mara: what a program's code calls for a
+// print, its end, an err's trace and a failure's report — with no C library
+// under it, only Windows' own functions. Nothing here is called by a program
+// by name: the compiler puts the calls in.
+//
+// What has to last from one call to the next is the Runtime. A program has
+// one, set aside by the compiler, all zero when the program starts; every
+// fun here is handed it first.
+
+use mara.core
+use mara.os
+use mara.string
+use mara.atomic
+
+#if #windows {
+
+OUT_ROOM   :: 4 * KB    // what's printed and not yet written
+CRASH_ROOM :: 64 * KB   // a failure's report, for crash.txt
+TRACES     :: 64        // the newest errs that keep their trace
+SITES      :: 16        // the places a trace holds
+
+// An err's trace: where it was made, then each place that passed it on, as
+// atoms. `id` says whose it is: 0, nobody's yet.
+Trace :: struct {
+	id:    u32
+	len:   u32
+	sites: [SITES!]u32
+}
+
+Runtime :: struct {
+	out:      [OUT_ROOM]byte      // printed, not yet written to the program's output
+	console:  i32                 // the output: 0 not looked at yet, 1 a console (written at each line's end), 2 a file or a pipe
+	crash_on: bool                // a failure's report is being made: what's printed with `tee` is kept for crash.txt too
+	crash:    [CRASH_ROOM]byte
+	last_id:  u32                 // the last trace's id (counted by every thread: atomic)
+	traces:   [TRACES!]Trace
+}
+
+foreign static_lib "kernel32" {
+	fun ExitProcess(code: u32)
+	fun GetFileType(file: File_Id) -> u32
+	fun GetLocalTime(time: ^Local_Time)
+	fun GetCommandLineA() -> ^byte
+}
+
+// The date and time where the computer is, as Windows gives it (SYSTEMTIME).
+Local_Time :: struct {
+	year, month, weekday, day, hour, minute, second, millisecond: u16
+}
+
+STD_OUTPUT :: 0xFFFFFFF5   // (GetStdHandle's -11)
+
+// --- printing ----------------------------------------------------------------
+
+// What's waiting is written to the program's output.
+flush :: fun(rt: ^Runtime) {
+	if rt.out.len == 0 do return
+	_, _ := file_write(GetStdHandle(STD_OUTPUT), rt.out)
+	rt.out.len = 0
+}
+
+// Bytes printed: kept until there's a line of them for a console, or the
+// room is full for a file or a pipe. With `tee`, in a failure's report too.
+put :: fun(rt: ^Runtime, text: []byte, tee: i32) {
+	if text.len == 0 do return
+	if tee != 0 and rt.crash_on {
+		fits := rt.crash.cap - rt.crash.len
+		if text.len < fits do fits = text.len
+		&rt.crash ++ text[0:fits]
+	}
+	if text.len > rt.out.cap - rt.out.len do flush(rt)
+	if text.len > rt.out.cap {
+		_, _ := file_write(GetStdHandle(STD_OUTPUT), text)
+		return
+	}
+	&rt.out ++ text
+	if rt.console == 0 {
+		rt.console = 2
+		if GetFileType(GetStdHandle(STD_OUTPUT)) == 2 do rt.console = 1
+	}
+	if rt.console == 1 and text[text.len - 1] == '\n' do flush(rt)
+}
+
+// How long a C text is: up to its 0.
+cstr_len :: fun(rt: ^Runtime, text: ^byte) -> i64 {
+	if text == void do return 0
+	view : []byte = slice_from_ptr(text, 1 << 30)
+	n : i64 = 0
+	for view[n] != 0 do n += 1
+	return n
+}
+
+text_out :: fun(rt: ^Runtime, text: ^byte, n: i64, tee: i32) {
+	if n <= 0 or text == void do return
+	view : []byte = slice_from_ptr(text, n)
+	put(rt, view, tee)
+}
+
+cstr_out :: fun(rt: ^Runtime, text: ^byte, tee: i32) {
+	text_out(rt, text, cstr_len(rt, text), tee)
+}
+
+char_out :: fun(rt: ^Runtime, c: i32, tee: i32) {
+	one : [1]byte
+	&one ++ u8(c & 0xFF)
+	put(rt, one, tee)
+}
+
+// A whole number's digits; `pad`: at least that many, zeros before.
+uint_out :: fun(rt: ^Runtime, v: u64, pad: i32, tee: i32) {
+	backwards : [40]byte
+	rest := v
+	for true {
+		&backwards ++ u8(u64('0') + rest % 10)
+		rest /= 10
+		if rest == 0 do break
+	}
+	for backwards.len < i64(pad) do &backwards ++ u8('0')
+	digits : [40]byte
+	for i in 0:backwards.len do &digits ++ backwards[backwards.len - 1 - i]
+	put(rt, digits, tee)
+}
+
+int_out :: fun(rt: ^Runtime, v: i64, tee: i32) {
+	put(rt, int_text(v), tee)
+}
+
+// A float as print shows it: `digits` of them at most (6, C's %g).
+float_out :: fun(rt: ^Runtime, v: f64, digits: i32, tee: i32) {
+	put(rt, float_text_f64(v, -1, i64(digits)), tee)
+}
+
+// A pointer: its 16 hex digits.
+ptr_out :: fun(rt: ^Runtime, p: ^byte, tee: i32) {
+	HEX :: "0123456789ABCDEF"
+	v := u64(p)
+	digits : [16]byte
+	for i in 0:16 {
+		&digits ++ u8(HEX[i64((v >> u64(60 - 4 * i)) & 0xF)])
+	}
+	put(rt, digits, tee)
+}
+
+// The program ends: what's printed is written first.
+exit :: fun(rt: ^Runtime, code: i32) {
+	flush(rt)
+	ExitProcess(u32(code))
+}
+
+// --- errs' traces --------------------------------------------------------------
+
+// The trace an err's id names, while its place still holds it: its place in
+// the table, -1 for none.
+trace_of :: fun(rt: ^Runtime, e: u64) -> i64 {
+	id := u32(e >> 32)
+	if id == 0 do return -1
+	at := i64(id % TRACES)
+	if rt.traces[at].id != id do return -1
+	return at
+}
+
+// An err of kind `kind` made at `site`: a new trace, the err its kind with
+// the trace's id above it.
+err_made :: fun(rt: ^Runtime, kind: u64, site: u32) -> u64 {
+	id := atomic_add(&rt.last_id, 1) + 1
+	if id == 0 do id = atomic_add(&rt.last_id, 1) + 1   // (0 is no trace)
+	t := &rt.traces[i64(id % TRACES)]
+	t.id = id
+	t.len = 1
+	t.sites[0] = site
+	return (kind & 0xFFFFFFFF) | (u64(id) << 32)
+}
+
+// An err passed on at `site`: the site added to its trace (past its room,
+// the last one replaced). Ok passes as it is; a failure with no trace starts
+// one here.
+err_passed :: fun(rt: ^Runtime, e: u64, site: u32) -> u64 {
+	if e & 0xFFFFFFFF == 0 do return e
+	if u32(e >> 32) == 0 do return err_made(rt, e, site)
+	at := trace_of(rt, e)
+	if at < 0 do return e   // (its trace is gone: newer errs have its place)
+	t := &rt.traces[at]
+	if t.len < SITES {
+		t.sites[i64(t.len)] = site
+		t.len += 1
+	else
+		t.sites[SITES - 1] = site
+	}
+	return e
+}
+
+// Where an err was made: its trace's first site — `none` for an err with no
+// trace, `gone` for one whose trace newer errs took the place of.
+err_where :: fun(rt: ^Runtime, e: u64, none: u32, gone: u32) -> u32 {
+	if u32(e >> 32) == 0 do return none
+	at := trace_of(rt, e)
+	if at < 0 do return gone
+	return rt.traces[at].sites[0]
+}
+
+// An err's trace's sites copied to `out` (room for SITES): how many.
+err_trace :: fun(rt: ^Runtime, e: u64, out: ^[SITES!]u32) -> i64 {
+	at := trace_of(rt, e)
+	if at < 0 or out == void do return 0
+	t := &rt.traces[at]
+	for i in 0:i64(t.len) do out[i] = t.sites[i]
+	return i64(t.len)
+}
+
+// An entry of the program's table of text: an atom's bytes and how many.
+Atom :: struct {
+	data: ^byte
+	len:  i64
+}
+
+// main's err, as main returns it: Ok gives the exit code 0. A failure is
+// said — "main failed:", its name, then each place of its trace, looked up
+// in `atoms` — and gives 1.
+main_err :: fun(rt: ^Runtime, e: u64, name: ^byte, atoms: ^byte, count: i64) -> i64 {
+	if e & 0xFFFFFFFF == 0 do return 0
+	put(rt, "main failed: ", 0)
+	cstr_out(rt, name, 0)
+	put(rt, "\n", 0)
+	at := trace_of(rt, e)
+	if at < 0 {
+		if u32(e >> 32) != 0 do put(rt, "  (its trace is gone: newer errs took its place)\n", 0)
+		return 1
+	}
+	t := &rt.traces[at]
+	table : []byte = slice_from_ptr(atoms, count * size_of(Atom))
+	for i in 0:i64(t.len) {
+		put(rt, "  at ", 0)
+		site := i64(t.sites[i])
+		if site < count {
+			atom := let(Atom, &table[site * size_of(Atom)])
+			text_out(rt, atom.data, atom.len, 0)
+		else
+			put(rt, "?", 0)
+		}
+		put(rt, "\n", 0)
+	}
+	return 1
+}
+
+}
