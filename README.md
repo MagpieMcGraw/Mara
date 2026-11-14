@@ -16,13 +16,9 @@ main :: () {
 
 And real code looks like that
 
-![shader loading](readme/shader.png)
+![shader loading](readme/load.png)
 
 Main feature of Mara is stack-like memory allocation. Everything in Mara lives until the end of scope. You can get data out of functions by returning it, or by passing in a block of memory and writing to it.
-
-NEW! Mara now has error handling! Define an error enum, and return it when you have an error. If you're calling a function that can error, just slap a question mark on it and you're good to go. You can check the error value if you want, or you can print it, and you'll see the first error that occured.
-
-![file system error handling](readme/file_error.png)
 
 ## Building the compiler
 
@@ -37,9 +33,7 @@ odin build src -out:Mara.exe
 
 Mara uses clang and lld to build it's executables. For the windows build, I placed these in the tools folder so you don't have to download LLVM. For the linux build, I recommend you download them via the package manager.
 
-On Windows, Mara compiles to x86-64 machine code itself and uses lld only to link. `mara build -llvm` compiles through clang instead, as `-release` (optimized) and web builds do.
-
-I also recommend grabbing SDL3-devel if you want to build the test project.
+On windows, Mara needs needs MSVC C++ build tools, and the Windows SDK. You can download these from Microsoft.
 
 ## Using Mara
 
