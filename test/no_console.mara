@@ -1,0 +1,37 @@
+module no_console
+//@ build-flags: -no console
+//@ expect-output: no console window, and print still reaches a pipe
+
+// `-no console`: on Windows the program is of the windows subsystem, so
+// starting it opens no console window — read here from its own file's
+// header (2: windows; 3: console). What it prints still goes where its
+// output is sent on, as the test's is.
+
+use mara.core
+use mara.files
+use mara.paths
+use mara.memory
+
+#allocator Arena_Basic(8 * MB)
+
+// The subsystem a Windows program's file says it's of.
+subsystem :: fun(path: []utf8) -> i64, err {
+	bytes := file_map(path)?
+	defer file_unmap(bytes)
+	pe : u32 = bytes[0x3C]           // where the PE header is
+	kind : u16 = bytes[i64(pe) + 0x5C]
+	return i64(kind)
+}
+
+main :: fun() -> err {
+	windows := false
+	#if #windows { windows = true }
+	if windows {
+		exe := exe_path()?
+		if subsystem(exe)? != 2 {
+			print("the program is a console program")
+			return
+		}
+	}
+	print("no console window, and print still reaches a pipe")
+}

@@ -13,4 +13,4 @@ build_file :: Build(){
 	llvm = true
 }
 
-other :: Build(){module_name = "bf_other", out = "other"}
+other :: Build(){module_name = "bf_other", out = "other", console = false}

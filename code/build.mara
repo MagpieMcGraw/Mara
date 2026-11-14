@@ -40,4 +40,9 @@ Build :: struct {
 	release: bool = false
 	// Built by LLVM, not the x86 backend, as `-llvm` does.
 	llvm: bool = false
+	// false: a Windows program that opens no console window with it, as
+	// `-no console` builds one — a program with a window of its own. What
+	// it prints is seen only where its output is sent on (`game > log.txt`);
+	// a crash is still written to crash.txt beside it.
+	console: bool = true
 }

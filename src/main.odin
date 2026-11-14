@@ -789,7 +789,7 @@ ensure_runtime :: proc(clang_path, compiler_dir, name: string) -> (string, bool)
     return o_path, true
 }
 
-link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false, profile: bool = false, debug: bool = false, profile_memory := false, icon: []u8 = nil) -> bool {
+link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false, profile: bool = false, debug: bool = false, profile_memory := false, icon: []u8 = nil, no_console := false) -> bool {
     lf := build_link_flags(checked)
     if !lf.ok { return false }
 
@@ -965,6 +965,13 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
             strings.write_string(&b, manifest_path)
             strings.write_byte(&b, '"')
         }
+    }
+    // `-no console`: a Windows program of the windows subsystem — started, it
+    // opens no console window — its entry still the C runtime's that calls
+    // main (that subsystem's own would look for WinMain). Elsewhere a program
+    // opens none anyway.
+    when ODIN_OS == .Windows {
+        if no_console && !shared { strings.write_string(&b, " -Xlinker /subsystem:windows -Xlinker /entry:mainCRTStartup") }
     }
     // Its icon (build.mara's): the resources icon_resource made of it, in a
     // .res file beside the program while it's linked. lld-link takes a .res
@@ -1221,6 +1228,7 @@ CLI_Args :: struct {
     release:      bool,    // -release — pass -O3 to clang for an optimized build (LLVM's: the x86 backend doesn't optimize)
     llvm:         bool,    // -llvm — the LLVM backend (clang compiles the IR) instead of the x86 one (x86.odin)
     no_assert:    bool,    // -no assert — compile asserts out (they stay on in -release)
+    no_console:   bool,    // -no console — a Windows program that opens no console window (build.mara's `console = false`)
     profile:      bool,    // -profile time — time the program's funs, written to profile.txt at exit (runtime/mara_prof.c)
     profile_memory: bool,  // -profile memory — how full each partial array and arena gets, written to memory.txt at exit (runtime/mara_mem.c)
     ok:           bool,
@@ -1270,7 +1278,7 @@ CLI_Args :: struct {
     lsp:          bool,
 }
 
-USAGE :: "Usage: mara build [module|build] [-web] [-shared] [-release] [-llvm] [-profile time|memory] [-no assert]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
+USAGE :: "Usage: mara build [module|build] [-web] [-shared] [-release] [-llvm] [-profile time|memory] [-no assert] [-no console]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
 PROFILE_USAGE :: `-profile needs what to measure:
     -profile time     how long each fun takes: profile.txt, next to the program, when it ends
     -profile memory   how full each partial array and arena gets: memory.txt`
@@ -1582,8 +1590,10 @@ parse_args :: proc() -> CLI_Args {
             switch feature {
             case "assert":
                 args.no_assert = true
+            case "console":
+                args.no_console = true
             case:
-                fmt.printf("unknown feature `-no %s` — features that can be disabled: assert\n", feature)
+                fmt.printf("unknown feature `-no %s` — features that can be disabled: assert, console\n", feature)
                 return args
             }
             i += 2
@@ -1747,6 +1757,7 @@ parse_args :: proc() -> CLI_Args {
         args.pkg_name, args.search_dirs, args.out = spec.module, spec.dirs[:], spec.out
         args.release ||= spec.release
         args.llvm ||= spec.llvm
+        args.no_console ||= spec.no_console
         // (Its icon: read now, a wrong one said before the build, not after.)
         if spec.icon != "" && subcmd == "build" {
             ico, err := os.read_entire_file_from_path(spec.icon, context.allocator)
@@ -2013,7 +2024,7 @@ main :: proc() {
     if args.web {
         if !link_web(ll_paths, out_name, checked) { os.exit(1) }
     } else {
-        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release, args.profile, debug, args.profile_memory, args.icon) { os.exit(1) }
+        if !link_native(ll_paths, out_name, checked, args.compiler_dir, pkg_shared, args.release, args.profile, debug, args.profile_memory, args.icon, args.no_console) { os.exit(1) }
     }
 
     perf_timer_end(&perf)
