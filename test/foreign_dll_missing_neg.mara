@@ -1,0 +1,15 @@
+module foreign_dll_missing_neg
+//@ expect-fail
+
+// A foreign block's library that is nowhere: no DLL of that name in
+// Windows' own folder or the build's, no library file beside the program.
+
+use mara.core
+
+foreign static_lib "no_such_library_anywhere" {
+	fun answer() -> i64
+}
+
+main :: fun() {
+	print(answer())
+}

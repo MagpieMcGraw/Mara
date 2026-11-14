@@ -7,6 +7,7 @@ import "core:strconv"
 import "core:strings"
 import "core:c/libc"
 import "core:path/filepath"
+import "core:slice"
 import "core:thread"
 import "core:time"
 import os_old "core:os/old"
@@ -498,7 +499,104 @@ translate_system_lib :: proc(name: string) -> string {
     return name
 }
 
-build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_Flags {
+// The functions a DLL has, by name — read from the file itself, its export
+// table (a PE file's: its headers, its sections, the table's names). found:
+// the file is there and is one.
+dll_exports :: proc(path: string) -> (names: map[string]bool, found: bool) {
+    data, err := os.read_entire_file(path, context.temp_allocator)
+    if err != nil || len(data) < 0x40 { return }
+    u16_at :: proc(d: []byte, at: int) -> int { return int(d[at]) | int(d[at + 1]) << 8 if at + 2 <= len(d) else 0 }
+    u32_at :: proc(d: []byte, at: int) -> int { return u16_at(d, at) | u16_at(d, at + 2) << 16 if at + 4 <= len(d) else 0 }
+    pe := u32_at(data, 0x3C)
+    if pe + 24 > len(data) || string(data[pe:pe + 4]) != "PE\x00\x00" { return }
+    sections, opt_size := u16_at(data, pe + 6), u16_at(data, pe + 20)
+    opt := pe + 24
+    dirs := opt + (112 if u16_at(data, opt) == 0x20B else 96)   // (PE32+, else PE32)
+    table := opt + opt_size
+    // (A place in the loaded file, as a place in the file on disk.)
+    at_file :: proc(d: []byte, table, sections, rva: int) -> int {
+        for i in 0 ..< sections {
+            s := table + i * 40
+            size, start := u32_at(d, s + 8), u32_at(d, s + 12)
+            if rva >= start && rva < start + max(size, u32_at(d, s + 16)) { return rva - start + u32_at(d, s + 20) }
+        }
+        return -1
+    }
+    exports := at_file(data, table, sections, u32_at(data, dirs))
+    if exports < 0 { return nil, true }   // (it exports nothing)
+    count := u32_at(data, exports + 24)
+    list := at_file(data, table, sections, u32_at(data, exports + 32))
+    names = make(map[string]bool, count, context.temp_allocator)
+    for i in 0 ..< count {
+        at := at_file(data, table, sections, u32_at(data, list + i * 4))
+        if at < 0 { continue }
+        end := at
+        for end < len(data) && data[end] != 0 { end += 1 }
+        names[string(data[at:end])] = true
+    }
+    return names, true
+}
+
+// A system DLL's import library, made here: `<lib>.dll` has every C function
+// the program's foreign blocks declare in `lib` (kernel32's, ws2_32's,
+// opengl32's) — all a link needs to know to call them. Written in the build's
+// folder as `<lib>.def`, the names, and made of it by the bundled lld-link —
+// again only when the names change. No library of the Windows SDK's is read
+// for the program's own calls. Each name is looked for in the DLL itself —
+// Windows' own in its System32, else one in the folder the build runs in —
+// so a name it doesn't have is an error here, where its foreign block is,
+// not when the program starts. The library's path; false: it couldn't be
+// made, said.
+import_lib_made :: proc(checked: ^Checked_Program, lib, build_dir, compiler_dir: string) -> (string, bool) {
+    names := make([dynamic]string, context.temp_allocator)
+    declared := make(map[string]^Type_Scope, allocator = context.temp_allocator)
+    for _, cs in checked.functions {
+        if fo, is_foreign := cs.origin.(Origin_Foreign); is_foreign && fo.library == lib && fo.link_name not_in declared {
+            append(&names, fo.link_name)
+            declared[fo.link_name] = cs
+        }
+    }
+    slice.sort(names[:])
+    b := strings.builder_make(context.temp_allocator)
+    fmt.sbprintf(&b, "LIBRARY %s.dll\nEXPORTS\n", lib)
+    for name in names { fmt.sbprintf(&b, "    %s\n", name) }
+    def := strings.to_string(b)
+    def_path, _ := filepath.join({build_dir, strings.concatenate({lib, ".def"})})
+    lib_path, _ := filepath.join({build_dir, strings.concatenate({lib, ".imports.lib"})})
+    if had, err := os.read_entire_file(def_path, context.temp_allocator); err == nil && string(had) == def && os.exists(lib_path) {
+        return lib_path, true
+    }
+    // (New names, or the first build: each looked for in the DLL.)
+    dll := strings.concatenate({lib, ".dll"}, context.temp_allocator)
+    system, _ := filepath.join({os.get_env("SystemRoot", context.temp_allocator), "System32", dll}, context.temp_allocator)
+    has, found := dll_exports(system)
+    if !found { has, found = dll_exports(dll) }
+    if !found {
+        fmt.printf("No %s to call: Windows has none (%s), and there's none in this folder. A foreign block names the library \"%s\".\n", dll, system, lib)
+        return "", false
+    }
+    missing := false
+    for name in names {
+        if name in has { continue }
+        fmt.printf("%s %s has no function %s.\n", span_loc(declared[name].body_span), dll, name)
+        missing = true
+    }
+    if missing { return "", false }
+    _ = os.make_directory(build_dir)
+    if os.write_entire_file(def_path, transmute([]byte)def) != nil {
+        fmt.printf("Couldn't write %s, the names %s.dll is called by.\n", def_path, lib)
+        return "", false
+    }
+    lld, _ := filepath.join({compiler_dir, "tools", "lld-link.exe"})
+    cmd := fmt.tprintf(`""%s" /nologo /machine:x64 "/def:%s" "/out:%s""`, lld, def_path, lib_path)
+    if libc.system(strings.clone_to_cstring(cmd, context.temp_allocator)) != 0 || !os.exists(lib_path) {
+        fmt.printf("lld-link couldn't make %s.dll's import library from %s.\n", lib, def_path)
+        return "", false
+    }
+    return lib_path, true
+}
+
+build_link_flags :: proc(checked: ^Checked_Program, web: bool = false, build_dir := "") -> Link_Flags {
     lib_flags_b:    strings.Builder
     extra_inputs_b: strings.Builder
     seen_libs:      map[string]bool
@@ -640,7 +738,7 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
     native_libs:   [dynamic]string
     native_search: [dynamic]string
 
-    collect :: proc(libs: map[string]bool, seen: ^map[string]bool, src_b: ^strings.Builder, native_libs: ^[dynamic]string, compiler_dir: string) {
+    collect :: proc(checked: ^Checked_Program, libs: map[string]bool, seen: ^map[string]bool, src_b: ^strings.Builder, native_libs: ^[dynamic]string, compiler_dir, build_dir: string) -> bool {
         for lib in libs {
             if lib in seen^ { continue }
             seen^[lib] = true
@@ -669,17 +767,28 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false) -> Link_F
                 strings.write_string(src_b, " ")
                 strings.write_string(src_b, bundled)
             } else {
-                // Bare name with no bundled match — let the linker find it in
-                // system paths via `-l<name>` (e.g. SDL3, kernel32). Translate
-                // well-known cross-platform libs whose name differs per OS
-                // (e.g. Windows "opengl32" -> Linux "GL").
-                append(native_libs, translate_system_lib(lib))
+                // Bare name with no bundled match: a system library. On
+                // Windows its DLL, called through an import library made
+                // here of the names declared (import_lib_made). Elsewhere
+                // the linker finds it in system paths via `-l<name>`, a
+                // well-known one whose name differs per OS translated
+                // (Windows "opengl32" -> Linux "GL").
+                when ODIN_OS == .Windows {
+                    made, ok := import_lib_made(checked, lib, build_dir, compiler_dir)
+                    if !ok { return false }
+                    strings.write_string(src_b, ` "`)
+                    strings.write_string(src_b, made)
+                    strings.write_string(src_b, `"`)
+                } else {
+                    append(native_libs, translate_system_lib(lib))
+                }
             }
         }
+        return true
     }
 
     // Every foreign lib is static_lib now — hand them all to the linker.
-    collect(checked.foreign_libs, &seen_libs, &extra_inputs_b, &native_libs, compiler_dir)
+    if !collect(checked, checked.foreign_libs, &seen_libs, &extra_inputs_b, &native_libs, compiler_dir, build_dir) { return Link_Flags{} }
 
     // -L every bundled binding dir so `-l<name>` can find libs we didn't
     // resolve to an explicit path. Skip element 0 (code/ itself): anything
@@ -790,7 +899,9 @@ ensure_runtime :: proc(clang_path, compiler_dir, name: string) -> (string, bool)
 }
 
 link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false, profile: bool = false, debug: bool = false, profile_memory := false, icon: []u8 = nil, no_console := false) -> bool {
-    lf := build_link_flags(checked)
+    // (The build's folder: where its objects are.)
+    build_dir := filepath.dir(ll_paths[0]) if len(ll_paths) > 0 else "."
+    lf := build_link_flags(checked, build_dir = build_dir)
     if !lf.ok { return false }
 
     clang_path := clang_resolve_path(compiler_dir)

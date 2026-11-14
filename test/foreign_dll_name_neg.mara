@@ -1,0 +1,18 @@
+module foreign_dll_name_neg
+//@ expect-fail
+
+// A foreign block's name its DLL doesn't have: said when the program is
+// built, at the name — on Windows read from kernel32.dll itself ("has no
+// function"); elsewhere the linker's word for it.
+
+use mara.core
+
+foreign static_lib "kernel32" {
+	fun GetTickCount64() -> u64
+	fun GetTickCountNoSuchThing() -> u64
+}
+
+main :: fun() {
+	print(GetTickCount64() > 0)
+	if GetTickCount64() == 0 do print(GetTickCountNoSuchThing())
+}
