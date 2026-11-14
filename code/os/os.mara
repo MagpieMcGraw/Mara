@@ -190,6 +190,9 @@ thread_run :: fun(work: fun(^byte), data: ^byte, size: i64) -> ^byte { @llvm.mar
 
 // The clock and waiting. (Frame timers, and the rest of time, are mara.time's.)
 
+// compositor_wait's: no desktop compositor to wait for.
+Compositor_Error :: error { No_Compositor }
+
 
 // ---- Memory ----
 

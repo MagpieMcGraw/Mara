@@ -1005,6 +1005,17 @@ use mara.string
 		sleep_ns(i64(ms) * 1000000)
 	}
 
+	// Waits for the desktop compositor's next refresh, which shows what was
+	// swapped into windows before it. Called after each swap with vsync off,
+	// a window keeps the screen's pace with no frames queued (DwmFlush).
+	compositor_wait :: fun() -> err {
+		if DwmFlush() != 0 do return No_Compositor
+	}
+
+	foreign static_lib "dwmapi" {
+		fun DwmFlush() -> i32   // (0 when it waited)
+	}
+
 	foreign static_lib "kernel32" {
 		fun Sleep(ms: u32)
 		// Clocks and timers

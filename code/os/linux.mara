@@ -900,6 +900,12 @@ use mara.string
 		sleep_ns(i64(ms) * 1000000)
 	}
 
+	// Waits for the desktop compositor's next refresh: not on Linux yet (X11's
+	// compositors differ, and Wayland's wait is a window's), so No_Compositor.
+	compositor_wait :: fun() -> err {
+		return No_Compositor
+	}
+
 	// clock_gettime's and nanosleep's time.
 	Timespec :: struct {
 		seconds:     i64
