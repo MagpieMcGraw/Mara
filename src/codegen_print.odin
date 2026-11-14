@@ -153,14 +153,14 @@ assert_flush_printf :: proc(g: ^Codegen, msg: ^strings.Builder, args: ^[dynamic]
 // message lands in the journal as well as on stdout.
 emit_crash_journal_begin :: proc(g: ^Codegen) {
     if g.web { return }
-    ir_call(g, {}, IR_VOID, ir_global("__mara_crash_begin"))
+    rt_call(g, {}, IR_VOID, "crash_begin")
     g.tee = true
 }
 
 emit_crash_journal_end :: proc(g: ^Codegen) {
     if g.web { return }
     g.tee = false
-    ir_call(g, {}, IR_VOID, ir_global("__mara_crash_end"))
+    rt_call(g, {}, IR_VOID, "crash_end")
 }
 
 // A runtime failure: the journal opens, the message prints — `message`, a C
@@ -359,7 +359,7 @@ raw_print :: proc(name: string) -> (spec: string, ir: Ir_Type, ok: bool) {
 // runtime: printf's `%.*s` there, which stops at a 0; it takes an int, n narrowed.)
 emit_print_text :: proc(g: ^Codegen, data, n: Val) {
     if !g.web {
-        ir_call(g, {}, IR_VOID, ir_global("__mara_print_text"), {IR_PTR, data, {}}, {SLICE_LEN_IR, n, {}}, {IR_I32, ir_int(int(g.tee)), {}})
+        rt_call(g, {}, IR_VOID, "print_text", {IR_PTR, data, {}}, {SLICE_LEN_IR, n, {}}, {IR_I32, ir_int(int(g.tee)), {}})
         return
     }
     prec := fresh_tmp(g)

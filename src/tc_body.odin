@@ -1412,6 +1412,9 @@ tc_note_decl :: proc(k: ^TC, name: string, t: Type, span: Span, take: bool) {
 // Analysis alone runs no code.
 tc_storage_sizes :: proc(k: ^TC, decls: []TC_Decl_Note) {
     if k.c.analysis_only || k.table.has_scope_allocator || k.table.context_expected_at_runtime { return }
+    // (The runtime's Runtime is never constructed: the one there is is the
+    // program's own block, its room reserved in the exe — codegen_module.odin.)
+    if k.pkg == RUNTIME_MODULE { return }
     for d in decls {
         if !d.take && routes_to_arena(d.t) {
             tc_error(k, d.span, TYPE_VALUE_TOO_LARGE_STACK_BYTES, d.name, type_size(d.t))

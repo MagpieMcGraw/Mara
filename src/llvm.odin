@@ -3023,7 +3023,7 @@ llvm_main_err :: proc(e: ^Llvm, v: Val) -> Val {
     name, _ := emit_atom_text(g, id)
     count, code := fresh_tmp(g), fresh_tmp(g)
     emit_load_into(g, count, IR_I64, ir_global("__mara_atom_count"))
-    ir_call(g, code, IR_I64, ir_global("__mara_main_err"), {IR_I64, v, {}}, {IR_PTR, name, {}}, {IR_PTR, ir_global("__mara_atoms"), {}}, {IR_I64, count, {}})
+    rt_call(g, code, IR_I64, "main_err", {IR_I64, v, {}}, {IR_PTR, name, {}}, {IR_PTR, ir_global("__mara_atoms"), {}}, {IR_I64, count, {}})
     return code
 }
 
@@ -3066,7 +3066,7 @@ llvm_err_runtime :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Sc
             return true
         }
         r := fresh_tmp(g)
-        ir_call(g, r, IR_I64, ir_global("__mara_err_made" if which == .Made else "__mara_err_passed"), {IR_I64, v, {}}, {IR_I32, site, {}})
+        rt_call(g, r, IR_I64, "err_made" if which == .Made else "err_passed", {IR_I64, v, {}}, {IR_I32, site, {}})
         e.value[op] = r
     case .Where:
         if g.web {
@@ -3074,7 +3074,7 @@ llvm_err_runtime :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Sc
             return true
         }
         r := fresh_tmp(g)
-        ir_call(g, r, IR_I32, ir_global("__mara_err_where"), {IR_I64, v, {}}, {IR_I32, atom(g, ""), {}}, {IR_I32, atom(g, "?"), {}})
+        rt_call(g, r, IR_I32, "err_where", {IR_I64, v, {}}, {IR_I32, atom(g, ""), {}}, {IR_I32, atom(g, "?"), {}})
         e.value[op] = r
     case .Trace:
         lt := fn_result(callee, 0)
@@ -3086,7 +3086,7 @@ llvm_err_runtime :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Sc
         n := ir_int(0)
         if !g.web {
             n = fresh_tmp(g)
-            ir_call(g, n, IR_I64, ir_global("__mara_err_trace"), {IR_I64, v, {}}, {IR_PTR, elems, {}})
+            rt_call(g, n, IR_I64, "err_trace", {IR_I64, v, {}}, {IR_PTR, elems, {}})
         }
         emit_store(g, SLICE_LEN_IR, n, len_at)
         e.value[op] = at
@@ -3223,7 +3223,7 @@ llvm_c_fails :: proc(e: ^Llvm, op: Node_Id, callee: ^Type_Scope, fo: Origin_Fore
     made := ir_int(fo.fail_kind)
     if !g.web {
         made = fresh_tmp(g)
-        ir_call(g, made, IR_I64, ir_global("__mara_err_made"), {IR_I64, ir_int(fo.fail_kind), {}}, {IR_I32, ir_int(int(fo.fail_site)), {}})
+        rt_call(g, made, IR_I64, "err_made", {IR_I64, ir_int(fo.fail_kind), {}}, {IR_I32, ir_int(int(fo.fail_site)), {}})
     }
     emit_store(g, IR_I64, made, made_at)
     emit_br(g, done)

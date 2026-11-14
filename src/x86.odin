@@ -278,6 +278,52 @@ x86_define :: proc(m: ^X86_Module, name: string, sec: X86_Sec, value: int, globa
     s.sec, s.value, s.global, s.fn = int(sec) + 1, u32(value), global, fn
 }
 
+// The stack probe a big frame's prologue calls (`mov eax, frame; call
+// __chkstk; sub rsp, rax`), the program's own when no C library gives it:
+// each page from the caller's stack pointer down to `rax` below it touched in
+// order, so the system grows the stack a page at a time. It keeps rax, uses
+// r10 and r11 alone, and moves no stack pointer — a leaf, with nothing to
+// unwind.
+x86_stack_probe :: proc(m: ^X86_Module) {
+    text := &m.sec[.Text]
+    x86_pad(text, 16, 0xCC)
+    x86_define(m, "__chkstk", .Text, len(text), true, true)
+    append(text,
+        0x49, 0x89, 0xC2,                           // mov r10, rax
+        0x4C, 0x8D, 0x5C, 0x24, 0x08,               // lea r11, [rsp + 8]
+        0x49, 0x81, 0xFA, 0x00, 0x10, 0x00, 0x00,   // cmp r10, 4096
+        0x72, 0x1A,                                 // jb last
+        0x49, 0x81, 0xEB, 0x00, 0x10, 0x00, 0x00,   // page: sub r11, 4096
+        0x4D, 0x85, 0x1B,                           // test [r11], r11
+        0x49, 0x81, 0xEA, 0x00, 0x10, 0x00, 0x00,   // sub r10, 4096
+        0x49, 0x81, 0xFA, 0x00, 0x10, 0x00, 0x00,   // cmp r10, 4096
+        0x77, 0xE6,                                 // ja page
+        0x4D, 0x29, 0xD3,                           // last: sub r11, r10
+        0x4D, 0x85, 0x1B,                           // test [r11], r11
+        0xC3)                                       // ret
+}
+
+// The thread-local storage directory of a program that starts threads, its
+// own when no C library gives it: `_tls_used`, which the linker makes the
+// exe's, and `_tls_index`, where the system writes which block of a thread's
+// is this image's. What each thread gets a copy of is the one thread-local
+// there is, the arena slot (x86_thread_local).
+x86_tls_directory :: proc(m: ^X86_Module) {
+    data := &m.sec[.Data]
+    x86_pad(data, 4)
+    x86_define(m, "_tls_index", .Data, len(data), true, false)
+    x86_u32(data, 0)
+    rd := &m.sec[.Rdata]
+    x86_pad(rd, 8)
+    x86_define(m, "_tls_used", .Rdata, len(rd), true, false)
+    slot, index := x86_symbol(m, x86_sym("__mara_arena")), x86_symbol(m, "_tls_index")
+    append(&m.relocs[.Rdata], X86_Reloc{u32(len(rd)), slot, X86_ADDR64});  x86_u64(rd, 0)   // the copied bytes' start
+    append(&m.relocs[.Rdata], X86_Reloc{u32(len(rd)), slot, X86_ADDR64});  x86_u64(rd, 8)   // and end
+    append(&m.relocs[.Rdata], X86_Reloc{u32(len(rd)), index, X86_ADDR64}); x86_u64(rd, 0)   // the index's address
+    x86_u64(rd, 0)                                                                           // no callbacks
+    x86_u32(rd, 0); x86_u32(rd, 0)                                                           // no zero fill, default alignment
+}
+
 @(private="file")
 x86_align :: proc(n, a: int) -> int {
     return (n + a - 1) / a * a

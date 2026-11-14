@@ -224,7 +224,7 @@ ask_file_discovered :: proc(all_files: map[string][dynamic]^Source_File, token: 
 // module `foo`. Submodules `foo.*` are pulled in only when something issues an
 // explicit `use foo.bar`, riding in via that import like any other dependency
 // rather than being globbed in by the parent.
-compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target: string, perf: ^Performance_Timer = nil) -> map[string][dynamic]^Source_File {
+compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target: string, perf: ^Performance_Timer = nil, also := "") -> map[string][dynamic]^Source_File {
     if perf != nil { perf_timer_mark(perf, "lex") }
     // (Room for the tokens first — about one for each two bytes of dense
     // code, of every file found: which of them the target reaches isn't known
@@ -238,6 +238,7 @@ compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target:
     worklist: [dynamic]string
     defer delete(worklist)
     append(&worklist, target)
+    if also != "" { append(&worklist, also) }   // (the runtime's module, when it's Mara's: nothing uses it by name)
     for len(worklist) > 0 {
         module := pop(&worklist)
         if visited[module] { continue }
@@ -596,6 +597,21 @@ import_lib_made :: proc(checked: ^Checked_Program, lib, build_dir, compiler_dir:
     return lib_path, true
 }
 
+// The C source behind a foreign block's library, "" when it has none (a
+// system DLL, or a library with no source beside it): `name.c` as written, or
+// a bare name's `name.c` in code/, one of its folders, or here.
+c_source_of :: proc(lib, compiler_dir: string) -> string {
+    c_name := lib if strings.has_suffix(lib, ".c") else strings.concatenate({lib, ".c"}, context.temp_allocator)
+    if c_name != lib && is_foreign_file(lib) { return "" }
+    dirs := code_search_dirs(compiler_dir)
+    cwd, _ := os.get_working_directory(context.temp_allocator)
+    for i in 0..=len(dirs) {
+        path, _ := filepath.join({dirs[i] if i < len(dirs) else cwd, c_name}, context.temp_allocator)
+        if os.exists(path) { return path }
+    }
+    return ""
+}
+
 build_link_flags :: proc(checked: ^Checked_Program, web: bool = false, build_dir := "") -> Link_Flags {
     lib_flags_b:    strings.Builder
     extra_inputs_b: strings.Builder
@@ -742,6 +758,10 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false, build_dir
         for lib in libs {
             if lib in seen^ { continue }
             seen^[lib] = true
+            if checked.no_crt && c_source_of(lib, compiler_dir) != "" {
+                fmt.printf("`-no crt` builds a program with no C library, and `foreign static_lib \"%s\"` is C code (%s), which needs one.\n  Build without `-no crt`.\n", lib, c_source_of(lib, compiler_dir))
+                return false
+            }
             // `.c` suffix = explicit "force recompile" form. Always rebuild
             // the static lib from source, then hand the .lib to the linker.
             // Same artifact the bare-name path would produce — so a user can
@@ -898,11 +918,51 @@ ensure_runtime :: proc(clang_path, compiler_dir, name: string) -> (string, bool)
     return o_path, true
 }
 
+// A program linked with no C library (`-no crt`): its objects and the import
+// libraries made for its foreign blocks, by the bundled lld-link alone — no
+// default libraries, its entry __mara_start. No C runtime file is compiled,
+// and nothing of Visual Studio's or the Windows SDK's is read.
+link_no_crt :: proc(ll_paths: []string, exe_name: string, lf: Link_Flags, compiler_dir: string, debug: bool, icon: []u8, no_console: bool) -> bool {
+    b: strings.Builder
+    lld, _ := filepath.join({compiler_dir, "tools", "lld-link.exe"})
+    fmt.sbprintf(&b, `"%s" -nologo -machine:x64 -nodefaultlib -entry:__mara_start -subsystem:%s "-out:%s"`, lld, "windows" if no_console else "console", exe_name)
+    stem := exe_name[:len(exe_name) - len(filepath.ext(exe_name))]
+    if debug {
+        fmt.sbprintf(&b, ` -debug "-pdb:%s.pdb"`, stem)
+    } else {
+        os.remove(strings.concatenate({stem, ".pdb"}, context.temp_allocator))
+    }
+    manifest_path, _ := filepath.join({compiler_dir, "tools", "win_utf8.manifest"})
+    fmt.sbprintf(&b, ` -manifest:embed "-manifestinput:%s"`, manifest_path)
+    for path in ll_paths { fmt.sbprintf(&b, ` "%s"`, path) }
+    strings.write_string(&b, lf.extra_inputs)
+    res_path: string
+    if len(icon) > 0 {
+        res_path = strings.concatenate({stem, ".res"}, context.temp_allocator)
+        if os.write_entire_file(res_path, icon) != nil {
+            fmt.printf("Couldn't write the program's icon to %s\n", res_path)
+            return false
+        }
+        fmt.sbprintf(&b, ` "%s"`, res_path)
+    }
+    cmd := strings.concatenate({`"`, strings.to_string(b), `"`})
+    ret := libc.system(strings.clone_to_cstring(cmd))
+    if res_path != "" { os.remove(res_path) }
+    if ret != 0 {
+        fmt.printf("lld-link failed (exit code %d)\n", ret)
+        return false
+    }
+    return true
+}
+
 link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false, profile: bool = false, debug: bool = false, profile_memory := false, icon: []u8 = nil, no_console := false) -> bool {
     // (The build's folder: where its objects are.)
     build_dir := filepath.dir(ll_paths[0]) if len(ll_paths) > 0 else "."
     lf := build_link_flags(checked, build_dir = build_dir)
     if !lf.ok { return false }
+    when ODIN_OS == .Windows {
+        if checked.no_crt { return link_no_crt(ll_paths, exe_name, lf, compiler_dir, debug, icon, no_console) }
+    }
 
     clang_path := clang_resolve_path(compiler_dir)
 
@@ -1319,6 +1379,7 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
                                profile_memory = args.profile_memory,
                                analysis_only = analysis,
                                no_assert     = args.no_assert,
+                               no_crt        = args.no_crt,
                                perf          = perf,
                                lower         = !args.lsp && !args.edit)
     if checked.errors > 0 || len(parse_errors) > 0 {
@@ -1340,6 +1401,7 @@ CLI_Args :: struct {
     llvm:         bool,    // -llvm — the LLVM backend (clang compiles the IR) instead of the x86 one (x86.odin)
     no_assert:    bool,    // -no assert — compile asserts out (they stay on in -release)
     no_console:   bool,    // -no console — a Windows program that opens no console window (build.mara's `console = false`)
+    no_crt:       bool,    // -no crt — a Windows program with no C library: its runtime code/runtime.mara's, linked by lld-link alone
     profile:      bool,    // -profile time — time the program's funs, written to profile.txt at exit (runtime/mara_prof.c)
     profile_memory: bool,  // -profile memory — how full each partial array and arena gets, written to memory.txt at exit (runtime/mara_mem.c)
     ok:           bool,
@@ -1703,8 +1765,10 @@ parse_args :: proc() -> CLI_Args {
                 args.no_assert = true
             case "console":
                 args.no_console = true
+            case "crt":
+                args.no_crt = true
             case:
-                fmt.printf("unknown feature `-no %s` — features that can be disabled: assert, console\n", feature)
+                fmt.printf("unknown feature `-no %s` — features that can be disabled: assert, console, crt\n", feature)
                 return args
             }
             i += 2
@@ -2039,7 +2103,26 @@ main :: proc() {
     // Prune to the use-closure starting from the target. Modules outside
     // the closure aren't lexed/parsed, so unrelated `.mara` files in the
     // search dir can't dump diagnostics into the build.
-    files := compute_use_closure(all_files, args.pkg_name, &perf)
+    // (`-no crt`: a Windows program of the x86 backend's objects alone — what
+    // else it can't be yet said here. MARA_NO_CRT asks for it wherever it can
+    // be had: how the tests are run under it.)
+    {
+        cant := ""
+        switch {
+        case ODIN_OS != .Windows:   cant = "is for Windows programs"
+        case args.web:              cant = "can't build for the web"
+        case args.release:          cant = "can't build with -release yet"
+        case args.llvm, os.get_env("MARA_LLVM", context.temp_allocator) != "": cant = "can't build with -llvm yet"
+        case args.profile, args.profile_memory: cant = "can't build with -profile yet"
+        }
+        if args.no_crt && cant != "" {
+            fmt.printf("`-no crt` %s.\n", cant)
+            os.exit(1)
+        }
+        if !args.no_crt && cant == "" && os.get_env("MARA_NO_CRT", context.temp_allocator) != "" { args.no_crt = true }
+        if RUNTIME_MODULE not_in all_files { args.no_crt = false }
+    }
+    files := compute_use_closure(all_files, args.pkg_name, &perf, RUNTIME_MODULE if args.no_crt else "")
 
     // `ask ... in <scope>` narrows where the subject resolves (ask_scopes). A
     // bad scope fails here, before the check; a query from stdin, as its answer.
@@ -2086,6 +2169,10 @@ main :: proc() {
         return
     }
 
+    if checked.no_crt && pkg_shared {
+        fmt.printf("`-no crt` can't build a library yet; '%s' is one.\n", args.pkg_name)
+        os.exit(1)
+    }
     // A profile is written when the program exits: a program, run natively.
     if args.profile && (args.web || pkg_shared) {
         fmt.printf("-profile time times a native program; '%s' is built %s\n", args.pkg_name, "for the web" if args.web else "as a library")

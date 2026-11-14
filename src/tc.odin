@@ -452,7 +452,7 @@ tc_is_call :: proc(k: ^TC, n: Tree_Id) -> bool {
 tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: string,
                          shared: bool = false, web: bool = false, target_os: Target_OS = .Windows, profile_memory := false,
                          analysis_only: bool = false, no_assert: bool = false, perf: ^Performance_Timer = nil,
-                         lower := true) -> ^Checked_Program {
+                         lower := true, no_crt := false) -> ^Checked_Program {
     table := new(SymbolTable)
     table.allocator = context.allocator
     main_mod := new(Type_Scope)
@@ -471,6 +471,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     checked.err_passed = err_runtime_fun(.Passed, "err_passed", {{name = "err", type_ = Type_Err{}}, {name = "site", type_ = Type_Atom{}}}, Type_Err{})
     checked.target_os = target_os
     checked.main_package = main_package
+    checked.no_crt = no_crt
     c.target_web, c.target_os, c.analysis_only = web, target_os, analysis_only
     c.profile_memory = profile_memory
 
@@ -523,6 +524,9 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     table.builtins["void"] = void_type
 
     tc_check_uses(k, main_package)
+    // (A program built with no C library: its runtime is a module of it,
+    // code/runtime.mara — the compiler calls its funs, no `use` names it.)
+    if no_crt && RUNTIME_MODULE in modules { tc_check_module(k, RUNTIME_MODULE, {}) }
     tc_module_names_ready(k, main_package)
     k.pkg = main_package
     main := tc_check_module_body(k)
@@ -1152,6 +1156,9 @@ Checked_Program :: struct {
     // origin variant when emitting bodies, declares, and the dynamic loader.
     functions:      map[string]^Type_Scope,
     foreign_libs:   map[string]bool,
+    // Built with no C library (`-no crt`): the runtime is code/runtime.mara's,
+    // handed the program's Runtime (codegen.odin: rt_call).
+    no_crt:         bool,
 
     // Function names in the order they are written (for emission)
     function_order: [dynamic]string,

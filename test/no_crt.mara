@@ -1,0 +1,48 @@
+module no_crt
+//@ build-flags: -no crt
+//@ expect-output: 7 -3 1.5 1e+06 text x
+//@ expect-output: big frame: 4500
+//@ expect-output: arguments: 1
+//@ expect-output: failed: Probe.Refused at no_crt.mara
+//@ expect-output: main failed: Probe.Refused
+//@ expect-exit: 1
+
+// `-no crt`: a Windows program with no C library. Its runtime is
+// code/runtime.mara's, its entry the compiler's, and it is linked by lld-link
+// alone. Here with no arena either: printing, a frame of more than a page
+// (the stack probe is the program's own), main's arguments read from the
+// command line, an err's trace, and main's failure as the exit code.
+
+use mara.core
+
+Probe :: error { Refused }
+
+// Five lists of 900 bytes: a frame the prologue has to probe.
+big :: fun(n: u8) -> i64 {
+	a: [900]byte
+	b: [900]byte
+	c: [900]byte
+	d: [900]byte
+	e: [900]byte
+	for i in 0:900 {
+		&a ++ n
+		&b ++ n
+		&c ++ n
+		&d ++ n
+		&e ++ n
+	}
+	return a.len + b.len + c.len + d.len + e.len
+}
+
+refuse :: fun() -> err {
+	return Probe.Refused
+}
+
+main :: fun(args: [][]utf8) -> err {
+	print(7, -3, 1.5, 1000000.0, "text", 'x')
+	print("big frame:", big(1))
+	print("arguments:", args.len)
+	failed := refuse()
+	print("failed:", failed, "at", failed.where())
+	refuse()?
+}

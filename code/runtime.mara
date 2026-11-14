@@ -17,6 +17,8 @@ use mara.atomic
 #if #windows {
 
 OUT_ROOM   :: 4 * KB    // what's printed and not yet written
+ARGS_ROOM  :: 32 * KB   // the command line's arguments
+ARGS       :: 128       // how many of them are kept
 CRASH_ROOM :: 64 * KB   // a failure's report, for crash.txt
 TRACES     :: 64        // the newest errs that keep their trace
 SITES      :: 16        // the places a trace holds
@@ -36,6 +38,8 @@ Runtime :: struct {
 	crash:    [CRASH_ROOM]byte
 	last_id:  u32                 // the last trace's id (counted by every thread: atomic)
 	traces:   [TRACES!]Trace
+	args:     [ARGS_ROOM]byte     // the command line's arguments, a 0 after each
+	args_at:  [ARGS + 1]i64       // where each starts in `args`, and where the last ends
 }
 
 foreign static_lib "kernel32" {
@@ -147,6 +151,150 @@ ptr_out :: fun(rt: ^Runtime, p: ^byte, tee: i32) {
 exit :: fun(rt: ^Runtime, code: i32) {
 	flush(rt)
 	ExitProcess(u32(code))
+}
+
+// --- the command line ----------------------------------------------------------
+
+arg_byte :: fun(rt: ^Runtime, b: u8) {
+	if rt.args.len < rt.args.cap - 1 do &rt.args ++ b
+}
+
+arg_end :: fun(rt: ^Runtime) {
+	&rt.args ++ u8(0)
+	if rt.args_at.len < rt.args_at.cap do &rt.args_at ++ rt.args.len
+}
+
+// The command line cut into its arguments, as C's argv has them: the
+// program's name, then each word — spaces kept inside quotes, a quote
+// written `\"`, backslashes before a quote halved. Done once.
+args_read :: fun(rt: ^Runtime) {
+	if rt.args_at.len > 0 do return
+	line : []byte = slice_from_ptr(GetCommandLineA(), 1 << 30)
+	&rt.args_at ++ 0
+	i : i64 = 0
+	if line[i] == '"' {
+		i += 1
+		for line[i] != 0 and line[i] != '"' {
+			b : u8 = line[i]
+			arg_byte(rt, b)
+			i += 1
+		}
+		if line[i] == '"' do i += 1
+	else
+		for line[i] != 0 and line[i] != ' ' and line[i] != 9 {
+			b : u8 = line[i]
+			arg_byte(rt, b)
+			i += 1
+		}
+	}
+	arg_end(rt)
+	for true {
+		for line[i] == ' ' or line[i] == 9 do i += 1
+		if line[i] == 0 do break
+		quoted := false
+		for line[i] != 0 and (quoted or (line[i] != ' ' and line[i] != 9)) {
+			slashes : i64 = 0
+			for line[i] == 92 {
+				slashes += 1
+				i += 1
+			}
+			if line[i] == '"' {
+				for k in 0:slashes / 2 do arg_byte(rt, 92)
+				if slashes % 2 == 1 {
+					arg_byte(rt, 34)
+				elif quoted and line[i + 1] == '"'
+					arg_byte(rt, 34)
+					i += 1
+				else
+					quoted = not quoted
+				}
+				i += 1
+			else
+				for k in 0:slashes do arg_byte(rt, 92)
+				if line[i] != 0 and (quoted or (line[i] != ' ' and line[i] != 9)) {
+					b : u8 = line[i]
+					arg_byte(rt, b)
+					i += 1
+				}
+			}
+		}
+		arg_end(rt)
+	}
+}
+
+// How many arguments the command line has, the program's name the first.
+arg_count :: fun(rt: ^Runtime) -> i64 {
+	args_read(rt)
+	return rt.args_at.len - 1
+}
+
+// Argument i, as C text: a 0 after it.
+arg_at :: fun(rt: ^Runtime, i: i64) -> ^byte {
+	args_read(rt)
+	return &rt.args[rt.args_at[i]]
+}
+
+// --- a failure's report --------------------------------------------------------
+
+// A number's last n digits added to `out`.
+digits_add :: fun(out: ^[]byte, v: i64, n: i64) {
+	scale : i64 = 1
+	for k in 1:n do scale *= 10
+	for scale > 0 {
+		out ++ u8(i64('0') + v / scale % 10)
+		scale /= 10
+	}
+}
+
+// A report starts: the date and time first, as crash.txt has each entry.
+// What's printed with `tee` from here on is kept for it.
+crash_begin :: fun(rt: ^Runtime) {
+	rt.crash_on = true
+	rt.crash.len = 0
+	now : Local_Time
+	GetLocalTime(&now)
+	stamp : [24]byte
+	digits_add(&stamp, i64(now.year), 4)
+	&stamp ++ u8('-')
+	digits_add(&stamp, i64(now.month), 2)
+	&stamp ++ u8('-')
+	digits_add(&stamp, i64(now.day), 2)
+	&stamp ++ u8(' ')
+	digits_add(&stamp, i64(now.hour), 2)
+	&stamp ++ u8(':')
+	digits_add(&stamp, i64(now.minute), 2)
+	&stamp ++ u8(':')
+	digits_add(&stamp, i64(now.second), 2)
+	&stamp ++ u8(10)
+	&rt.crash ++ stamp
+}
+
+// The report ends: added to crash.txt beside the program, a blank line
+// after it. (The calls that were running, and keeping the file under a
+// size: to come — runtime/mara_crash.c has both.)
+crash_end :: fun(rt: ^Runtime) {
+	if not rt.crash_on do return
+	rt.crash_on = false
+	flush(rt)
+	if rt.crash.len == 0 do return
+	if rt.crash.len == rt.crash.cap do rt.crash.len -= 1
+	&rt.crash ++ u8(10)
+	path : [600]utf8
+	path.len = 512
+	n := i64(GetModuleFileNameA(void, &path[0], 512))
+	if n >= 512 do n = 0
+	for n > 0 and path[n - 1] != 92 and path[n - 1] != '/' do n -= 1
+	path.len = n
+	&path ++ "crash.txt"
+	file, failed := file_open_append(path)
+	if failed do return
+	_, _ := file_write(file, rt.crash)
+	file_close(file)
+}
+
+// (A crash Windows raises — a bad memory access, a stack overflow — reported
+// as an assert is: to come.)
+crash_install :: fun(rt: ^Runtime) {
 }
 
 // --- errs' traces --------------------------------------------------------------

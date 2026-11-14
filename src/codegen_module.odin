@@ -509,7 +509,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     main_head := Ir_Head{name = "__mara_main" if g.web else "main", ret = IR_I64, params = main_params}
     // A crash the program doesn't report itself (a stack overflow, a bad
     // memory access) reported as an assert is (runtime/mara_crash.c).
-    if !g.web { ir_call(&g, {}, IR_VOID, ir_global("__mara_crash_install")) }
+    if !g.web { rt_call(&g, {}, IR_VOID, "crash_install") }
 
     emit_main_prologue(&g, checked)
     if g.profile != "" { ir_call(&g, {}, IR_VOID, ir_global("__mara_prof_start"), {IR_PTR, get_string_literal(&g, g.profile), {}}) }
@@ -525,6 +525,26 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     }
     // Main's body, from the graph.
     llvm_main(&g, main_cf, main_head)
+
+    // With no C library, nothing calls main for the program: its entry is
+    // __mara_start — main (its arguments the runtime's to read, not argv),
+    // then the runtime's exit with what it gave. And the stack probe big
+    // frames call is the program's own (x86_stack_probe).
+    if nocrt(&g) {
+        g.code = {}
+        code, narrow := fresh_tmp(&g), fresh_tmp(&g)
+        ir_call(&g, code, IR_I64, ir_global("main"), {IR_I32, ir_int(0), {}}, {IR_PTR, IR_NULL, {}})
+        ir_cast(&g, narrow, .Trunc, IR_I64, code, IR_I32)
+        rt_call(&g, {}, IR_VOID, "exit", {IR_I32, narrow, {}})
+        ir_unreachable(&g)
+        start := [?][]Ir{g.code[:]}
+        codegen_function(&g, {name = "__mara_start", ret = IR_VOID}, start[:])
+        g.code = {}
+        if g.x86 != nil {
+            x86_stack_probe(g.x86)
+            if checked.threads { x86_tls_directory(g.x86) }
+        }
+    }
 
     // Web wrapper: `i32 @main(i32, ptr)` calling our i64 mara main and
     // truncating the return code so emscripten's runtime sees a regular int.
@@ -1090,6 +1110,12 @@ program_globals :: proc(checked: ^Checked_Program, own: bool) -> []Ir_Global {
             append(&gls, Ir_Global{name = "__mara_arena_storage", ty = ty, init = {v = IR_ZERO}})
         }
         append(&gls, Ir_Global{name = "__mara_args", ty = partial_array_ir_type(SLICE_IR_TYPE, 64), init = {v = IR_ZERO}})
+        // (The runtime's state, with no C library: code/runtime.mara's Runtime.)
+        if checked.no_crt {
+            if rt, has := checked.table.funs["mara_runtime_Runtime"]; has {
+                append(&gls, Ir_Global{name = RUNTIME_STATE, ty = ir_class_type(&rt.sd), init = {v = IR_ZERO}})
+            }
+        }
     }
     return gls[:]
 }
@@ -1133,6 +1159,13 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         // miss the tail. (Raise ARGS_CAP if 64 ever proves too few.)
         argc_over := fresh_tmp(g)
         argc := ir_local(".argc")
+        // (With no C library there's no argv: the runtime reads the command line.)
+        if nocrt(g) {
+            count := fresh_tmp(g)
+            rt_call(g, count, IR_I64, "arg_count")
+            argc = fresh_tmp(g)
+            ir_cast(g, argc, .Trunc, IR_I64, count, IR_I32)
+        }
         ir_icmp(g, argc_over, .Sgt, IR_I32, argc, ir_int(ARGS_CAP))
         args_err_lbl := ir_label(g, "args_too_many_", g.label_counter)
         args_ok_lbl := ir_label(g, "args_ok_", g.label_counter)
@@ -1169,10 +1202,16 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
         emit_cond_br(g, cmp, body_lbl, done_lbl)
 
         emit_label(g, body_lbl)
-        argv_i_ptr := fresh_tmp(g)
-        ir_gep(g, argv_i_ptr, IR_PTR, ir_local(".argv"), {IR_I32, cur_i, {}})
         argv_i := fresh_tmp(g)
-        ir_load(g, argv_i, IR_PTR, argv_i_ptr)
+        if nocrt(g) {
+            at := fresh_tmp(g)
+            ir_cast(g, at, .Sext, IR_I32, cur_i, IR_I64)
+            rt_call(g, argv_i, IR_PTR, "arg_at", {IR_I64, at, {}})
+        } else {
+            argv_i_ptr := fresh_tmp(g)
+            ir_gep(g, argv_i_ptr, IR_PTR, ir_local(".argv"), {IR_I32, cur_i, {}})
+            ir_load(g, argv_i, IR_PTR, argv_i_ptr)
+        }
         // strlen returns size_t (i64 native, i32 on web), widened to the
         // header's i64 for the len/cap store.
         str_len := fresh_tmp(g)
@@ -1181,7 +1220,7 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
             ir_call(g, str_len_32, IR_I32, ir_global("strlen"), {IR_PTR, argv_i, {}})
             ir_cast(g, str_len, .Zext, IR_I32, str_len_32, SLICE_LEN_IR)
         } else {
-            ir_call(g, str_len, IR_I64, ir_global("__mara_cstr_len"), {IR_PTR, argv_i, {}})
+            rt_call(g, str_len, IR_I64, "cstr_len", {IR_PTR, argv_i, {}})
         }
         // elements[i] is a slice — write len, cap, ptr. cap counts argv's
         // terminating 0 (as a string literal's does), so cstring(arg) finds it

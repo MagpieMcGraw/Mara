@@ -1,0 +1,16 @@
+module no_crt_c_neg
+//@ build-flags: -no crt
+//@ expect-fail: is C code
+
+// `-no crt` and a foreign block of C source: C code needs the C library the
+// build leaves out, so the build says so before compiling anything.
+
+use mara.core
+
+foreign static_lib "abi_test" {
+	fun abi_test_int(x: i32) -> i32
+}
+
+main :: fun() {
+	print(abi_test_int(3))
+}
