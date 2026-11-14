@@ -1,0 +1,41 @@
+module print_try_result
+//@ expect-output: 2.5 10 2.5 text Pair { a: 3, b: 4 }
+//@ expect-output: second 7
+
+// A result passed on with `?` straight into print: the value the call gave,
+// a float, an integer, text, a struct — and the second of three results.
+
+use mara.core
+
+E :: error { Empty }
+Pair :: struct { a: i64  b: i64 }
+
+half :: fun(x: f64) -> f64, err {
+	if x == 0 do return 0, Empty
+	return x / 2
+}
+
+double :: fun(x: i64) -> i64, err {
+	if x == 0 do return 0, Empty
+	return x * 2
+}
+
+word :: fun(ok: bool) -> str64, err {
+	if not ok do return "", Empty
+	return "text"
+}
+
+pair :: fun(a: i64) -> Pair, err {
+	if a == 0 do return Pair(), Empty
+	return Pair{a, a + 1}
+}
+
+three :: fun() -> i64, i64, err {
+	return 6, 7
+}
+
+main :: fun() -> err {
+	print(half(5)?, double(5)?, half(5)?, word(true)?, pair(3)?)
+	_, second := three()?
+	print("second", second)
+}

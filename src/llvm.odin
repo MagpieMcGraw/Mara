@@ -2455,8 +2455,19 @@ llvm_print :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     defer g.print_span = {}
     args := make([dynamic]Print_Arg, 0, len(ops), context.temp_allocator)
     for o in ops {
-        if o.op == NO_NODE || o.out != 0 { return false }
-        t, v := graph_type(pg, o.op), llvm_val(e, o.op)
+        if o.op == NO_NODE { return false }
+        t := llvm_type_of(e, o)
+        v: Val
+        // (A result of a call that gives several, `print(f()?)`: read from
+        // where the call wrote it — not that place itself.)
+        if _, several := e.outs[o.op]; several {
+            got: bool
+            v, got = llvm_operand(e, o, t)
+            if !got { return false }
+        } else {
+            if o.out != 0 { return false }
+            v = llvm_val(e, o.op)
+        }
         if v.kind == .None { return false }   // a held view (later)
         text, is_text := llvm_text(e, o.op)
         switch {
