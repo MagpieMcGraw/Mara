@@ -358,6 +358,10 @@ emit_label :: proc(g: ^Codegen, label: Ir_Label) {
 // state, all zero at the start, handed to each of its funs first.
 RUNTIME_MODULE :: "mara.runtime"
 RUNTIME_STATE  :: "__mara_rt"
+// Its funs the compiler calls (rt_call), as code/runtime.mara names them.
+RUNTIME_FUNS :: [?]string{"text_out", "cstr_out", "char_out", "int_out", "uint_out", "float_out", "ptr_out", "exit", "cstr_len",
+                          "crash_begin", "crash_end", "crash_install", "crash_filter", "err_made", "err_passed", "err_where",
+                          "err_trace", "main_err", "arg_count", "arg_at"}
 
 // Whether the program is built with no C library: its runtime Mara's own.
 nocrt :: proc(g: ^Codegen) -> bool {

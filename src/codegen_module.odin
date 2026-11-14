@@ -532,8 +532,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
 
     // With no C library, nothing calls main for the program: its entry is
     // __mara_start — main (its arguments the runtime's to read, not argv),
-    // then the runtime's exit with what it gave. And the stack probe big
-    // frames call is the program's own (x86_stack_probe).
+    // then the runtime's exit with what it gave. And what its objects name
+    // of a C library is the program's own (x86_no_crt_support).
     if nocrt(&g) {
         g.code = {}
         code, narrow := fresh_tmp(&g), fresh_tmp(&g)
@@ -554,10 +554,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         filter := [?][]Ir{g.code[:]}
         codegen_function(&g, {name = "__mara_crash_filter", ret = IR_I32, params = told}, filter[:])
         g.code = {}
-        if g.x86 != nil {
-            x86_stack_probe(g.x86)
-            if checked.threads { x86_tls_directory(g.x86) }
-        }
+        if g.x86 != nil { x86_no_crt_support(g.x86, checked.threads) }
     }
 
     // Web wrapper: `i32 @main(i32, ptr)` calling our i64 mara main and
@@ -714,6 +711,20 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         path := module_ll_path(build_dir, module_name)
         werr := os.write_entire_file(path, transmute([]u8)content)
         if werr != nil {
+            fmt.printf("Error: could not write '%s'\n", path)
+            return nil, false
+        }
+        append(&g.module_ll_paths, path)
+    }
+
+    // With no C library, what clang's objects name of one: an object of the
+    // compiler's own making, linked with them (x86_no_crt_object).
+    if nocrt(&g) {
+        out := make([dynamic]u8, runtime.heap_allocator())
+        defer delete(out)
+        x86_no_crt_object(checked.threads, &out)
+        path := module_ll_path(build_dir, "mara_no_crt", ".o")
+        if os.write_entire_file(path, out[:]) != nil {
             fmt.printf("Error: could not write '%s'\n", path)
             return nil, false
         }
@@ -1004,10 +1015,20 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
     // is the global function-name → declare-line index, built from every
     // module's emitted `define ...` lines. Skip well-known categories
     // already declared above (runtime helpers + the libc trio).
-    if imports, has_imports := g.module_imports[module_name]; has_imports && len(imports) > 0 {
+    // (With no C library the runtime's funs are another module's too — and
+    // the main TU's fail helpers and entry call them, with no import noted.)
+    imports, has_imports := g.module_imports[module_name]
+    runtime_too := is_main_tu && nocrt(g)
+    if (has_imports && len(imports) > 0) || runtime_too {
         sorted: [dynamic]string
         defer delete(sorted)
         for name in imports { append(&sorted, name) }
+        if runtime_too {
+            for name in RUNTIME_FUNS {
+                flat := fmt.tprintf("mara_runtime_%s", name)
+                if flat in fn_declares && flat not_in imports { append(&sorted, flat) }
+            }
+        }
         slice.sort(sorted[:])
         wrote_header := false
         for name in sorted {
@@ -1124,10 +1145,17 @@ program_globals :: proc(checked: ^Checked_Program, own: bool) -> []Ir_Global {
             append(&gls, Ir_Global{name = "__mara_arena_storage", ty = ty, init = {v = IR_ZERO}})
         }
         append(&gls, Ir_Global{name = "__mara_args", ty = partial_array_ir_type(SLICE_IR_TYPE, 64), init = {v = IR_ZERO}})
-        // (The runtime's state, with no C library: code/runtime.mara's Runtime.)
-        if checked.no_crt {
-            if rt, has := checked.table.funs["mara_runtime_Runtime"]; has {
-                append(&gls, Ir_Global{name = RUNTIME_STATE, ty = ir_class_type(&rt.sd), init = {v = IR_ZERO}})
+    }
+    // The runtime's state, with no C library: the room of code/runtime.mara's
+    // Runtime, all zero, in the module that owns the program's globals; the
+    // others name it. (As words: its fields are the runtime's to know.)
+    if checked.no_crt {
+        if rt, has := checked.table.funs["mara_runtime_Runtime"]; has {
+            ty := ir_array_type((type_size(rt) + 7) / 8, IR_I64)
+            if own {
+                append(&gls, Ir_Global{name = RUNTIME_STATE, ty = ty, align = 16, init = {v = IR_ZERO}})
+            } else {
+                append(&gls, Ir_Global{name = RUNTIME_STATE, linkage = .External, ty = ty})
             }
         }
     }

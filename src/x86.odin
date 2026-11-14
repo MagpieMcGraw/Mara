@@ -278,17 +278,96 @@ x86_define :: proc(m: ^X86_Module, name: string, sec: X86_Sec, value: int, globa
     s.sec, s.value, s.global, s.fn = int(sec) + 1, u32(value), global, fn
 }
 
+// What a program's objects name of a C library, the program's own when it has
+// none (`-no crt`): the stack probe, C's three memory functions (LLVM's
+// objects call them, and C source's), `_fltused`, and — in a program that
+// starts threads — the thread-local storage directory.
+x86_no_crt_support :: proc(m: ^X86_Module, threads: bool) {
+    x86_stack_probe(m)
+    x86_memory_funs(m)
+    if threads { x86_tls_directory(m) }
+}
+
+// The support alone, as an object's bytes: the LLVM path's, whose modules
+// are clang's to compile.
+x86_no_crt_object :: proc(threads: bool, out: ^[dynamic]u8) {
+    m := x86_begin(x86_program(), threads = threads)
+    x86_no_crt_support(m, threads)
+    x86_finish(m, out)
+}
+
+// memcpy, memmove and memset as C has them (rcx, rdx, r8; the first back in
+// rax), by `rep movsb` / `rep stosb`. rdi and rsi are kept in r9 and r10:
+// leaves, with nothing to unwind.
+@(private="file")
+x86_memory_funs :: proc(m: ^X86_Module) {
+    text := &m.sec[.Text]
+    x86_pad(text, 16, 0xCC)
+    x86_define(m, "memcpy", .Text, len(text), true, true)
+    append(text,
+        0x48, 0x89, 0xC8,               // mov rax, rcx
+        0x49, 0x89, 0xF9,               // mov r9, rdi
+        0x49, 0x89, 0xF2,               // mov r10, rsi
+        0x48, 0x89, 0xCF,               // mov rdi, rcx
+        0x48, 0x89, 0xD6,               // mov rsi, rdx
+        0x4C, 0x89, 0xC1,               // mov rcx, r8
+        0xF3, 0xA4,                     // rep movsb
+        0x4C, 0x89, 0xCF,               // mov rdi, r9
+        0x4C, 0x89, 0xD6,               // mov rsi, r10
+        0xC3)                           // ret
+    x86_pad(text, 16, 0xCC)
+    x86_define(m, "memmove", .Text, len(text), true, true)
+    append(text,
+        0x48, 0x89, 0xC8,               // mov rax, rcx
+        0x49, 0x89, 0xF9,               // mov r9, rdi
+        0x49, 0x89, 0xF2,               // mov r10, rsi
+        0x48, 0x89, 0xCF,               // mov rdi, rcx
+        0x48, 0x89, 0xD6,               // mov rsi, rdx
+        0x4C, 0x89, 0xC1,               // mov rcx, r8
+        0x48, 0x39, 0xF7,               // cmp rdi, rsi
+        0x76, 0x19,                     // jbe forward        (to at or below from: front to back)
+        0x4A, 0x8D, 0x14, 0x06,         // lea rdx, [rsi + r8]
+        0x48, 0x39, 0xD7,               // cmp rdi, rdx
+        0x73, 0x10,                     // jae forward        (to past from's end: no overlap)
+        0x4A, 0x8D, 0x7C, 0x07, 0xFF,   // lea rdi, [rdi + r8 - 1]
+        0x4A, 0x8D, 0x74, 0x06, 0xFF,   // lea rsi, [rsi + r8 - 1]
+        0xFD,                           // std                (back to front)
+        0xF3, 0xA4,                     // rep movsb
+        0xFC,                           // cld
+        0xEB, 0x02,                     // jmp done
+        0xF3, 0xA4,                     // forward: rep movsb
+        0x4C, 0x89, 0xCF,               // done: mov rdi, r9
+        0x4C, 0x89, 0xD6,               // mov rsi, r10
+        0xC3)                           // ret
+    x86_pad(text, 16, 0xCC)
+    x86_define(m, "memset", .Text, len(text), true, true)
+    append(text,
+        0x49, 0x89, 0xC9,               // mov r9, rcx
+        0x49, 0x89, 0xFA,               // mov r10, rdi
+        0x48, 0x89, 0xCF,               // mov rdi, rcx
+        0x89, 0xD0,                     // mov eax, edx
+        0x4C, 0x89, 0xC1,               // mov rcx, r8
+        0xF3, 0xAA,                     // rep stosb
+        0x4C, 0x89, 0xD7,               // mov rdi, r10
+        0x4C, 0x89, 0xC8,               // mov rax, r9
+        0xC3)                           // ret
+}
+
 // The stack probe a big frame's prologue calls (`mov eax, frame; call
 // __chkstk; sub rsp, rax`), the program's own when no C library gives it:
 // each page from the caller's stack pointer down to `rax` below it touched in
-// order, so the system grows the stack a page at a time. It keeps rax, uses
-// r10 and r11 alone, and moves no stack pointer — a leaf, with nothing to
-// unwind.
+// order, so the system grows the stack a page at a time. It keeps every
+// register, as Microsoft's does (LLVM's code holds values in r10 and r11
+// across the call): the two it works in are kept just below the stack
+// pointer, which it doesn't move — a leaf, with nothing to unwind.
+@(private="file")
 x86_stack_probe :: proc(m: ^X86_Module) {
     text := &m.sec[.Text]
     x86_pad(text, 16, 0xCC)
     x86_define(m, "__chkstk", .Text, len(text), true, true)
     append(text,
+        0x4C, 0x89, 0x54, 0x24, 0xF8,               // mov [rsp - 8], r10
+        0x4C, 0x89, 0x5C, 0x24, 0xF0,               // mov [rsp - 16], r11
         0x49, 0x89, 0xC2,                           // mov r10, rax
         0x4C, 0x8D, 0x5C, 0x24, 0x08,               // lea r11, [rsp + 8]
         0x49, 0x81, 0xFA, 0x00, 0x10, 0x00, 0x00,   // cmp r10, 4096
@@ -300,6 +379,8 @@ x86_stack_probe :: proc(m: ^X86_Module) {
         0x77, 0xE6,                                 // ja page
         0x4D, 0x29, 0xD3,                           // last: sub r11, r10
         0x4D, 0x85, 0x1B,                           // test [r11], r11
+        0x4C, 0x8B, 0x54, 0x24, 0xF8,               // mov r10, [rsp - 8]
+        0x4C, 0x8B, 0x5C, 0x24, 0xF0,               // mov r11, [rsp - 16]
         0xC3)                                       // ret
     // (And `_fltused`, which a C object that uses floats names so the C
     // library's float printing is linked: here just a number.)
@@ -314,6 +395,7 @@ x86_stack_probe :: proc(m: ^X86_Module) {
 // exe's, and `_tls_index`, where the system writes which block of a thread's
 // is this image's. What each thread gets a copy of is the one thread-local
 // there is, the arena slot (x86_thread_local).
+@(private="file")
 x86_tls_directory :: proc(m: ^X86_Module) {
     data := &m.sec[.Data]
     x86_pad(data, 4)

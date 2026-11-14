@@ -1,0 +1,53 @@
+module no_crt_release
+//@ build-flags: -no crt -release
+//@ expect-output: sum: 4999950000
+//@ expect-output: copied: 300 7 7
+//@ expect-output: moved: 2 3 4 5 5
+//@ expect-output: floor: 2 -3
+//@ expect-output: threads: 400000
+
+// `-no crt` with `-release`: the modules are LLVM's to compile and optimize
+// whole at the link, with no C library under them. What their code names of
+// one is the program's own: memcpy, memmove and memset, the stack probe (it
+// keeps every register, as LLVM's code expects), the thread-local directory.
+
+use mara.core
+use mara.memory
+use mara.os
+use mara.atomic
+use mara.math
+
+#allocator Arena_Basic(8 * MB)
+
+Block :: struct {
+	bytes: [300!]u8
+}
+
+adder :: fun(total: ^i64) {
+	for k in 0:100000 do _ = atomic_add(total, 1)
+}
+
+main :: fun() -> err {
+	sum : i64 = 0
+	for i in 0:100000 do sum += i
+	print("sum:", sum)
+
+	a : Block
+	for i in 0:300 do a.bytes[i] = 7
+	b := a
+	print("copied:", b.bytes.len, b.bytes[0], b.bytes[299])
+
+	list : [8]i64 = [1, 2, 3, 4, 5]
+	for i in 0:4 do list[i] = list[i + 1]
+	print("moved:", list[0], list[1], list[2], list[3], list[4])
+
+	up : f64 = 2.7
+	down : f64 = -2.2
+	print("floor:", floor(up), floor(down))
+
+	total : i64 = 0
+	threads : [4!]Thread
+	for k in 0:4 do threads[k] = thread_start(adder, &total)?
+	for k in 0:4 do thread_wait(&threads[k])
+	print("threads:", atomic_load(&total))
+}

@@ -905,7 +905,7 @@ ensure_runtime :: proc(clang_path, compiler_dir, name: string) -> (string, bool)
 // and nothing of Visual Studio's or the Windows SDK's is read. A foreign
 // block's C source is linked as any library is: it can call no C library
 // function, there being none.
-link_no_crt :: proc(ll_paths: []string, exe_name: string, lf: Link_Flags, compiler_dir: string, debug: bool, icon: []u8, no_console: bool) -> bool {
+link_no_crt :: proc(ll_paths: []string, exe_name: string, lf: Link_Flags, compiler_dir: string, debug: bool, icon: []u8, no_console: bool, release := false) -> bool {
     b: strings.Builder
     lld, _ := filepath.join({compiler_dir, "tools", "lld-link.exe"})
     fmt.sbprintf(&b, `"%s" -nologo -machine:x64 -nodefaultlib -entry:__mara_start -subsystem:%s "-out:%s"`, lld, "windows" if no_console else "console", exe_name)
@@ -915,6 +915,9 @@ link_no_crt :: proc(ll_paths: []string, exe_name: string, lf: Link_Flags, compil
     } else {
         os.remove(strings.concatenate({stem, ".pdb"}, context.temp_allocator))
     }
+    // (A -release build's objects are bitcode: optimized whole here, for
+    // the release build's machine — RELEASE_MARCH.)
+    if release { strings.write_string(&b, " -opt:lldlto=3 -mllvm:-mcpu=x86-64-v2") }
     manifest_path, _ := filepath.join({compiler_dir, "tools", "win_utf8.manifest"})
     fmt.sbprintf(&b, ` -manifest:embed "-manifestinput:%s"`, manifest_path)
     for path in ll_paths { fmt.sbprintf(&b, ` "%s"`, path) }
@@ -944,17 +947,18 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     build_dir := filepath.dir(ll_paths[0]) if len(ll_paths) > 0 else "."
     lf := build_link_flags(checked, build_dir = build_dir)
     if !lf.ok { return false }
-    when ODIN_OS == .Windows {
-        if checked.no_crt { return link_no_crt(ll_paths, exe_name, lf, compiler_dir, debug, icon, no_console) }
-    }
 
     clang_path := clang_resolve_path(compiler_dir)
 
+    // (With no C library, `-no crt`, the runtime is a module of the program:
+    // no C file of it is compiled.)
     runtimes := make([dynamic]string, context.temp_allocator)
-    append(&runtimes, "mara_crash")
-    append(&runtimes, "mara_err")   // (an err's trace: e.where(), e.trace())
-    if profile { append(&runtimes, "mara_prof") }
-    if profile_memory { append(&runtimes, "mara_mem") }
+    if !checked.no_crt {
+        append(&runtimes, "mara_crash")
+        append(&runtimes, "mara_err")   // (an err's trace: e.where(), e.trace())
+        if profile { append(&runtimes, "mara_prof") }
+        if profile_memory { append(&runtimes, "mara_mem") }
+    }
     runtime_os := make([dynamic]string, context.temp_allocator)
     for name in runtimes {
         o := ensure_runtime(clang_path, compiler_dir, name) or_return
@@ -998,7 +1002,13 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         strings.write_string(&cb, " -o ")
         strings.write_byte(&cb, '"'); strings.write_string(&cb, t.o_path); strings.write_byte(&cb, '"')
         strings.write_string(&cb, " -Wno-override-module -mf16c")
-        if release { strings.write_string(&cb, " -O3 -flto" + RELEASE_MARCH) }   // (bitcode: optimized whole at the link)
+        if release {
+            strings.write_string(&cb, " -O3 -flto" + RELEASE_MARCH)   // (bitcode: optimized whole at the link)
+        } else if checked.no_crt {
+            // (With no C library there's no floor or ceil to call: the
+            // release build's machine, which has them as instructions.)
+            strings.write_string(&cb, RELEASE_MARCH)
+        }
         // Redirect stderr to a per-task file so parallel clangs don't
         // interleave their diagnostics on the shared parent stderr.
         // Read back and print serially after the pool finishes.
@@ -1056,6 +1066,14 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     if any_failed { return false }
 
     // ---- Stage 2: link all .o files ----
+    when ODIN_OS == .Windows {
+        if checked.no_crt {
+            all := make([dynamic]string, context.temp_allocator)
+            for t in tasks { append(&all, t.o_path) }
+            for o in objects { append(&all, o) }
+            return link_no_crt(all[:], exe_name, lf, compiler_dir, debug, icon, no_console, release)
+        }
+    }
     b: strings.Builder
     when ODIN_OS == .Windows {
         strings.write_byte(&b, '"'); strings.write_string(&b, clang_path); strings.write_byte(&b, '"')
@@ -1435,7 +1453,7 @@ CLI_Args :: struct {
     lsp:          bool,
 }
 
-USAGE :: "Usage: mara build [module|build] [-web] [-shared] [-release] [-llvm] [-profile time|memory] [-no assert] [-no console]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
+USAGE :: "Usage: mara build [module|build] [-web] [-shared] [-release] [-llvm] [-profile time|memory] [-no assert] [-no console] [-no crt]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
 PROFILE_USAGE :: `-profile needs what to measure:
     -profile time     how long each fun takes: profile.txt, next to the program, when it ends
     -profile memory   how full each partial array and arena gets: memory.txt`
@@ -2087,16 +2105,14 @@ main :: proc() {
     // Prune to the use-closure starting from the target. Modules outside
     // the closure aren't lexed/parsed, so unrelated `.mara` files in the
     // search dir can't dump diagnostics into the build.
-    // (`-no crt`: a Windows program of the x86 backend's objects alone — what
-    // else it can't be yet said here. MARA_NO_CRT asks for it wherever it can
-    // be had: how the tests are run under it.)
+    // (`-no crt`: a Windows program — what it can't be yet said here.
+    // MARA_NO_CRT asks for it wherever it can be had: how the tests are run
+    // under it.)
     {
         cant := ""
         switch {
         case ODIN_OS != .Windows:   cant = "is for Windows programs"
         case args.web:              cant = "can't build for the web"
-        case args.release:          cant = "can't build with -release yet"
-        case args.llvm, os.get_env("MARA_LLVM", context.temp_allocator) != "": cant = "can't build with -llvm yet"
         case args.profile, args.profile_memory: cant = "can't build with -profile yet"
         }
         if args.no_crt && cant != "" {
