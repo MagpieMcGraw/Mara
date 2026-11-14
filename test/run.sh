@@ -150,8 +150,10 @@ check_dir() {  # d
 # The docs' programs (doc/*.mara): each must build and run with no arguments
 # to exit 0 — run from doc/, where they find the files they read.
 check_doc() {  # f
-  local f=$1 name="${1%.mara}" key="doc.${1%.mara}" out rc
-  out=$(cd "$ROOT/doc" && "$MARA" build "$name" 2>&1)
+  local f=$1 name="${1%.mara}" key="doc.${1%.mara}" out rc flags=
+  # (mara.crypto's and mara.sqlite's C call the C library: built with it.)
+  case "$name" in hashing|sqlite) flags=-crt ;; esac
+  out=$(cd "$ROOT/doc" && "$MARA" build "$name" $flags 2>&1)
   if ! echo "$out" | grep -q "Compiled module"; then
     verdict "$key" bad "DOC DOESN'T BUILD: doc/$f"
     return

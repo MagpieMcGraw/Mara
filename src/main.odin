@@ -936,7 +936,7 @@ link_no_crt :: proc(ll_paths: []string, exe_name: string, lf: Link_Flags, compil
     if res_path != "" { os.remove(res_path) }
     if ret != 0 {
         fmt.printf("lld-link failed (exit code %d)\n", ret)
-        fmt.printf("  (`-no crt` builds a program with no C library: C code it links can call none of its functions — printf, malloc, memcpy. If an undefined symbol above is one, build without `-no crt`.)\n")
+        fmt.printf("  (The program is built with no C library: C code it links can call none of its functions — printf, malloc, strlen. If an undefined symbol above is one, build with `-crt` (or `crt = true` in build.mara), which needs Visual Studio's C library.)\n")
         return false
     }
     return true
@@ -1403,7 +1403,9 @@ CLI_Args :: struct {
     llvm:         bool,    // -llvm — the LLVM backend (clang compiles the IR) instead of the x86 one (x86.odin)
     no_assert:    bool,    // -no assert — compile asserts out (they stay on in -release)
     no_console:   bool,    // -no console — a Windows program that opens no console window (build.mara's `console = false`)
-    no_crt:       bool,    // -no crt — a Windows program with no C library: its runtime code/runtime.mara's, linked by lld-link alone
+    no_crt:       bool,    // a Windows program with no C library: its runtime code/runtime.mara's, linked by lld-link alone — the default where it can be had
+    no_crt_asked: bool,    // -no crt — asked for: an error where it can't be had
+    crt:          bool,    // -crt — built with the C library, as every program was (build.mara's `crt = true`): for C source that calls it
     profile:      bool,    // -profile time — time the program's funs, written to profile.txt at exit (runtime/mara_prof.c)
     profile_memory: bool,  // -profile memory — how full each partial array and arena gets, written to memory.txt at exit (runtime/mara_mem.c)
     ok:           bool,
@@ -1453,7 +1455,7 @@ CLI_Args :: struct {
     lsp:          bool,
 }
 
-USAGE :: "Usage: mara build [module|build] [-web] [-shared] [-release] [-llvm] [-profile time|memory] [-no assert] [-no console] [-no crt]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
+USAGE :: "Usage: mara build [module|build] [-web] [-shared] [-release] [-llvm] [-profile time|memory] [-no assert] [-no console] [-crt]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
 PROFILE_USAGE :: `-profile needs what to measure:
     -profile time     how long each fun takes: profile.txt, next to the program, when it ends
     -profile memory   how full each partial array and arena gets: memory.txt`
@@ -1738,6 +1740,7 @@ parse_args :: proc() -> CLI_Args {
         arg := os.args[i]
         if arg == "-web"     { args.web     = true; i += 1; continue }
         if arg == "-shared"  { args.shared  = true; i += 1; continue }
+        if arg == "-crt"     { args.crt     = true; i += 1; continue }
         if arg == "-release" { args.release = true; i += 1; continue }
         if arg == "-llvm"    { args.llvm    = true; i += 1; continue }
         if arg == "-profile" {
@@ -1768,7 +1771,7 @@ parse_args :: proc() -> CLI_Args {
             case "console":
                 args.no_console = true
             case "crt":
-                args.no_crt = true
+                args.no_crt_asked = true
             case:
                 fmt.printf("unknown feature `-no %s` — features that can be disabled: assert, console, crt\n", feature)
                 return args
@@ -1935,6 +1938,7 @@ parse_args :: proc() -> CLI_Args {
         args.release ||= spec.release
         args.llvm ||= spec.llvm
         args.no_console ||= spec.no_console
+        args.crt ||= spec.crt
         // (Its icon: read now, a wrong one said before the build, not after.)
         if spec.icon != "" && subcmd == "build" {
             ico, err := os.read_entire_file_from_path(spec.icon, context.allocator)
@@ -2105,22 +2109,23 @@ main :: proc() {
     // Prune to the use-closure starting from the target. Modules outside
     // the closure aren't lexed/parsed, so unrelated `.mara` files in the
     // search dir can't dump diagnostics into the build.
-    // (`-no crt`: a Windows program — what it can't be yet said here.
-    // MARA_NO_CRT asks for it wherever it can be had: how the tests are run
-    // under it.)
+    // A Windows program is built with no C library wherever it can be —
+    // what it can't be yet is built with one, as is a build that asks for it
+    // (`-crt`). `-no crt` asks for none: an error where that can't be had.
     {
         cant := ""
         switch {
         case ODIN_OS != .Windows:   cant = "is for Windows programs"
         case args.web:              cant = "can't build for the web"
         case args.profile, args.profile_memory: cant = "can't build with -profile yet"
+        case args.shared:           cant = "can't build a library yet"
+        case args.crt:              cant = "and -crt ask for opposite things"
         }
-        if args.no_crt && cant != "" {
+        if args.no_crt_asked && cant != "" {
             fmt.printf("`-no crt` %s.\n", cant)
             os.exit(1)
         }
-        if !args.no_crt && cant == "" && os.get_env("MARA_NO_CRT", context.temp_allocator) != "" { args.no_crt = true }
-        if RUNTIME_MODULE not_in all_files { args.no_crt = false }
+        args.no_crt = cant == "" && RUNTIME_MODULE in all_files
     }
     files := compute_use_closure(all_files, args.pkg_name, &perf, RUNTIME_MODULE if args.no_crt else "")
 
@@ -2169,9 +2174,14 @@ main :: proc() {
         return
     }
 
+    // (A module with no main is a library, known only now: built with the C
+    // library still. The runtime's module is in it, unused.)
     if checked.no_crt && pkg_shared {
-        fmt.printf("`-no crt` can't build a library yet; '%s' is one.\n", args.pkg_name)
-        os.exit(1)
+        if args.no_crt_asked {
+            fmt.printf("`-no crt` can't build a library yet; '%s' is one.\n", args.pkg_name)
+            os.exit(1)
+        }
+        checked.no_crt = false
     }
     // A profile is written when the program exits: a program, run natively.
     if args.profile && (args.web || pkg_shared) {

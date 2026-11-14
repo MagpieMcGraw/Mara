@@ -1,4 +1,6 @@
 module foreign_err_value_neg
+//@ build-flags: -crt
+// (-crt: as foreign_err.)
 
 //@ expect-fail: as a value
 

@@ -1,4 +1,6 @@
 module crypto_vectors
+//@ build-flags: -crt
+// (-crt: crypt_blowfish.c calls the C library.)
 
 use mara.core
 use mara.memory

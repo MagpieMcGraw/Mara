@@ -1,4 +1,6 @@
 module foreign_err
+//@ build-flags: -crt
+// (-crt: with no C library the runtime brings mara.os in, which binds SetCurrentDirectoryA with another result.)
 
 // A foreign block's `fails`: a fun that gives err has C's result made into one.
 // C reports success, Mara reports failure. Here, Windows' own functions do it:

@@ -29,6 +29,7 @@ Build_Spec :: struct {
     release: bool,
     llvm:    bool,
     no_console: bool,           // console = false
+    crt:        bool,           // crt = true
 }
 
 // What Build's fields hold (code/build.mara): their rooms, checked here as
@@ -37,7 +38,7 @@ BUILD_NAME_ROOM :: 64    // module_name, out: str64
 BUILD_DIRS_MAX  :: 6     // dirs: [6][96]utf8, icon: [96]utf8 (a whole Build under the stack's 1 KB)
 BUILD_PATH_ROOM :: 96
 
-BUILD_FIELDS :: "module_name, dirs, out, icon, release, llvm, console"
+BUILD_FIELDS :: "module_name, dirs, out, icon, release, llvm, console, crt"
 
 // The builds the build.mara in `dir` declares. found: there is one, `module
 // build`. problem: what's wrong in it, said where.
@@ -116,11 +117,12 @@ build_file_read :: proc(dir: string) -> (specs: [dynamic]Build_Spec, found: bool
                 if !ok { return specs, found, say(path, source, v, "`%s` is text of up to %d bytes, in quotes.", f.text, BUILD_NAME_ROOM) }
                 if f.text == "out" { spec.out = s } else { spec.module = s }
                 i += 1
-            case "release", "llvm", "console":
+            case "release", "llvm", "console", "crt":
                 if v.kind != .True && v.kind != .False { return specs, found, say(path, source, v, "`%s` is true or false.", f.text) }
                 switch f.text {
                 case "release": spec.release = v.kind == .True
                 case "llvm":    spec.llvm = v.kind == .True
+                case "crt":     spec.crt = v.kind == .True
                 case:           spec.no_console = v.kind == .False
                 }
                 i += 1

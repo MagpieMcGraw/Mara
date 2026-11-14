@@ -45,4 +45,9 @@ Build :: struct {
 	// it prints is seen only where its output is sent on (`game > log.txt`);
 	// a crash is still written to crash.txt beside it.
 	console: bool = true
+	// true: built with the C library, as `-crt` does — for a program that
+	// binds C source calling it (printf, malloc), or mara.sqlite. It needs
+	// Visual Studio's C library installed. A Windows program is otherwise
+	// built with none: its runtime is Mara's own.
+	crt: bool = false
 }
