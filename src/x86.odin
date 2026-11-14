@@ -301,6 +301,12 @@ x86_stack_probe :: proc(m: ^X86_Module) {
         0x4D, 0x29, 0xD3,                           // last: sub r11, r10
         0x4D, 0x85, 0x1B,                           // test [r11], r11
         0xC3)                                       // ret
+    // (And `_fltused`, which a C object that uses floats names so the C
+    // library's float printing is linked: here just a number.)
+    data := &m.sec[.Data]
+    x86_pad(data, 4)
+    x86_define(m, "_fltused", .Data, len(data), true, false)
+    x86_u32(data, 0x9875)
 }
 
 // The thread-local storage directory of a program that starts threads, its

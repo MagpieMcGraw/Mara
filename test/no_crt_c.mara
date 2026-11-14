@@ -1,0 +1,27 @@
+module no_crt_c
+//@ build-flags: -no crt
+//@ expect-output: 42
+//@ expect-output: 2 4 6
+
+// `-no crt` and C source that calls nothing of the C library: linked as any
+// library is. (Its floats make the C object name `_fltused`, which the
+// program defines itself.)
+
+use mara.core
+
+Vec3 :: struct {
+	x : f32
+	y : f32
+	z : f32
+}
+
+foreign static_lib "abi_test" {
+	fun abi_test_int(x: i32) -> i32
+	fun abi_test_vec3(v: Vec3) -> Vec3
+}
+
+main :: fun() {
+	print(abi_test_int(21))
+	v := abi_test_vec3(Vec3{1.0, 2.0, 3.0})
+	print(v.x, v.y, v.z)
+}

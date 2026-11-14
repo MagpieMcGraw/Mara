@@ -1,18 +1,13 @@
-// No system headers needed — this file declares everything it uses (GL types,
-// printf forward-decl, NULL). That way Mara's auto-compile path can produce
-// the static lib on a fresh clone without depending on glibc-devel / MSVC SDK
-// headers being installed. The printf symbol still resolves at link time from
-// libc.so.6 (Linux) / ucrt.dll (Windows), both of which are part of the OS.
+// No system headers needed, and no C library: this file declares everything
+// it uses (GL types, NULL) and calls nothing but GL. That way Mara's
+// auto-compile path can produce the static lib on a fresh clone without
+// depending on glibc-devel / MSVC SDK headers being installed, and a program
+// built with no C library (`-no crt`) can link it.
 //
 // User-authored .c files in foreign blocks can use whatever headers they like
 // — clang's normal search path is unchanged. This restriction applies only to
 // the bundled bindings shipped with Mara.
 
-// ---------------------------------------------------------------------------
-// Stand-ins for the two libc pieces we'd otherwise pull from headers
-// ---------------------------------------------------------------------------
-
-extern int printf(const char *fmt, ...);
 #define NULL ((void*)0)
 
 // ---------------------------------------------------------------------------
@@ -400,9 +395,9 @@ void   glGetQueryObjectui64v(GLuint id, GLenum pname, GLuint64 *params)         
 // Shader/program convenience helpers — Mara's binding layer can't easily pass
 // `const char* const*` for glShaderSource, and the compile/link error-check
 // dance is the same for every shader anyway. These wrappers do the verbose
-// part and report errors via printf so callers see compile/link diagnostics
-// immediately. Return 0 on failure, matching how OpenGL signals invalid
-// object names.
+// part. Return 0 on failure, matching how OpenGL signals invalid object
+// names; what GL said of it is then mara_gl_log()'s, until the next failure
+// (open_gl.mara prints it).
 // ---------------------------------------------------------------------------
 
 #define GL_COMPILE_STATUS 0x8B81
@@ -429,6 +424,9 @@ GLboolean mara_gl_has_extension(const char *name) {
     return 0;
 }
 
+static char mara_gl_log_text[1024];
+const char *mara_gl_log(void) { return mara_gl_log_text; }
+
 GLuint mara_gl_compile_shader(GLenum type, const char *src) {
     GLuint shader = _glCreateShader(type);
     const char *sources[1] = { src };
@@ -437,9 +435,8 @@ GLuint mara_gl_compile_shader(GLenum type, const char *src) {
     GLint status = 0;
     _glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
     if (!status) {
-        char log[1024];
-        _glGetShaderInfoLog(shader, sizeof(log), NULL, log);
-        printf("[gl] shader compile error: %s\n", log);
+        mara_gl_log_text[0] = 0;
+        _glGetShaderInfoLog(shader, sizeof(mara_gl_log_text), NULL, mara_gl_log_text);
         _glDeleteShader(shader);
         return 0;
     }
@@ -454,9 +451,8 @@ GLuint mara_gl_link_program(GLuint vs, GLuint fs) {
     GLint status = 0;
     _glGetProgramiv(program, GL_LINK_STATUS, &status);
     if (!status) {
-        char log[1024];
-        _glGetProgramInfoLog(program, sizeof(log), NULL, log);
-        printf("[gl] program link error: %s\n", log);
+        mara_gl_log_text[0] = 0;
+        _glGetProgramInfoLog(program, sizeof(mara_gl_log_text), NULL, mara_gl_log_text);
         _glDeleteProgram(program);
         return 0;
     }

@@ -1,16 +1,16 @@
 module no_crt_c_neg
 //@ build-flags: -no crt
-//@ expect-fail: is C code
+//@ expect-fail: no C library
 
-// `-no crt` and a foreign block of C source: C code needs the C library the
-// build leaves out, so the build says so before compiling anything.
+// `-no crt` and C source that calls the C library (printf): there is none to
+// link, and the build says so with the linker's own word for what's missing.
 
 use mara.core
 
-foreign static_lib "abi_test" {
-	fun abi_test_int(x: i32) -> i32
+foreign static_lib "libc_user" {
+	fun libc_user(x: i32) -> i32
 }
 
 main :: fun() {
-	print(abi_test_int(3))
+	print(libc_user(3))
 }

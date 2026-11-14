@@ -597,21 +597,6 @@ import_lib_made :: proc(checked: ^Checked_Program, lib, build_dir, compiler_dir:
     return lib_path, true
 }
 
-// The C source behind a foreign block's library, "" when it has none (a
-// system DLL, or a library with no source beside it): `name.c` as written, or
-// a bare name's `name.c` in code/, one of its folders, or here.
-c_source_of :: proc(lib, compiler_dir: string) -> string {
-    c_name := lib if strings.has_suffix(lib, ".c") else strings.concatenate({lib, ".c"}, context.temp_allocator)
-    if c_name != lib && is_foreign_file(lib) { return "" }
-    dirs := code_search_dirs(compiler_dir)
-    cwd, _ := os.get_working_directory(context.temp_allocator)
-    for i in 0..=len(dirs) {
-        path, _ := filepath.join({dirs[i] if i < len(dirs) else cwd, c_name}, context.temp_allocator)
-        if os.exists(path) { return path }
-    }
-    return ""
-}
-
 build_link_flags :: proc(checked: ^Checked_Program, web: bool = false, build_dir := "") -> Link_Flags {
     lib_flags_b:    strings.Builder
     extra_inputs_b: strings.Builder
@@ -758,10 +743,6 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false, build_dir
         for lib in libs {
             if lib in seen^ { continue }
             seen^[lib] = true
-            if checked.no_crt && c_source_of(lib, compiler_dir) != "" {
-                fmt.printf("`-no crt` builds a program with no C library, and `foreign static_lib \"%s\"` is C code (%s), which needs one.\n  Build without `-no crt`.\n", lib, c_source_of(lib, compiler_dir))
-                return false
-            }
             // `.c` suffix = explicit "force recompile" form. Always rebuild
             // the static lib from source, then hand the .lib to the linker.
             // Same artifact the bare-name path would produce — so a user can
@@ -921,7 +902,9 @@ ensure_runtime :: proc(clang_path, compiler_dir, name: string) -> (string, bool)
 // A program linked with no C library (`-no crt`): its objects and the import
 // libraries made for its foreign blocks, by the bundled lld-link alone — no
 // default libraries, its entry __mara_start. No C runtime file is compiled,
-// and nothing of Visual Studio's or the Windows SDK's is read.
+// and nothing of Visual Studio's or the Windows SDK's is read. A foreign
+// block's C source is linked as any library is: it can call no C library
+// function, there being none.
 link_no_crt :: proc(ll_paths: []string, exe_name: string, lf: Link_Flags, compiler_dir: string, debug: bool, icon: []u8, no_console: bool) -> bool {
     b: strings.Builder
     lld, _ := filepath.join({compiler_dir, "tools", "lld-link.exe"})
@@ -950,6 +933,7 @@ link_no_crt :: proc(ll_paths: []string, exe_name: string, lf: Link_Flags, compil
     if res_path != "" { os.remove(res_path) }
     if ret != 0 {
         fmt.printf("lld-link failed (exit code %d)\n", ret)
+        fmt.printf("  (`-no crt` builds a program with no C library: C code it links can call none of its functions — printf, malloc, memcpy. If an undefined symbol above is one, build without `-no crt`.)\n")
         return false
     }
     return true

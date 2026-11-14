@@ -448,6 +448,7 @@ foreign static_lib "open_gl" {
     fun mara_gl_proc_set(i: i32, address: ^byte)
     fun mara_gl_compile_shader(type: Shader_Type, src: cstring) -> u32
     fun mara_gl_link_program(vs: u32, fs: u32) -> u32
+    fun mara_gl_log() -> ^byte
     fun mara_gl_has_extension(name: cstring) -> u8
 }
 
@@ -466,10 +467,18 @@ gl_load :: fun(get_proc: fun([]utf8) -> ^byte) {
 }
 // Convenience: compile a shader from a single source string.
 // Returns shader id on success, 0 on failure (error printed to stdout).
-gl_compile_shader :: fun(type: Shader_Type, src: []utf8) -> u32 { return mara_gl_compile_shader(type, cstring(src)) }
+gl_compile_shader :: fun(type: Shader_Type, src: []utf8) -> u32 {
+    shader := mara_gl_compile_shader(type, cstring(src))
+    if shader == 0 do print("[gl] shader compile error:", os.read_cstring(1024, mara_gl_log()))
+    return shader
+}
 // Convenience: link vertex+fragment shaders into a program.
 // Returns program id on success, 0 on failure (error printed to stdout).
-gl_link_program :: fun(vs: u32, fs: u32) -> u32 { return mara_gl_link_program(vs, fs) }
+gl_link_program :: fun(vs: u32, fs: u32) -> u32 {
+    program := mara_gl_link_program(vs, fs)
+    if program == 0 do print("[gl] program link error:", os.read_cstring(1024, mara_gl_log()))
+    return program
+}
 // 1 when the driver has the extension `name`, else 0:
 // `gl.gl_has_extension("GL_ARB_bindless_texture")`. Asked after gl_load.
 gl_has_extension :: fun(name: []utf8) -> u8 { return mara_gl_has_extension(cstring(name)) }
