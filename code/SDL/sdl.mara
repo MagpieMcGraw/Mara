@@ -1143,6 +1143,10 @@ foreign static_lib "SDL3" prefix SDL_ fails Failed {
     fun SetTextureScaleMode(texture: Texture, mode: i32) -> err
     fun DestroyTexture(texture: Texture)
     fun WaitEventTimeout(event: ^Event, ms: i32) -> bool
+    // TextInput events (what's typed, as text) come for a window only
+    // between these two.
+    fun StartTextInput(window: Window) -> err
+    fun StopTextInput(window: Window) -> err
     fun SetWindowSize(window: Window, w: i32, h: i32) -> err
     fun GetDisplayForWindow(window: Window) -> u32
     fun GetDisplayUsableBounds(display: u32, rect: ^SDL_Rect) -> err
