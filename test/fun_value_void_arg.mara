@@ -1,0 +1,22 @@
+module fun_value_void_arg
+//@ expect-output: called: true
+
+// A call through a fun value with void for a pointer, when no fun of the
+// program is used as a value of that signature: the void check found no such
+// funs, and the compiler crashed looking through them. (Here the value is a
+// C function's address, looked up in a DLL.)
+
+use mara.core
+use mara.os
+
+main :: fun() {
+	called := true
+	#if #windows {
+		lib := load_library("kernel32.dll")
+		if lib == void do return
+		handle_of : fun(^byte) -> ^byte = find_symbol(lib, "GetModuleHandleA")
+		if handle_of == void do return
+		called = handle_of(void) != void
+	}
+	print("called:", called)
+}

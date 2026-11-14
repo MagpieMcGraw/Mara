@@ -22,6 +22,19 @@ ARGS       :: 128       // how many of them are kept
 CRASH_ROOM :: 64 * KB   // a failure's report, for crash.txt
 TRACES     :: 64        // the newest errs that keep their trace
 SITES      :: 16        // the places a trace holds
+CRASH_FILE :: 1 * MB    // crash.txt's size, at most
+
+FRAMES      :: 200000   // the frames a stack's walk keeps (a stack overflow's: 1 MB of small frames, and room)
+FRAMES_HEAD :: 40       // of a deep stack, the first calls said
+FRAMES_TAIL :: 12       // and the last
+CYCLE       :: 4        // the longest cycle of calls said once
+
+CONTEXT_ROOM :: 1232    // Windows' CONTEXT: a thread's registers
+CONTEXT_RSP  :: 152     // where its stack pointer is
+CONTEXT_RIP  :: 248     // and the address it runs at
+FRAMES_AT    :: 4096                       // the walk's block: the registers, the frames,
+RUNS_AT      :: FRAMES_AT + FRAMES * 16    // the runs
+WALK_ROOM    :: RUNS_AT + FRAMES * 24
 
 // An err's trace: where it was made, then each place that passed it on, as
 // atoms. `id` says whose it is: 0, nobody's yet.
@@ -29,6 +42,49 @@ Trace :: struct {
 	id:    u32
 	len:   u32
 	sites: [SITES!]u32
+}
+
+// A frame of the stack: the address it runs at (or returns to), and how many
+// times in a row the stack has it.
+Frame :: struct {
+	at:    u64
+	times: i64
+}
+
+// A run of frames: `period` of them from `at`, `times` over (calls that call
+// each other again and again).
+Run :: struct {
+	at:     i64
+	period: i64
+	times:  i64
+}
+
+// What dbghelp fills for an address: its fun's name (SYMBOL_INFO), its file
+// and line (IMAGEHLP_LINE64).
+Symbol_Info :: struct {
+	struct_size: u32
+	type_index:  u32
+	reserved:    [2!]u64
+	index:       u32
+	size:        u32
+	image:       u64
+	flags:       u32
+	value:       u64
+	address:     u64
+	register:    u32
+	scope:       u32
+	tag:         u32
+	name_len:    u32
+	name_room:   u32
+	name:        [264!]byte
+}
+
+Line_Info :: struct {
+	struct_size: u32
+	key:         ^byte
+	number:      u32
+	file:        ^byte
+	address:     u64
 }
 
 Runtime :: struct {
@@ -40,6 +96,16 @@ Runtime :: struct {
 	traces:   [TRACES!]Trace
 	args:     [ARGS_ROOM]byte     // the command line's arguments, a 0 after each
 	args_at:  [ARGS + 1]i64       // where each starts in `args`, and where the last ends
+	crashing: i32                 // a crash Windows raised is being reported (set once, by whichever thread: atomic)
+	walk_mem:  ^byte              // the stack walk's block: the registers it starts from, its frames, its runs
+	walk_done: bool               // the calls that were running are said once
+	walk_skip: bool               // an assert's: without the runtime's own calls
+	sym_from:  fun(File_Id, u64, ^u64, ^Symbol_Info) -> i32   // dbghelp's SymFromAddr
+	sym_line:  fun(File_Id, u64, ^u32, ^Line_Info) -> i32     // and SymGetLineFromAddr64
+	exe_dir:   [600]utf8          // the program's folder, its last separator kept
+	at_name:   [256]byte          // the place looked up last: its fun,
+	at_file:   [800]byte          // its file,
+	at_line:   u32                // its line
 }
 
 foreign static_lib "kernel32" {
@@ -47,6 +113,17 @@ foreign static_lib "kernel32" {
 	fun GetFileType(file: File_Id) -> u32
 	fun GetLocalTime(time: ^Local_Time)
 	fun GetCommandLineA() -> ^byte
+	fun GetCurrentProcess() -> File_Id
+	fun RtlCaptureContext(context: ^byte)
+	fun RtlLookupFunctionEntry(address: u64, base: ^u64, history: ^byte) -> ^byte
+	fun RtlVirtualUnwind(handler: u32, base: u64, address: u64, entry: ^byte, context: ^byte, data: ^u64, frame: ^u64, pointers: ^byte) -> ^byte
+	// (An address as a number: read with a miss told, where a read through
+	// a pointer would crash.)
+	fun ReadProcessMemory(process: File_Id, address: u64, into: ^u64, size: usize, read: ^usize) -> i32
+	fun GetModuleHandleExA(flags: u32, address: u64, image: ^u64) -> i32
+	fun K32GetModuleBaseNameA(process: File_Id, image: u64, name: ^byte, size: u32) -> u32
+	fun SetThreadStackGuarantee(size: ^u32) -> i32
+	fun SetUnhandledExceptionFilter(on_crash: ^byte) -> ^byte
 }
 
 // The date and time where the computer is, as Windows gives it (SYSTEMTIME).
@@ -136,15 +213,20 @@ float_out :: fun(rt: ^Runtime, v: f64, digits: i32, tee: i32) {
 	put(rt, float_text_f64(v, -1, i64(digits)), tee)
 }
 
-// A pointer: its 16 hex digits.
-ptr_out :: fun(rt: ^Runtime, p: ^byte, tee: i32) {
+// A number in hex: at least `pad` digits.
+hex_out :: fun(rt: ^Runtime, v: u64, pad: i64, tee: i32) {
 	HEX :: "0123456789ABCDEF"
-	v := u64(p)
 	digits : [16]byte
 	for i in 0:16 {
-		&digits ++ u8(HEX[i64((v >> u64(60 - 4 * i)) & 0xF)])
+		d := i64((v >> u64(60 - 4 * i)) & 0xF)
+		if d != 0 or digits.len > 0 or 16 - i <= pad do &digits ++ u8(HEX[d])
 	}
 	put(rt, digits, tee)
+}
+
+// A pointer: its 16 hex digits.
+ptr_out :: fun(rt: ^Runtime, p: ^byte, tee: i32) {
+	hex_out(rt, u64(p), 16, tee)
 }
 
 // The program ends: what's printed is written first.
@@ -269,11 +351,14 @@ crash_begin :: fun(rt: ^Runtime) {
 	&rt.crash ++ stamp
 }
 
-// The report ends: added to crash.txt beside the program, a blank line
-// after it. (The calls that were running, and keeping the file under a
-// size: to come — runtime/mara_crash.c has both.)
+// The report ends: the calls that were running added to it, then the whole
+// of it to crash.txt beside the program, a blank line after it.
 crash_end :: fun(rt: ^Runtime) {
 	if not rt.crash_on do return
+	if not rt.walk_done and walk_room(rt) {
+		RtlCaptureContext(rt.walk_mem)
+		stack_out(rt, true)
+	}
 	rt.crash_on = false
 	flush(rt)
 	if rt.crash.len == 0 do return
@@ -290,11 +375,485 @@ crash_end :: fun(rt: ^Runtime) {
 	if failed do return
 	_, _ := file_write(file, rt.crash)
 	file_close(file)
+	crash_trim(path)
 }
 
-// (A crash Windows raises — a bad memory access, a stack overflow — reported
-// as an assert is: to come.)
-crash_install :: fun(rt: ^Runtime) {
+// crash.txt kept under its size: whole reports dropped from its start, the
+// oldest first. It's rewritten as a file beside it, which then takes its
+// name, so a program ending halfway leaves the old one whole.
+crash_trim :: fun(path: []utf8) {
+	file, failed := file_open_read(path)
+	if failed do return
+	size, no_size := file_size(file)
+	if no_size or size <= CRASH_FILE or size > 1 << 30 {
+		file_close(file)
+		return
+	}
+	mem := vm_reserve(size)
+	if mem == void or vm_commit(mem, size) == 0 {
+		file_close(file)
+		return
+	}
+	data := slice_from_ptr(mem, size)
+	unread := file_read(file, &data)
+	file_close(file)
+	got := data.len
+	if unread or got != size {
+		vm_release(mem, size)
+		return
+	}
+	first : i64 = 0
+	for got - first > CRASH_FILE {
+		i := first
+		for i + 1 < got and not (data[i] == 10 and data[i + 1] == 10) do i += 1
+		if i + 1 >= got {
+			first = got - CRASH_FILE   // (one huge report: cut where it fits)
+			break
+		}
+		first = i + 2
+	}
+	beside : [600]utf8
+	&beside ++ path
+	&beside ++ ".tmp"
+	out, no_out := file_open_write(beside)
+	if not no_out {
+		wrote, short := file_write(out, data[first:got])
+		file_close(out)
+		if short or wrote != got - first {
+			_ = file_delete(beside)
+		else
+			_ = file_rename(beside, path)
+		}
+	}
+	vm_release(mem, size)
+}
+
+// --- the calls that were running -----------------------------------------------
+//
+// A report ends with the calls that were running when it was made, innermost
+// first, each where it was in the source:
+//
+//     at area (dbg.mara:38)
+//     at main (dbg.mara:56)
+//
+// The stack is walked by the unwind info every fun has, from the crash's own
+// registers — or, for an assert's report, from crash_end — and each address
+// is named by the program's debug info (its PDB, beside it) through
+// dbghelp.dll, loaded only now. That's done on a thread of its own: a stack
+// overflow's report has little stack left. An assert's report leaves out the
+// runtime's own calls it starts in; every report leaves out what's below
+// main. A call that calls itself again and again is one line, and a deep
+// stack shows its first calls and its last. A program with no debug info
+// reports no calls.
+
+// The registers the walk starts from (Windows' CONTEXT), the frames found,
+// and the runs they're said as: one block, asked of the system when needed.
+walk_room :: fun(rt: ^Runtime) -> bool {
+	if rt.walk_mem != void do return true
+	mem := vm_reserve(WALK_ROOM)
+	if mem == void do return false
+	if vm_commit(mem, WALK_ROOM) == 0 do return false
+	rt.walk_mem = mem
+	return true
+}
+
+// The stack's frames, from the registers in the block: each one unwound by
+// its fun's unwind info; a fun with none (the stack probe), returned from by
+// the address on top of its stack. How many there are.
+stack_walk :: fun(rt: ^Runtime) -> i64 {
+	if rt.walk_mem == void do return 0
+	mem := slice_from_ptr(rt.walk_mem, WALK_ROOM)
+	n : i64 = 0
+	for k in 0:FRAMES {
+		rip : u64 = mem[CONTEXT_RIP]
+		again := false
+		if n > 0 {
+			before := let(Frame, &mem[FRAMES_AT + (n - 1) * 16])
+			if before.at == rip {
+				before.times += 1
+				again = true
+			}
+		}
+		if not again {
+			f := let(Frame, &mem[FRAMES_AT + n * 16])
+			f.at = rip
+			f.times = 1
+			n += 1
+		}
+		base : u64 = 0
+		entry := RtlLookupFunctionEntry(rip, &base, void)
+		if entry != void {
+			data : u64 = 0
+			frame : u64 = 0
+			_ = RtlVirtualUnwind(0, base, rip, entry, rt.walk_mem, &data, &frame, void)
+		else
+			rsp : u64 = mem[CONTEXT_RSP]
+			back : u64 = 0
+			if ReadProcessMemory(GetCurrentProcess(), rsp, &back, usize(8), void) == 0 do break
+			mem[CONTEXT_RIP] = back
+			mem[CONTEXT_RSP] = rsp + 8
+		}
+		next : u64 = mem[CONTEXT_RIP]
+		if next == 0 do break
+	}
+	return n
+}
+
+// What the debug info says of frame i, into at_name, at_file and at_line:
+// its fun, its file, its line. (A frame's address is where it returns to:
+// the call is just before it. The first frame's is the crash's own.)
+frame_place :: fun(rt: ^Runtime, i: i64) {
+	rt.at_name.len = 0
+	rt.at_file.len = 0
+	rt.at_line = 0
+	name_of := rt.sym_from
+	line_of := rt.sym_line
+	if rt.walk_mem == void or name_of == void or line_of == void do return
+	mem := slice_from_ptr(rt.walk_mem, WALK_ROOM)
+	f := let(Frame, &mem[FRAMES_AT + i * 16])
+	at := f.at
+	if i > 0 do at -= 1
+	sym : Symbol_Info
+	sym.struct_size = 88
+	sym.name_room = 255
+	off : u64 = 0
+	if name_of(GetCurrentProcess(), at, &off, &sym) != 0 {
+		n : i64 = 0
+		for n < 255 and sym.name[n] != 0 do n += 1
+		&rt.at_name ++ sym.name[0:n]
+	}
+	line : Line_Info
+	line.struct_size = 40
+	column : u32 = 0
+	if line_of(GetCurrentProcess(), at, &column, &line) != 0 and line.file != void {
+		n := cstr_len(rt, line.file)
+		if n > rt.at_file.cap do n = rt.at_file.cap
+		text : []byte = slice_from_ptr(line.file, n)
+		&rt.at_file ++ text
+		rt.at_line = line.number
+	}
+}
+
+small :: fun(b: u8) -> u8 {
+	if b >= 65 and b <= 90 do return b + 32
+	return b
+}
+
+// Whether a's bytes are b's.
+bytes_same :: fun(a: []byte, b: []byte) -> bool {
+	if a.len != b.len do return false
+	for i in 0:a.len {
+		if a[i] != b[i] do return false
+	}
+	return true
+}
+
+// Whether the place looked up last is in a Mara file.
+in_mara :: fun(rt: ^Runtime) -> bool {
+	END :: ".mara"
+	n := rt.at_file.len
+	if n <= 5 do return false
+	for k in 0:5 {
+		b : u8 = rt.at_file[n - 5 + k]
+		if small(b) != u8(END[k]) do return false
+	}
+	return true
+}
+
+// Whether the place looked up last is the runtime's own: a fun of this file,
+// or one the compiler made for a failure (`__mara_…`, or with no name).
+in_runtime :: fun(rt: ^Runtime) -> bool {
+	if rt.at_name.len == 0 do return true
+	i : i64 = 0
+	for i < rt.at_name.len and rt.at_name[i] == '_' do i += 1
+	if i > 0 and i + 5 <= rt.at_name.len and bytes_same(rt.at_name[i:i + 5], "mara_") do return true
+	OWN :: "runtime.mara"
+	n := rt.at_file.len
+	if n < 12 do return false
+	for k in 0:12 {
+		b : u8 = rt.at_file[n - 12 + k]
+		if small(b) != u8(OWN[k]) do return false
+	}
+	return true
+}
+
+// A frame's line of the report.
+frame_out :: fun(rt: ^Runtime, i: i64) {
+	if rt.walk_mem == void do return
+	frame_place(rt, i)
+	mem := slice_from_ptr(rt.walk_mem, WALK_ROOM)
+	f := let(Frame, &mem[FRAMES_AT + i * 16])
+	put(rt, "  at ", 1)
+	if rt.at_line != 0 {
+		if rt.at_name.len > 0 {
+			put(rt, rt.at_name, 1)
+		else
+			put(rt, "?", 1)
+		}
+		put(rt, " (", 1)
+		// (A file in the program's folder is named from there.)
+		skip := rt.exe_dir.len
+		if skip >= rt.at_file.len do skip = 0
+		for k in 0:skip {
+			a : u8 = rt.at_file[k]
+			if small(a) != small(u8(rt.exe_dir[k])) {
+				skip = 0
+				break
+			}
+		}
+		put(rt, rt.at_file[skip:rt.at_file.len], 1)
+		put(rt, ":", 1)
+		uint_out(rt, u64(rt.at_line), 0, 1)
+		put(rt, ")\n", 1)
+	elif rt.at_name.len > 0
+		put(rt, rt.at_name, 1)
+		put(rt, "\n", 1)
+	else
+		// No debug info: its exe or DLL, and where in it.
+		image : u64 = 0
+		name : [260]byte
+		if GetModuleHandleExA(6, f.at, &image) != 0 {
+			name.len = 256
+			name.len = i64(K32GetModuleBaseNameA(GetCurrentProcess(), image, &name[0], 256))
+		}
+		if name.len == 0 do &name ++ u8('?')
+		put(rt, name, 1)
+		put(rt, "+0x", 1)
+		hex_out(rt, f.at - image, 1, 1)
+		put(rt, "\n", 1)
+	}
+	if f.times > 1 {
+		put(rt, "  ... the same call ", 1)
+		int_out(rt, f.times - 1, 1)
+		put(rt, " more times\n", 1)
+	}
+}
+
+// Whether the `period` frames from a and from b are the same calls.
+frames_same :: fun(rt: ^Runtime, a: i64, b: i64, period: i64) -> bool {
+	if rt.walk_mem == void do return false
+	mem := slice_from_ptr(rt.walk_mem, WALK_ROOM)
+	for k in 0:period {
+		x := let(Frame, &mem[FRAMES_AT + (a + k) * 16])
+		y := let(Frame, &mem[FRAMES_AT + (b + k) * 16])
+		if x.at != y.at or x.times != y.times do return false
+	}
+	return true
+}
+
+// Run k's lines: its frames once, and how many more times they come.
+run_out :: fun(rt: ^Runtime, k: i64) {
+	if rt.walk_mem == void do return
+	mem := slice_from_ptr(rt.walk_mem, WALK_ROOM)
+	run := let(Run, &mem[RUNS_AT + k * 24])
+	for j in 0:run.period do frame_out(rt, run.at + j)
+	if run.times > 1 {
+		put(rt, "  ... the ", 1)
+		int_out(rt, run.period, 1)
+		put(rt, " calls above, ", 1)
+		int_out(rt, run.times - 1, 1)
+		put(rt, " more times\n", 1)
+	}
+}
+
+// The walk's thread, as Windows calls it: dbghelp loaded, the stack walked
+// from the registers in the block, its frames said.
+stack_thread :: fun(rt: ^Runtime) -> u32 {
+	if rt == void do return 0
+	if rt.walk_mem == void do return 0
+	lib := load_library("dbghelp.dll")
+	if lib == void do return 0
+	start : fun(File_Id, ^utf8, i32) -> i32 = find_symbol(lib, "SymInitialize")
+	options : fun(u32) -> u32 = find_symbol(lib, "SymSetOptions")
+	rt.sym_from = find_symbol(lib, "SymFromAddr")
+	rt.sym_line = find_symbol(lib, "SymGetLineFromAddr64")
+	if start == void or options == void or rt.sym_from == void or rt.sym_line == void do return 0
+	// (Lines loaded, names as written, each module's info read when first
+	// asked for, no dialogs.)
+	_ = options(0x80216)
+	// The program's folder, a 0 after it: where its PDB is looked for.
+	rt.exe_dir.len = 512
+	n := i64(GetModuleFileNameA(void, &rt.exe_dir[0], 512))
+	if n >= 512 do n = 0
+	for n > 0 and rt.exe_dir[n - 1] != 92 and rt.exe_dir[n - 1] != '/' do n -= 1
+	rt.exe_dir[n] = utf8(0)
+	rt.exe_dir.len = n
+	if n > 0 {
+		if start(GetCurrentProcess(), &rt.exe_dir[0], 1) == 0 do return 0
+	else
+		if start(GetCurrentProcess(), void, 1) == 0 do return 0
+	}
+	n = stack_walk(rt)
+	mem := slice_from_ptr(rt.walk_mem, WALK_ROOM)
+
+	// From the first frame that isn't the runtime's own (an assert's) to main.
+	first : i64 = 0
+	if rt.walk_skip {
+		for first < n {
+			frame_place(rt, first)
+			if not in_runtime(rt) do break
+			first += 1
+		}
+	}
+	last := n - 1
+	mara := false
+	i := n - 1
+	for i >= first and i >= n - 32 {
+		frame_place(rt, i)
+		if bytes_same(rt.at_name, "main") and in_mara(rt) {
+			last = i
+			mara = true
+			break
+		}
+		i -= 1
+	}
+	i = first
+	for i <= last and i < first + FRAMES_HEAD and not mara {
+		frame_place(rt, i)
+		mara = in_mara(rt)
+		i += 1
+	}
+	if not mara do return 0   // (no debug info)
+
+	// The frames as runs: a cycle of a few calls that repeats (calls that
+	// call each other), once.
+	runs : i64 = 0
+	i = first
+	for i <= last {
+		best_period : i64 = 1
+		best_times : i64 = 1
+		for period in 2..CYCLE {
+			times : i64 = 1
+			for i + (times + 1) * period - 1 <= last and frames_same(rt, i, i + times * period, period) do times += 1
+			if times >= 3 and times * period > best_times * best_period {
+				best_period = period
+				best_times = times
+			}
+		}
+		run := let(Run, &mem[RUNS_AT + runs * 24])
+		run.at = i
+		run.period = best_period
+		run.times = best_times
+		runs += 1
+		i += best_period * best_times
+	}
+	if runs <= FRAMES_HEAD + FRAMES_TAIL + 1 {
+		for k in 0:runs do run_out(rt, k)
+		return 0
+	}
+	calls : i64 = 0
+	for k in FRAMES_HEAD:runs - FRAMES_TAIL {
+		run := let(Run, &mem[RUNS_AT + k * 24])
+		for j in 0:run.period {
+			f := let(Frame, &mem[FRAMES_AT + (run.at + j) * 16])
+			calls += f.times * run.times
+		}
+	}
+	for k in 0:FRAMES_HEAD do run_out(rt, k)
+	put(rt, "  ... ", 1)
+	int_out(rt, calls, 1)
+	put(rt, " more calls\n", 1)
+	for k in runs - FRAMES_TAIL:runs do run_out(rt, k)
+	return 0
+}
+
+// The calls running at the registers in the block, into the report: once.
+// `skip`: without the runtime's own calls they start in (an assert's).
+stack_out :: fun(rt: ^Runtime, skip: bool) {
+	if rt.walk_done do return
+	rt.walk_done = true
+	rt.walk_skip = skip
+	flush(rt)
+	thread := CreateThread(void, usize(1 << 20), stack_thread, rt, 0, void)
+	if thread == NO_FILE do return
+	_ = WaitForSingleObject(thread, 10000)
+	file_close(thread)
+}
+
+// --- crashes the program doesn't report itself ---------------------------------
+//
+// A stack overflow, a bad memory access: Windows ends the program without a
+// word. main calls crash_install first thing, and such a crash is then
+// reported as an assert reports itself — "Crashed: <what>" printed and in
+// crash.txt — and the program ends with Windows' code for it (0xC00000FD for
+// a stack overflow). A crash inside the report is left to Windows.
+
+// What Windows says of a crash (EXCEPTION_RECORD, EXCEPTION_POINTERS).
+Exception :: struct {
+	code:    u32
+	flags:   u32
+	inner:   ^byte
+	address: ^byte
+	count:   u32
+	info:    [15!]u64
+}
+
+Exception_Told :: struct {
+	exception: ^Exception
+	context:   ^byte
+}
+
+// Windows' call for a crash nothing else handles — through the compiler's
+// __mara_crash_filter, which hands it the Runtime.
+crash_filter :: fun(rt: ^Runtime, told: ^Exception_Told) -> i32 {
+	if rt == void or told == void do return 0
+	if atomic_swap(&rt.crashing, 1) != 0 do return 0   // (a crash in the report: Windows')
+	e := told.exception
+	if e == void do return 0
+	code := e.code
+	crash_begin(rt)
+	put(rt, "Crashed: ", 1)
+	if code == 0xC00000FD {
+		put(rt, "stack overflow", 1)
+	elif code == 0xC0000005
+		put(rt, "bad memory access", 1)
+		if e.count >= 2 {
+			how := e.info[0]
+			if how == 0 {
+				put(rt, ", reading address 0x", 1)
+			elif how == 1
+				put(rt, ", writing address 0x", 1)
+			else
+				put(rt, ", running code at address 0x", 1)
+			}
+			hex_out(rt, e.info[1], 1, 1)
+		}
+	elif code == 0xC0000006
+		put(rt, "bad memory access (a page that couldn't be read in)", 1)
+	elif code == 0x80000002
+		put(rt, "misaligned memory access", 1)
+	elif code == 0xC0000094
+		put(rt, "integer division by zero", 1)
+	elif code == 0xC0000095
+		put(rt, "integer overflow", 1)
+	elif code == 0xC000001D
+		put(rt, "illegal instruction", 1)
+	elif code == 0xC0000096
+		put(rt, "privileged instruction", 1)
+	else
+		put(rt, "exception 0x", 1)
+		hex_out(rt, u64(code), 8, 1)
+	}
+	put(rt, "\n", 1)
+	if told.context != void and walk_room(rt) {
+		from : []byte = slice_from_ptr(told.context, CONTEXT_ROOM)
+		mem := slice_from_ptr(rt.walk_mem, WALK_ROOM)
+		for k in 0:CONTEXT_ROOM do mem[k] = from[k]
+		stack_out(rt, false)
+	}
+	rt.walk_done = true
+	crash_end(rt)
+	flush(rt)
+	ExitProcess(code)
+	return 0
+}
+
+// The filter set, and the stack a stack overflow's report runs on kept: 64 KB
+// of the stack's own.
+crash_install :: fun(rt: ^Runtime, on_crash: ^byte) {
+	keep : u32 = 64 * 1024
+	_ = SetThreadStackGuarantee(&keep)
+	_ = SetUnhandledExceptionFilter(on_crash)
 }
 
 // --- errs' traces --------------------------------------------------------------

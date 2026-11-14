@@ -139,7 +139,8 @@ void_flow_program :: proc(checked: ^Checked_Program) -> []Flow_Finding {
     // (Every fun used as a value now known: those a fun value handed to C may be.)
     for h in vf.handed {
         hc := Void_Code{vf = &vf}
-        for f in vf.taken[h[0]] { void_raise_params(&hc, f, h[1]) }
+        funs := vf.taken[h[0]]   // (bound first: `for f in m[key]` crashes on a missing key)
+        for f in funs { void_raise_params(&hc, f, h[1]) }
     }
     for head := 0; head < len(work); head += 1 {
         ci := work[head]
@@ -1215,7 +1216,9 @@ void_args :: proc(c: ^Void_Code, state: []u64, op: Node_Id) {
                 void_raise(c, void_fact(c.vf, {.Param, rawptr(callee), "", k}), why)
             } else {
                 // (Any fun used as a value of its signature may be the one called.)
-                for f in c.vf.taken[void_sig(sig)] {
+                // (Bound first: Odin's `for f in m[key]` crashes on a key the map hasn't.)
+                funs := c.vf.taken[void_sig(sig)]
+                for f in funs {
                     void_raise(c, void_fact(c.vf, {.Param, rawptr(f), "", k}), fmt.tprintf("a call through a fun value gives '%s' void at %s", f.params[k].name, at))
                 }
             }

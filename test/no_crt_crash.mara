@@ -1,0 +1,28 @@
+module no_crt_crash
+//@ build-flags: -no crt
+//@ expect-output: the bottom
+//@ expect-output: at ping (no_crt_crash.mara:18)
+//@ expect-output: at pong (no_crt_crash.mara:23)
+//@ expect-output: ... the 2 calls above, 39 more times
+//@ expect-output: at main (no_crt_crash.mara:27)
+//@ expect-exit: 1
+
+// A failure's report in a program with no C library (`-no crt`): the calls
+// that were running, found by code/runtime.mara's own walk of the stack and
+// named by the program's debug info — two funs that call each other said
+// once, with how many more times.
+
+use mara.core
+
+ping :: fun(n: i64) -> i64 {
+	if n == 0 do crash("the bottom")
+	return pong(n - 1) + 1
+}
+
+pong :: fun(n: i64) -> i64 {
+	return ping(n) + 1
+}
+
+main :: fun() {
+	print(ping(40))
+}

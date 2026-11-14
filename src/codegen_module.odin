@@ -509,7 +509,11 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     main_head := Ir_Head{name = "__mara_main" if g.web else "main", ret = IR_I64, params = main_params}
     // A crash the program doesn't report itself (a stack overflow, a bad
     // memory access) reported as an assert is (runtime/mara_crash.c).
-    if !g.web { rt_call(&g, {}, IR_VOID, "crash_install") }
+    if nocrt(&g) {
+        rt_call(&g, {}, IR_VOID, "crash_install", {IR_PTR, ir_global("__mara_crash_filter"), {}})
+    } else if !g.web {
+        rt_call(&g, {}, IR_VOID, "crash_install")
+    }
 
     emit_main_prologue(&g, checked)
     if g.profile != "" { ir_call(&g, {}, IR_VOID, ir_global("__mara_prof_start"), {IR_PTR, get_string_literal(&g, g.profile), {}}) }
@@ -539,6 +543,16 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         ir_unreachable(&g)
         start := [?][]Ir{g.code[:]}
         codegen_function(&g, {name = "__mara_start", ret = IR_VOID}, start[:])
+        g.code = {}
+        // What Windows calls for a crash nothing handles: the runtime's
+        // crash_filter, handed the program's Runtime with what Windows tells.
+        said := fresh_tmp(&g)
+        rt_call(&g, said, IR_I32, "crash_filter", {IR_PTR, ir_local(".told"), {}})
+        ir_ret(&g, IR_I32, said)
+        told := make([]Ir_Arg, 1)
+        told[0] = {ty = IR_PTR, v = ir_local(".told")}
+        filter := [?][]Ir{g.code[:]}
+        codegen_function(&g, {name = "__mara_crash_filter", ret = IR_I32, params = told}, filter[:])
         g.code = {}
         if g.x86 != nil {
             x86_stack_probe(g.x86)
