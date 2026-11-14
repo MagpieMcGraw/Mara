@@ -354,20 +354,97 @@ emit_label :: proc(g: ^Codegen, label: Ir_Label) {
     ir_emit(g, {op = .Label, l = label})
 }
 
-// The printf symbol for the current emission context: @printf normally,
-// @__mara_tee_printf inside an assert/crash fail block (g.tee) so the
-// message also lands in crash.txt.
-printf_sym :: proc(g: ^Codegen) -> Val {
-    return ir_global("__mara_tee_printf" if g.tee else "printf")
+// `format`, a C format, printed with its `args` — in a fail block (g.tee),
+// into the crash's entry too.
+emit_printf :: proc(g: ^Codegen, format: string, args: ..Ir_Arg) {
+    emit_format(g, format, args, g.tee)
 }
 
-// `call i32 (ptr, ...) @printf(ptr <format>, <args>)` — `format` a C format
-// (a string literal of its own).
-emit_printf :: proc(g: ^Codegen, format: string, args: ..Ir_Arg) {
-    all := make([]Ir_Arg, len(args) + 1)
-    all[0] = {ty = IR_PTR, v = get_string_literal(g, format)}
-    copy(all[1:], args)
-    ir_emit(g, {op = .Call, ty = IR_I32, to = IR_PRINTF, a = printf_sym(g), args = all})
+// A C format printed, each piece of it by the runtime's own printer
+// (runtime/mara_crash.c's __mara_print_*: the program's code calls no C
+// library function) — the format read here, as the program is compiled: its
+// text between, `%d %u %lld %llu %0Nllu %g %.Ng %c %p %s %.*s`, `%%`. `tee`: into the
+// crash's open entry too. The web has no runtime: printf itself.
+emit_format :: proc(g: ^Codegen, format: string, args: []Ir_Arg, tee: bool) {
+    if g.web {
+        all := make([]Ir_Arg, len(args) + 1)
+        all[0] = {ty = IR_PTR, v = get_string_literal(g, format)}
+        copy(all[1:], args)
+        ir_emit(g, {op = .Call, ty = IR_I32, to = IR_PRINTF, a = ir_global("printf"), args = all})
+        return
+    }
+    t := Ir_Arg{IR_I32, ir_int(int(tee)), {}}
+    text :: proc(g: ^Codegen, lit: ^strings.Builder, t: Ir_Arg) {
+        s := strings.clone(strings.to_string(lit^), context.temp_allocator)
+        strings.builder_reset(lit)
+        if s == "" { return }
+        ir_call(g, {}, IR_VOID, ir_global("__mara_print_text"), {IR_PTR, get_string_literal(g, s), {}}, {SLICE_LEN_IR, ir_int(len(s)), {}}, t)
+    }
+    // (An int argument at 64 bits: printf's `%d` takes 32.)
+    wide :: proc(g: ^Codegen, a: Ir_Arg, signed: bool) -> Ir_Arg {
+        if a.ty == IR_I64 { return a }
+        v := fresh_tmp(g)
+        ir_cast(g, v, Ir_Inst.Sext if signed else .Zext, a.ty, a.v, IR_I64)
+        return {IR_I64, v, {}}
+    }
+    lit := strings.builder_make(context.temp_allocator)
+    next := 0
+    for i := 0; i < len(format); {
+        if format[i] != '%' {
+            strings.write_byte(&lit, format[i])
+            i += 1
+            continue
+        }
+        if i + 1 < len(format) && format[i + 1] == '%' {
+            strings.write_byte(&lit, '%')
+            i += 2
+            continue
+        }
+        text(g, &lit, t)
+        i += 1
+        pad := 0
+        if i < len(format) && format[i] == '0' {
+            for i < len(format) && format[i] >= '0' && format[i] <= '9' {
+                pad = pad * 10 + int(format[i] - '0')
+                i += 1
+            }
+        }
+        counted := i + 1 < len(format) && format[i] == '.' && format[i + 1] == '*'
+        if counted { i += 2 }
+        digits := 6   // (`%g`'s own; `%.15g`: 15)
+        if !counted && i < len(format) && format[i] == '.' {
+            digits = 0
+            for i += 1; i < len(format) && format[i] >= '0' && format[i] <= '9'; i += 1 { digits = digits * 10 + int(format[i] - '0') }
+        }
+        for i < len(format) && format[i] == 'l' { i += 1 }
+        if i >= len(format) || next >= len(args) { panic(fmt.tprintf("codegen: the print format %q and its %d values don't match", format, len(args))) }
+        a := args[next]
+        next += 1
+        switch format[i] {
+        case 'd': ir_call(g, {}, IR_VOID, ir_global("__mara_print_int"), wide(g, a, true), t)
+        case 'u': ir_call(g, {}, IR_VOID, ir_global("__mara_print_uint"), wide(g, a, false), {IR_I32, ir_int(pad), {}}, t)
+        case 'g': ir_call(g, {}, IR_VOID, ir_global("__mara_print_float"), a, {IR_I32, ir_int(digits), {}}, t)
+        case 'p': ir_call(g, {}, IR_VOID, ir_global("__mara_print_ptr"), a, t)
+        case 'c': ir_call(g, {}, IR_VOID, ir_global("__mara_print_char"), a, t)
+        case 's':
+            if counted {
+                if next >= len(args) { panic(fmt.tprintf("codegen: the print format %q and its %d values don't match", format, len(args))) }
+                ir_call(g, {}, IR_VOID, ir_global("__mara_print_text"), args[next], wide(g, a, true), t)
+                next += 1
+            } else {
+                ir_call(g, {}, IR_VOID, ir_global("__mara_print_cstr"), a, t)
+            }
+        case: panic(fmt.tprintf("codegen: the print format %q has a `%%%c`, which nothing prints", format, format[i]))
+        }
+        i += 1
+    }
+    text(g, &lit, t)
+    if next != len(args) { panic(fmt.tprintf("codegen: the print format %q and its %d values don't match", format, len(args))) }
+}
+
+// The program ends with `code`: the runtime's exit (the web's: C's).
+emit_exit :: proc(g: ^Codegen, code: int) {
+    ir_call(g, {}, IR_VOID, ir_global("exit" if g.web else "__mara_exit"), {IR_I32, ir_int(code), {}})
 }
 
 // A function made — its head, its code's parts in order — into the module's
@@ -690,12 +767,9 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
         if !g.web { ir_call(g, {}, IR_VOID, ir_global("__mara_crash_begin")) }
         params := make([]Ir_Arg, len(f.params))
         for p, i in f.params { params[i] = {ty = p.ty, v = ir_local(p.name)} }
-        args := make([dynamic]Ir_Arg, context.temp_allocator)
-        append(&args, Ir_Arg{ty = IR_PTR, v = get_string_literal(g, f.message)})
-        append(&args, ..params)
-        ir_call_va(g, {}, IR_I32, IR_PRINTF, ir_global("printf" if g.web else "__mara_tee_printf"), ..args[:])
+        emit_format(g, f.message, params, true)
         if !g.web { ir_call(g, {}, IR_VOID, ir_global("__mara_crash_end")) }
-        ir_call(g, {}, IR_VOID, ir_global("exit"), {IR_I32, ir_int(1), {}})
+        emit_exit(g, 1)
         ir_unreachable(g)
         code := [?][]Ir{g.code[:]}
         codegen_function(g, {name = f.name, ret = IR_VOID, params = params}, code[:], entry = false)
@@ -726,8 +800,6 @@ runtime_print_err_helper_ir :: proc(g: ^Codegen) {
 
     // (Each string a global of the literal cache's: its address.)
     ok_str := get_string_literal(g, "Ok")
-    fmt_str_s := get_string_literal(g, "%s")
-    fmt_unknown := get_string_literal(g, "?(%u)")
     case_strs := make([dynamic]Val, 0, len(cases), context.temp_allocator)
     for c in cases {
         s := get_string_literal(g, c.qualified_name)
@@ -744,14 +816,14 @@ runtime_print_err_helper_ir :: proc(g: ^Codegen) {
     arms[0] = {IR_I32, ir_int(0), ok}
     for c, i in cases { arms[i + 1] = {IR_I32, ir_int(c.value), ir_label(g, "case_", i)} }
     ir_switch(g, IR_I32, val, unknown, arms)
-    say :: proc(g: ^Codegen, label: Ir_Label, format: Val, arg: Ir_Arg) {
+    say :: proc(g: ^Codegen, label: Ir_Label, format: string, arg: Ir_Arg) {
         emit_label(g, label)
-        ir_call_va(g, {}, IR_I32, IR_PRINTF, ir_global("printf"), {IR_PTR, format, {}}, arg)
+        emit_format(g, format, {arg}, false)
         ir_ret(g, IR_VOID)
     }
-    say(g, ok, fmt_str_s, {IR_PTR, ok_str, {}})
-    for s, i in case_strs { say(g, arms[i + 1].l, fmt_str_s, {IR_PTR, s, {}}) }
-    say(g, unknown, fmt_unknown, {IR_I32, val, {}})
+    say(g, ok, "%s", {IR_PTR, ok_str, {}})
+    for s, i in case_strs { say(g, arms[i + 1].l, "%s", {IR_PTR, s, {}}) }
+    say(g, unknown, "?(%u)", {IR_I32, val, {}})
     code := [?][]Ir{g.code[:]}
     params := make([]Ir_Arg, 1)
     params[0] = {ty = IR_I64, v = whole}

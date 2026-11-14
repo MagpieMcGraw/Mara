@@ -856,6 +856,14 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, "declare void @__mara_crash_begin()\n")
         strings.write_string(&b, "declare i32 @__mara_tee_printf(ptr, ...)\n")
         strings.write_string(&b, "declare void @__mara_print_text(ptr, i64, i32)\n")
+        strings.write_string(&b, "declare void @__mara_print_cstr(ptr, i32)\n")
+        strings.write_string(&b, "declare void @__mara_print_char(i32, i32)\n")
+        strings.write_string(&b, "declare void @__mara_print_int(i64, i32)\n")
+        strings.write_string(&b, "declare void @__mara_print_uint(i64, i32, i32)\n")
+        strings.write_string(&b, "declare void @__mara_print_float(double, i32, i32)\n")
+        strings.write_string(&b, "declare void @__mara_print_ptr(ptr, i32)\n")
+        strings.write_string(&b, "declare void @__mara_exit(i32)\n")
+        strings.write_string(&b, "declare i64 @__mara_cstr_len(ptr)\n")
         strings.write_string(&b, "declare void @__mara_crash_end()\n")
         strings.write_string(&b, "declare void @__mara_crash_install()\n")
         // An err's trace, runtime/mara_err.c: linked into every native build.
@@ -1173,7 +1181,7 @@ emit_main_prologue :: proc(g: ^Codegen, checked: ^Checked_Program) {
             ir_call(g, str_len_32, IR_I32, ir_global("strlen"), {IR_PTR, argv_i, {}})
             ir_cast(g, str_len, .Zext, IR_I32, str_len_32, SLICE_LEN_IR)
         } else {
-            ir_call(g, str_len, IR_I64, ir_global("strlen"), {IR_PTR, argv_i, {}})
+            ir_call(g, str_len, IR_I64, ir_global("__mara_cstr_len"), {IR_PTR, argv_i, {}})
         }
         // elements[i] is a slice — write len, cap, ptr. cap counts argv's
         // terminating 0 (as a string literal's does), so cstring(arg) finds it

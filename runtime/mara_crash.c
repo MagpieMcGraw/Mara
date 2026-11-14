@@ -117,6 +117,41 @@ void __mara_print_text(const char* s, long long n, int tee) {
     fwrite(s, 1, (size_t)n, stdout);
 }
 
+// What a print is made of besides text, each printed as C's printf prints it
+// (`%s`, `%c`, `%lld`, `%llu` — `pad`: at least that many digits, zeros
+// before — `%g` at `digits` digits, and `%p`): the program's own code calls these, no C library
+// function. Its end, and a C text's length (main's arguments').
+void __mara_print_cstr(const char* s, int tee) { __mara_print_text(s, (long long)strlen(s), tee); }
+
+void __mara_print_char(int c, int tee) {
+    char ch = (char)c;
+    __mara_print_text(&ch, 1, tee);
+}
+
+void __mara_print_int(long long v, int tee) {
+    char b[32];
+    __mara_print_text(b, snprintf(b, sizeof b, "%lld", v), tee);
+}
+
+void __mara_print_uint(unsigned long long v, int pad, int tee) {
+    char b[64];
+    __mara_print_text(b, snprintf(b, sizeof b, "%0*llu", pad, v), tee);
+}
+
+void __mara_print_float(double v, int digits, int tee) {
+    char b[64];
+    __mara_print_text(b, snprintf(b, sizeof b, "%.*g", digits, v), tee);
+}
+
+void __mara_print_ptr(const void* p, int tee) {
+    char b[64];
+    __mara_print_text(b, snprintf(b, sizeof b, "%p", p), tee);
+}
+
+void __mara_exit(int code) { exit(code); }
+
+long long __mara_cstr_len(const char* s) { return (long long)strlen(s); }
+
 // One-shot append: the whole entry in a single OS-level end-of-file write.
 static void mara_append_entry(const char* path) {
 #ifdef _WIN32

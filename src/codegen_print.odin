@@ -133,7 +133,7 @@ emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []As
     strings.write_string(&msg, "\n")
     assert_flush_printf(g, &msg, &args)
     emit_crash_journal_end(g)
-    ir_call(g, {}, IR_VOID, ir_global("exit"), {IR_I32, ir_int(1), {}})
+    emit_exit(g, 1)
     ir_unreachable(g)
 }
 
@@ -142,11 +142,7 @@ emit_assert_fail :: proc(g: ^Codegen, span: Span, cond_text: string, sides: []As
 // inline switch, which does its own printf calls mid-message.
 assert_flush_printf :: proc(g: ^Codegen, msg: ^strings.Builder, args: ^[dynamic]Ir_Arg) {
     if strings.builder_len(msg^) == 0 { return }
-    msg_global := get_string_literal(g, strings.to_string(msg^))
-    all := make([dynamic]Ir_Arg, 0, len(args) + 1, context.temp_allocator)
-    append(&all, Ir_Arg{IR_PTR, msg_global, {}})
-    append(&all, ..args[:])
-    ir_call_va(g, {}, IR_I32, IR_PRINTF, printf_sym(g), ..all[:])
+    emit_format(g, strings.clone(strings.to_string(msg^), context.temp_allocator), args[:], g.tee)
     strings.builder_reset(msg)
     clear(args)
 }
@@ -171,12 +167,9 @@ emit_crash_journal_end :: proc(g: ^Codegen) {
 // format, and its `args` — and the program exits. Nothing runs after it.
 emit_fail :: proc(g: ^Codegen, message: string, args: ..Ir_Arg) {
     emit_crash_journal_begin(g)
-    all := make([dynamic]Ir_Arg, 0, len(args) + 1, context.temp_allocator)
-    append(&all, Ir_Arg{IR_PTR, get_string_literal(g, message), {}})
-    append(&all, ..args)
-    ir_call_va(g, {}, IR_I32, IR_PRINTF, printf_sym(g), ..all[:])
+    emit_format(g, message, args, g.tee)
     emit_crash_journal_end(g)
-    ir_call(g, {}, IR_VOID, ir_global("exit"), {IR_I32, ir_int(1), {}})
+    emit_exit(g, 1)
     ir_unreachable(g)
 }
 
