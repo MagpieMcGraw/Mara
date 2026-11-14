@@ -3,7 +3,7 @@
 A programming language written in Odin.
 The goal is a production ready compiler for under 50k lines.
 
-## Building and running
+# Building and running
 
 The compiler's source is in src/; both builds go in the repo root, beside code/, runtime/ and tools/.
 
@@ -19,14 +19,14 @@ mara build game    	# build module "game" from all .mara files with `module game
 mara build         	# build the module in the current directory (of several, the one named as the directory; else it asks which)
 mara build tools   	# with a build.mara here (`module build`, constants of code/build.mara's Build): the build named tools — its module, extra search dirs, out name, icon, flags
 
-## Workflow
+# Workflow
 
 Make a git commit before starting work.
 That means all the changes, every time.
 
 When implementing a feature, prefer hard errors over silent fallbacks for unhandled cases. A printf + continue pattern in codegen is a hidden bug factory — emit the diagnostic and abort the relevant codepath instead.
 
-## Testing
+# Testing
 
 Always build tests from inside the test folder so the resulting `test.exe` and `output.ll` land there instead of polluting the repo root.
 
@@ -35,10 +35,6 @@ The test suite (test/run.sh) must not block work. Once a change passes the tests
 # Surprise
 
 I may make small edits to various files while you are working. Usually touching Mara code or my notes. I almost never touch the compiler code so a conflict there is unlilely. Don't worry about it.
-
-# Reference
-
-Old odin game project can be found at C:\Users\magpie\Desktop\Warlock Odin
 
 # Analyzer (`mara ask`)
 

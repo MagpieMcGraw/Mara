@@ -1,6 +1,6 @@
 # Mara
 
-Is a vibe-coded programming language. Directed by me, and written by Claude Opus 4.6 and 4.7. Mara's birthday is 3 Feb 2026.
+Is a vibe-coded programming language. Directed by me, and written by Claude Opus 4.6 and all newer models. Mara's birthday is 3 Feb 2026.
 
 ## What it looks like
 
@@ -9,7 +9,7 @@ Hello world looks like this
 ```mara
 module hello
 
-main :: fun() {
+main :: () {
     print("Hello there!")
 }
 ```
@@ -73,12 +73,6 @@ tools :: Build(){module_name = "game_tools", dirs = ["../engine"]}
 `mara build tools` the other. `Build()` starts from the defaults; its fields
 are in `code/build.mara`. `icon` is an `.ico` file, the program's icon on
 Windows.
-
-## Project layout
-
-Mara std lib is in the code folder. We don't have much at the moment. We do have some partial SDL bindings.
-
-If you want example code, look in the Pounce folder. It's an empty open_gl project. Opens a window, draws a square, takes input.
 
 ## License
 
