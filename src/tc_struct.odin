@@ -420,10 +420,16 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     // its entries — said when it takes some or can fail. A variant's,
     // tc_variant_built.)
     if fa == nil && vst == nil && !list_fill {
+        tc_struct_ensure(k, ts)   // (its fields typed: a constant's literal can come first)
         lit := tc_written(k, ty) if ty != 0 else type_name(t)
         switch ctor_need(ts) {
         case .Zero:
-        case .Runs:  if len(ts.params) > 0 { tc_ctor_args(k, ts, span) }
+        case .Runs:
+            if len(ts.params) > 0 { tc_ctor_args(k, ts, span) }
+            if !ts.is_union_variant {   // (the constructor a literal calls: the graph's Calls edge)
+                tc_set_callee(k, n, ts)
+                tc_set_args(k, n, tc_default_args(ts))
+            }
         case .Args:  tc_error(k, span, TYPE_LITERAL_CTOR_ARGS, lit, "{…}", type_name(ts), lit, "{…}")
         case .Fails: tc_error(k, span, TYPE_LITERAL_CTOR_FAILS, lit, "{…}", type_name(ts), lit)
         }
@@ -437,11 +443,15 @@ tc_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         tc_struct_ensure(k, ts)
         sd = &ts.sd
     }
-    // (A literal runs no constructor — its fields are its entries — but a
-    // variant's, as a struct of its own: its construction writes its tag.)
+    // (A variant's literal, as a struct of its own: its construction writes
+    // its tag; its body doesn't run. Written as the union's, `Circle{r = 5}`:
+    // its constructor runs when its fields' defaults do.)
     if is_scope && ts.kind == .Struct && !zero && ts.is_union_variant {
         tc_set_callee(k, n, ts)
         tc_set_args(k, n, []Arg{})   // (none: its body doesn't run)
+    } else if vst != nil && ctor_need(vst) == .Runs {
+        tc_set_callee(k, n, vst)
+        tc_set_args(k, n, tc_default_args(vst))
     }
     if list_fill {
         tc_broadcast_fill(k, n, Tree_Id(tr.a[entries[0]]), t, name)   // (entries[0] the broadcast: n itself when bare)

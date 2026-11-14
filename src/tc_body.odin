@@ -527,9 +527,8 @@ tc_behind_use :: proc(k: ^TC, span: Span, name: string) -> bool {
     return true
 }
 
-// `x : T`: its zero, unset until written — a struct's constructor doesn't
-// run (`x := T()` runs it); flow.odin's definite assignment finds a read
-// before a write.
+// `x : T`: made by T's constructor with no arguments, or T's zero when
+// nothing of it runs (tc_bare_constructs).
 tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type, span: Span) {
     tc_set_type(k, target, ann)
     defer tc_bind(k, name, ann, ref)
@@ -537,13 +536,14 @@ tc_decl_bare :: proc(k: ^TC, target: Tree_Id, name: string, ref: Ref, ann: Type,
     if _, is_error := ann.(Type_Error); is_error { return }
     if (ref.kind == .Local || ref.kind == .Field) && is_partial_array(ann) { k.lists[ref.decl] += {.Fresh} }
     if is_any(ann) { tc_error(k, span, TYPE_DECLARATION_WITHOUT_INITIALIZER_REQUIRES_TYPE) }
-    tc_bare_constructs(k, name, ann, span)
+    tc_bare_constructs(k, target, name, ann, span)
 }
 
 // `x : T`, T a struct or a fixed array of one: made by T's constructor with
-// no arguments (each item, an array's) — said when it takes some or can
-// fail; its params' defaults checked where they go (tc_ctor_args).
-tc_bare_constructs :: proc(k: ^TC, name: string, t: Type, span: Span) {
+// no arguments (each item, an array's), called at the name n — said when it
+// takes some or can fail; its params' defaults checked where they go
+// (tc_ctor_args).
+tc_bare_constructs :: proc(k: ^TC, n: Tree_Id, name: string, t: Type, span: Span) {
     st := ctor_struct(t)
     if st == nil { return }
     items := tc_is_fixed_array(t)
@@ -552,6 +552,8 @@ tc_bare_constructs :: proc(k: ^TC, name: string, t: Type, span: Span) {
     case .Zero:
     case .Runs:
         if len(st.params) > 0 { tc_ctor_args(k, st, span) }
+        tc_set_callee(k, n, st)
+        tc_set_args(k, n, tc_default_args(st))
     case .Args:
         if items { tc_error(k, span, TYPE_BARE_CTOR_ARGS_ITEMS, name, type_name(t), s, s) } else { tc_error(k, span, TYPE_BARE_CTOR_ARGS, name, type_name(t), s, name, s) }
     case .Fails:
@@ -1705,6 +1707,10 @@ tc_decl_shape :: proc(k: ^TC, s, target: Tree_Id, name: string, ann: Type, bindi
     // bare declaration's is.)
     k.hint = ann
     tc_shape_literal(k, s, ann, bindings)
+    if ts := ctor_struct(ann); ts != nil && ctor_need(ann) == .Runs {   // (the constructor called at the name)
+        tc_set_callee(k, target, ts)
+        tc_set_args(k, target, tc_default_args(ts))
+    }
     tc_bind(k, name, ann, ref)
     tc_set_type(k, target, ann)
     tc_note_decl(k, name, ann, span, false)
