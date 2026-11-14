@@ -363,7 +363,7 @@ lw_field_ref_offset :: proc(k: ^TC, n: Tree_Id) -> Operand {
     fr := distinct_base(t).(^Type_Field)
     dyn, at := lw_field_ref_abs(k, n)
     at = at - field_ref_base(fr.owner, fr.elem) + 1
-    if dyn == NO_VALUE { return graph_const(b, .Synthetic, span, t, fmt.tprint(at), Const_Value{int = i128(at)}) }
+    if dyn == NO_VALUE { return graph_const(b, .Explicit, span, t, fmt.tprint(at), Const_Value{int = i128(at)}) }   // (what `S.b` is, as written)
     return graph_op_value(b, .Arith, .Synthetic, span, t, "+", dyn, lw_number(b, span, at))
 }
 

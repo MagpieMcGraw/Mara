@@ -1009,6 +1009,7 @@ tc_looped_field_type :: proc(k: ^TC, n: Tree_Id, span: Span) -> (Type, bool) {
     if !named || t.tag[n] != .Field { return nil, false }
     owner, _ := tc_ref_type(k, ft.owner, tc_written(k, Tree_Id(t.a[n])))
     elem, _ := tc_ref_type(k, ft.elem, tc_text(Token_Id(t.b[n])))
+    tc_set_ref(k, n, ft.elem)   // (what it names: the field's type, Combos)
     return tc_field_type_of(k, owner, elem, span), true
 }
 
