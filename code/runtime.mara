@@ -7,10 +7,11 @@ module mara.runtime
 //
 // What has to last from one call to the next is the Runtime. A program has
 // one, set aside by the compiler, all zero when the program starts; every
-// fun here is handed it first.
+// fun here is handed it first. It binds the few Windows functions it needs
+// itself, not through mara.os, so a program carries mara.os only when it uses
+// it. (Each bound as mara.os binds it: a C function has one signature.)
 
 use mara.core
-use mara.os
 use mara.string
 use mara.atomic
 
@@ -100,31 +101,83 @@ Runtime :: struct {
 	walk_mem:  ^byte              // the stack walk's block: the registers it starts from, its frames, its runs
 	walk_done: bool               // the calls that were running are said once
 	walk_skip: bool               // an assert's: without the runtime's own calls
-	sym_from:  fun(File_Id, u64, ^u64, ^Symbol_Info) -> i32   // dbghelp's SymFromAddr
-	sym_line:  fun(File_Id, u64, ^u32, ^Line_Info) -> i32     // and SymGetLineFromAddr64
+	sym_from:  fun(Handle, u64, ^u64, ^Symbol_Info) -> i32   // dbghelp's SymFromAddr
+	sym_line:  fun(Handle, u64, ^u32, ^Line_Info) -> i32     // and SymGetLineFromAddr64
 	exe_dir:   [600]utf8          // the program's folder, its last separator kept
 	at_name:   [256]byte          // the place looked up last: its fun,
 	at_file:   [800]byte          // its file,
 	at_line:   u32                // its line
 }
 
+// A file's, a thread's, a process's: Windows' HANDLE.
+Handle    :: distinct i64
+NO_HANDLE :: Handle(0)
+
 foreign static_lib "kernel32" {
 	fun ExitProcess(code: u32)
-	fun GetFileType(file: File_Id) -> u32
+	fun GetFileType(file: Handle) -> u32
 	fun GetLocalTime(time: ^Local_Time)
 	fun GetCommandLineA() -> ^byte
-	fun GetCurrentProcess() -> File_Id
+	fun GetCurrentProcess() -> Handle
 	fun RtlCaptureContext(context: ^byte)
 	fun RtlLookupFunctionEntry(address: u64, base: ^u64, history: ^byte) -> ^byte
 	fun RtlVirtualUnwind(handler: u32, base: u64, address: u64, entry: ^byte, context: ^byte, data: ^u64, frame: ^u64, pointers: ^byte) -> ^byte
 	// (An address as a number: read with a miss told, where a read through
 	// a pointer would crash.)
-	fun ReadProcessMemory(process: File_Id, address: u64, into: ^u64, size: usize, read: ^usize) -> i32
+	fun ReadProcessMemory(process: Handle, address: u64, into: ^u64, size: usize, read: ^usize) -> i32
 	fun GetModuleHandleExA(flags: u32, address: u64, image: ^u64) -> i32
-	fun K32GetModuleBaseNameA(process: File_Id, image: u64, name: ^byte, size: u32) -> u32
+	fun K32GetModuleBaseNameA(process: Handle, image: u64, name: ^byte, size: u32) -> u32
 	fun SetThreadStackGuarantee(size: ^u32) -> i32
 	fun SetUnhandledExceptionFilter(on_crash: ^byte) -> ^byte
+	fun GetStdHandle(which: u32) -> Handle
+	fun GetModuleFileNameA(library: ^byte, name: ^utf8, size: u32) -> u32
+	fun CreateFileA(name: cstring, access: u32, share: u32, security: ^byte, disposition: u32, flags: u32, template: Handle) -> Handle
+	fun ReadFile(h: Handle, buf: ^byte, bytes_to_read: u32, bytes_read_out: ^u32, overlapped: ^byte) -> i32
+	fun WriteFile(h: Handle, buf: ^byte, bytes_to_write: u32, bytes_written_out: ^u32, overlapped: ^byte) -> i32
+	fun CloseHandle(h: Handle) -> i32
+	fun GetFileSizeEx(h: Handle, size_out: ^i64) -> i32
+	fun DeleteFileA(name: cstring) -> i32
+	fun MoveFileExA(from: cstring, to: cstring, flags: u32) -> i32
+	fun VirtualAlloc(addr: ^byte, size: usize, alloc_type: u32, protect: u32) -> ^byte
+	fun VirtualFree(addr: ^byte, size: usize, free_type: u32) -> i32
+	fun LoadLibraryA(name: cstring) -> ^byte
+	fun GetProcAddress(mod: ^byte, name: cstring) -> ^byte
+	fun CreateThread(attributes: ^byte, stack: usize, entry: fun(^byte) -> u32, start: ^byte, flags: u32, id: ^u32) -> Handle
+	fun WaitForSingleObject(h: Handle, milliseconds: u32) -> u32
 }
+
+// A path for Windows: copied, a 0 after it (empty when it doesn't fit).
+c_path :: fun(path: []utf8) -> [600]utf8 {
+	c : [600]utf8
+	if path.len < c.cap do &c ++ path
+	return c
+}
+
+// The file at path, opened with Windows' access, sharing and disposition
+// (CreateFileA's): NO_HANDLE when it can't be.
+file_open :: fun(path: []utf8, access: u32, share: u32, disposition: u32) -> Handle {
+	c := c_path(path)
+	h := CreateFileA(cstring(c), access, share, void, disposition, 0x80, NO_HANDLE)   // (0x80: FILE_ATTRIBUTE_NORMAL)
+	if h == Handle(-1) do return NO_HANDLE
+	return h
+}
+
+// data written to h: how many bytes were.
+file_write :: fun(h: Handle, data: []byte) -> i64 {
+	if data.len == 0 do return 0
+	written: u32 = 0
+	if WriteFile(h, data.ptr, u32(data.len), &written, void) == 0 do return 0
+	return i64(written)
+}
+
+file_close :: fun(h: Handle) {
+	if h != NO_HANDLE do _ = CloseHandle(h)
+}
+
+// Memory of its own, size bytes, readable and writable: void when there's none.
+// (0x3000: MEM_RESERVE | MEM_COMMIT, 4: PAGE_READWRITE.)
+mem_get :: fun(size: i64) -> ^byte { return VirtualAlloc(void, usize(size), 0x3000, 4) }
+mem_free :: fun(mem: ^byte) { _ = VirtualFree(mem, usize(0), 0x8000) }   // (MEM_RELEASE)
 
 // The date and time where the computer is, as Windows gives it (SYSTEMTIME).
 Local_Time :: struct {
@@ -138,7 +191,7 @@ STD_OUTPUT :: 0xFFFFFFF5   // (GetStdHandle's -11)
 // What's waiting is written to the program's output.
 flush :: fun(rt: ^Runtime) {
 	if rt.out.len == 0 do return
-	_, _ := file_write(GetStdHandle(STD_OUTPUT), rt.out)
+	_ = file_write(GetStdHandle(STD_OUTPUT), rt.out)
 	rt.out.len = 0
 }
 
@@ -153,7 +206,7 @@ put :: fun(rt: ^Runtime, text: []byte, tee: i32) {
 	}
 	if text.len > rt.out.cap - rt.out.len do flush(rt)
 	if text.len > rt.out.cap {
-		_, _ := file_write(GetStdHandle(STD_OUTPUT), text)
+		_ = file_write(GetStdHandle(STD_OUTPUT), text)
 		return
 	}
 	&rt.out ++ text
@@ -371,9 +424,10 @@ crash_end :: fun(rt: ^Runtime) {
 	for n > 0 and path[n - 1] != 92 and path[n - 1] != '/' do n -= 1
 	path.len = n
 	&path ++ "crash.txt"
-	file, failed := file_open_append(path)
-	if failed do return
-	_, _ := file_write(file, rt.crash)
+	// (0x4: FILE_APPEND_DATA, 1: others may read, 4: OPEN_ALWAYS.)
+	file := file_open(path, 0x4, 1, 4)
+	if file == NO_HANDLE do return
+	_ = file_write(file, rt.crash)
 	file_close(file)
 	crash_trim(path)
 }
@@ -382,24 +436,25 @@ crash_end :: fun(rt: ^Runtime) {
 // oldest first. It's rewritten as a file beside it, which then takes its
 // name, so a program ending halfway leaves the old one whole.
 crash_trim :: fun(path: []utf8) {
-	file, failed := file_open_read(path)
-	if failed do return
-	size, no_size := file_size(file)
-	if no_size or size <= CRASH_FILE or size > 1 << 30 {
+	file := file_open(path, 0x80000000, 1, 3)   // (GENERIC_READ, others may read, OPEN_EXISTING)
+	if file == NO_HANDLE do return
+	size : i64 = 0
+	if GetFileSizeEx(file, &size) == 0 or size <= CRASH_FILE or size > 1 << 30 {
 		file_close(file)
 		return
 	}
-	mem := vm_reserve(size)
-	if mem == void or vm_commit(mem, size) == 0 {
+	mem := mem_get(size)
+	if mem == void {
 		file_close(file)
 		return
 	}
 	data := slice_from_ptr(mem, size)
-	unread := file_read(file, &data)
+	read: u32 = 0
+	unread := ReadFile(file, mem, u32(size), &read, void) == 0
 	file_close(file)
-	got := data.len
+	got := i64(read)
 	if unread or got != size {
-		vm_release(mem, size)
+		mem_free(mem)
 		return
 	}
 	first : i64 = 0
@@ -415,17 +470,19 @@ crash_trim :: fun(path: []utf8) {
 	beside : [600]utf8
 	&beside ++ path
 	&beside ++ ".tmp"
-	out, no_out := file_open_write(beside)
-	if not no_out {
-		wrote, short := file_write(out, data[first:got])
+	out := file_open(beside, 0x40000000, 0, 2)   // (GENERIC_WRITE, CREATE_ALWAYS)
+	if out != NO_HANDLE {
+		wrote := file_write(out, data[first:got])
 		file_close(out)
-		if short or wrote != got - first {
-			_ = file_delete(beside)
+		from := c_path(beside)
+		if wrote != got - first {
+			_ = DeleteFileA(cstring(from))
 		else
-			_ = file_rename(beside, path)
+			to := c_path(path)
+			_ = MoveFileExA(cstring(from), cstring(to), 1)   // (MOVEFILE_REPLACE_EXISTING)
 		}
 	}
-	vm_release(mem, size)
+	mem_free(mem)
 }
 
 // --- the calls that were running -----------------------------------------------
@@ -450,9 +507,8 @@ crash_trim :: fun(path: []utf8) {
 // and the runs they're said as: one block, asked of the system when needed.
 walk_room :: fun(rt: ^Runtime) -> bool {
 	if rt.walk_mem != void do return true
-	mem := vm_reserve(WALK_ROOM)
+	mem := mem_get(WALK_ROOM)
 	if mem == void do return false
-	if vm_commit(mem, WALK_ROOM) == 0 do return false
 	rt.walk_mem = mem
 	return true
 }
@@ -661,12 +717,12 @@ run_out :: fun(rt: ^Runtime, k: i64) {
 stack_thread :: fun(rt: ^Runtime) -> u32 {
 	if rt == void do return 0
 	if rt.walk_mem == void do return 0
-	lib := load_library("dbghelp.dll")
+	lib := LoadLibraryA("dbghelp.dll")
 	if lib == void do return 0
-	start : fun(File_Id, ^utf8, i32) -> i32 = find_symbol(lib, "SymInitialize")
-	options : fun(u32) -> u32 = find_symbol(lib, "SymSetOptions")
-	rt.sym_from = find_symbol(lib, "SymFromAddr")
-	rt.sym_line = find_symbol(lib, "SymGetLineFromAddr64")
+	start : fun(Handle, ^utf8, i32) -> i32 = GetProcAddress(lib, "SymInitialize")
+	options : fun(u32) -> u32 = GetProcAddress(lib, "SymSetOptions")
+	rt.sym_from = GetProcAddress(lib, "SymFromAddr")
+	rt.sym_line = GetProcAddress(lib, "SymGetLineFromAddr64")
 	if start == void or options == void or rt.sym_from == void or rt.sym_line == void do return 0
 	// (Lines loaded, names as written, each module's info read when first
 	// asked for, no dialogs.)
@@ -765,7 +821,7 @@ stack_out :: fun(rt: ^Runtime, skip: bool) {
 	rt.walk_skip = skip
 	flush(rt)
 	thread := CreateThread(void, usize(1 << 20), stack_thread, rt, 0, void)
-	if thread == NO_FILE do return
+	if thread == NO_HANDLE do return
 	_ = WaitForSingleObject(thread, 10000)
 	file_close(thread)
 }
