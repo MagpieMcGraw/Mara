@@ -65,5 +65,3 @@ release/
 release.new/
 release.old/
 
-# The VS Code extension, packed (editor/vscode/pack.py)
-*.vsix
