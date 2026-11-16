@@ -607,6 +607,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         }
         g.module_ll_paths = make([dynamic]string)
         if debug { x86_raddbg(x86_main, debug_views(x86_main, g.module_tasks)) }
+        when ODIN_OS == .Windows { if debug { natvis_write(checked, build_dir) } }
         named: map[string]bool
         for mt in g.module_tasks {
             named[mt.module_name] = true
@@ -658,6 +659,8 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         fmt.printf("Error: could not create build dir '%s'\n", build_dir)
         return nil, false
     }
+    // (Its natvis, for Visual Studio's debugger: linked into the PDB.)
+    when ODIN_OS == .Windows { if g.dbg != nil { natvis_write(checked, build_dir) } }
 
     // Per-module .ll assembly + write, in parallel. Each module reads only
     // frozen shared state (g.module_outs, the declare indexes) and writes its

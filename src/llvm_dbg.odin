@@ -284,7 +284,7 @@ dbg_type :: proc(d: ^Llvm_Dbg, t: Type) -> int {
             // A ^[]T: where its len is, its cap, its data.
             names := [3]string{"len_at", "cap", "data"}
             types := [3]int{dbg_pointer(d, dbg_type(d, i64t)), dbg_type(d, i64t), dbg_pointer(d, dbg_type(d, sl.elem))}
-            dbg_struct(d, n, type_name(v), cv_unique(v), size, names[:], types[:], {64, 64, 64}, {0, 64, 128})
+            dbg_struct(d, n, debug_name(v), cv_unique(v), size, names[:], types[:], {64, 64, 64}, {0, 64, 128})
             break
         }
         fmt.sbprintf(&d.text, "!%d = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: %s, size: 64)\n", n, dbg_ref(dbg_type(d, v.elem)))
@@ -302,7 +302,7 @@ dbg_type :: proc(d: ^Llvm_Dbg, t: Type) -> int {
             names[i], types[i], sizes[i] = f.name, dbg_type(d, f.type_), type_size(f.type_) * 8
             offsets[i] = layout_field(&l, type_layout(f.type_), v.is_packed) * 8
         }
-        dbg_struct(d, n, scope_display_name(v), v.name, size, names, types, sizes, offsets)
+        dbg_struct(d, n, debug_name(v), v.name, size, names, types, sizes, offsets)
     case ^Type_Fixed_Array:
         fmt.sbprintf(&d.text, "!%d = !DICompositeType(tag: DW_TAG_array_type, baseType: %s, size: %d, elements: !{{!DISubrange(count: %d)}})\n", n, dbg_ref(dbg_type(d, v.elem)), size, v.size)
     case ^Type_Slice:
@@ -310,8 +310,8 @@ dbg_type :: proc(d: ^Llvm_Dbg, t: Type) -> int {
         // (no len, a negative word: all its cap's, SLICE_NO_LEN).
         names := [3]string{"len", "cap", "ptr"}
         types := [3]int{dbg_type(d, i64t), dbg_type(d, i64t), dbg_pointer(d, dbg_type(d, v.elem))}
-        dbg_struct(d, n, type_name(v), cv_unique(v), size, names[:], types[:], {64, 64, 64}, {0, 64, 128})
-        d.views[raddbg_view(type_name(v), "array(ptr, len < 0 ? cap : len)", d.keep)] = true
+        dbg_struct(d, n, debug_name(v), cv_unique(v), size, names[:], types[:], {64, 64, 64}, {0, 64, 128})
+        d.views[raddbg_view(debug_name(v), "array(ptr, len < 0 ? cap : len)", d.keep)] = true
     case ^Type_Partial_Array:
         // Its len, then its elements: its len of them, as raddbg shows it.
         e := type_layout(v.elem)
@@ -322,8 +322,8 @@ dbg_type :: proc(d: ^Llvm_Dbg, t: Type) -> int {
         at := layout_field(&l, {v.size * e.size, e.align})
         names := [2]string{"len", "elements"}
         types := [2]int{dbg_type(d, i64t), elems}
-        dbg_struct(d, n, type_name(v), cv_unique(v), size, names[:], types[:], {64, v.size * e.size * 8}, {0, at * 8})
-        d.views[raddbg_view(type_name(v), "array(elements, len)", d.keep)] = true
+        dbg_struct(d, n, debug_name(v), cv_unique(v), size, names[:], types[:], {64, v.size * e.size * 8}, {0, at * 8})
+        d.views[raddbg_view(debug_name(v), "array(elements, len)", d.keep)] = true
     case ^Type_Enum:
         names := make([dynamic]string, context.temp_allocator)
         values := make([dynamic]i64, context.temp_allocator)
@@ -331,11 +331,11 @@ dbg_type :: proc(d: ^Llvm_Dbg, t: Type) -> int {
             append(&names, fmt.tprintf("%s.%s", v.source_name, name) if v.is_error_kind && value != 0 else name)
             append(&values, i64(value))
         }
-        dbg_enum(d, n, v.source_name if v.source_name != "" else v.name, v.name, size, v.tag_type != "" && v.tag_type[0] == 'u', names[:], values[:])
+        dbg_enum(d, n, debug_name(v), v.name, size, v.tag_type != "" && v.tag_type[0] == 'u', names[:], values[:])
     case ^Type_Union:
         // Its tag and its variants over each other, as raddbg shows it the
         // variant its tag names.
-        name := v.source_name if v.source_name != "" else v.name
+        name := debug_name(v)
         names := make([]string, len(v.variants) + 1, context.temp_allocator)
         types := make([]int, len(names), context.temp_allocator)
         sizes := make([]int, len(names), context.temp_allocator)

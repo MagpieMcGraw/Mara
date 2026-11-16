@@ -321,7 +321,7 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
     case ^Type_Ptr:
         if sl := slice_ref_of(v); sl != nil {
             // A ^[]T: where its len is, its cap, its data.
-            name := type_name(v)
+            name := debug_name(v)
             fwd := cv_record_fwd(cv, LF_STRUCTURE, name, cv_unique(v))
             cv.made[key] = fwd
             names := [3]string{"len_at", "cap", "data"}
@@ -335,7 +335,7 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
         id = cv_pointer(cv, elem)
     case ^Type_Scope:
         if v.kind != .Struct { return T_64PTR | T_VOID }   // a fun's address
-        fwd := cv_record_fwd(cv, LF_STRUCTURE, scope_display_name(v), v.name)
+        fwd := cv_record_fwd(cv, LF_STRUCTURE, debug_name(v), v.name)
         cv.made[key] = fwd
         n := len(v.fields)
         names := make([]string, n, context.temp_allocator)
@@ -346,13 +346,13 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
             names[i], types[i] = f.name, cv_type(cv, f.type_)
             offsets[i] = layout_field(&l, type_layout(f.type_), v.is_packed)
         }
-        id = cv_record(cv, LF_STRUCTURE, scope_display_name(v), v.name, type_size(v), names, types, offsets)
+        id = cv_record(cv, LF_STRUCTURE, debug_name(v), v.name, type_size(v), names, types, offsets)
     case ^Type_Fixed_Array:
         id = cv_array(cv, cv_type(cv, v.elem), type_size(v))
     case ^Type_Slice:
         // Its header, {len, cap, ptr}: its len elements, as raddbg shows it
         // (no len, a negative word: all its cap's, SLICE_NO_LEN).
-        name := type_name(v)
+        name := debug_name(v)
         fwd := cv_record_fwd(cv, LF_STRUCTURE, name, cv_unique(v))
         cv.made[key] = fwd
         ptr := cv_pointer(cv, cv_type(cv, v.elem))
@@ -364,7 +364,7 @@ cv_type :: proc(cv: ^Cv_Module, t: Type) -> u32 {
     case ^Type_Partial_Array:
         // Its len, then its elements: its len of them, as raddbg shows it.
         if v.text != 0 { return cv_type(cv, type_partial_array(v.size, v.elem)) }   // (text: the list it is)
-        name := type_name(v)
+        name := debug_name(v)
         fwd := cv_record_fwd(cv, LF_STRUCTURE, name, cv_unique(v))
         cv.made[key] = fwd
         elem := cv_type(cv, v.elem)
@@ -408,6 +408,110 @@ cv_array :: proc(cv: ^Cv_Module, elem: u32, size: int) -> u32 {
     cv_name(&cv.types, "")
     return cv_type_end(cv, r)
 }
+
+// A type's name in the debug info (both backends'): spelled as C++ spells
+// types, which Windows' debuggers parse and natvis matches (natvis_write) —
+// []T `slice<T>`, ^[]T `slice_ref<T>`, a list [N]T `list<T,N>`, ^T `T*`,
+// [N!]T `T[N]`, a name's dots `::`.
+debug_name :: proc(t: Type) -> string {
+    t := unwrap_alias(resolve_infer(t))
+    dots :: proc(s: string) -> string { out, _ := strings.replace_all(s, ".", "::", context.temp_allocator); return out }
+    #partial switch v in t {
+    case ^Type_Distinct:      return debug_name(v.base_type)
+    case ^Type_Slice:         return fmt.tprintf("slice<%s>", debug_name(v.elem))
+    case ^Type_Partial_Array: return fmt.tprintf("list<%s,%d>", debug_name(v.elem), v.size)
+    case ^Type_Fixed_Array:   return fmt.tprintf("%s[%d]", debug_name(v.elem), v.size)
+    case ^Type_Ptr:
+        if sl := slice_ref_of(v); sl != nil { return fmt.tprintf("slice_ref<%s>", debug_name(sl.elem)) }
+        return fmt.tprintf("%s*", debug_name(v.elem))
+    case ^Type_Scope:
+        if v.kind != .Struct { return "void*" }   // (a fun's address)
+        return dots(scope_display_name(v))
+    case ^Type_Union: return dots(v.source_name if v.source_name != "" else v.name)
+    case ^Type_Enum:  return dots(v.source_name if v.source_name != "" else v.name)
+    case Type_Void, Type_Any, nil: return "void"
+    }
+    return type_name(t)
+}
+
+// The program's natvis, for Visual Studio's debugger (VS Code's cppvsdbg):
+// how to show a slice, a list and text, by the names debug_name gives —
+// a slice its len items, a list its len, text as text — and each union the
+// variant its tag names. Written beside the objects, linked into the PDB
+// (lld-link's /natvis). Its path.
+natvis_write :: proc(checked: ^Checked_Program, build_dir: string) -> string {
+    b := strings.builder_make(context.temp_allocator)
+    strings.write_string(&b, NATVIS_COMMON)
+    keys := make([dynamic]string, context.temp_allocator)
+    for key in checked.table.unions { append(&keys, key) }
+    slice.sort(keys[:])
+    for key in keys {
+        ut := checked.table.unions[key]
+        if len(ut.variants) == 0 { continue }
+        fmt.sbprintf(&b, "  <Type Name=\"%s\">\n", natvis_text(debug_name(ut)))
+        for v in ut.variants { fmt.sbprintf(&b, "    <DisplayString Condition=\"__tag == %d\">%s {{%s}}</DisplayString>\n", ut.tag_map[v], v, v) }
+        strings.write_string(&b, "    <Expand>\n")
+        for v in ut.variants { fmt.sbprintf(&b, "      <ExpandedItem Condition=\"__tag == %d\">%s</ExpandedItem>\n", ut.tag_map[v], v) }
+        strings.write_string(&b, "    </Expand>\n  </Type>\n")
+    }
+    strings.write_string(&b, "</AutoVisualizer>\n")
+    path, _ := filepath.join({build_dir, "mara.natvis"}, context.temp_allocator)
+    _ = os.write_entire_file(path, transmute([]u8)strings.to_string(b))
+    return path
+}
+
+@(private="file")
+natvis_text :: proc(s: string) -> string {
+    out, _ := strings.replace_all(s, "&", "&amp;", context.temp_allocator)
+    out, _ = strings.replace_all(out, "<", "&lt;", context.temp_allocator)
+    out, _ = strings.replace_all(out, ">", "&gt;", context.temp_allocator)
+    return out
+}
+
+// (A slice's len, a negative word, says it has none: all its cap's,
+// SLICE_NO_LEN.)
+@(private="file")
+NATVIS_COMMON :: `<?xml version="1.0" encoding="utf-8"?>
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+  <Type Name="slice&lt;utf8&gt;">
+    <DisplayString>{ptr,[len &lt; 0 ? cap : len]s8}</DisplayString>
+    <Expand>
+      <Item Name="[len]">len</Item>
+      <Item Name="[cap]">cap</Item>
+      <ArrayItems><Size>len &lt; 0 ? cap : len</Size><ValuePointer>ptr</ValuePointer></ArrayItems>
+    </Expand>
+  </Type>
+  <Type Name="slice&lt;*&gt;">
+    <DisplayString>{{len = {len &lt; 0 ? cap : len}}}</DisplayString>
+    <Expand>
+      <Item Name="[len]">len</Item>
+      <Item Name="[cap]">cap</Item>
+      <ArrayItems><Size>len &lt; 0 ? cap : len</Size><ValuePointer>ptr</ValuePointer></ArrayItems>
+    </Expand>
+  </Type>
+  <Type Name="slice_ref&lt;*&gt;">
+    <DisplayString>{{len = {*len_at}}}</DisplayString>
+    <Expand>
+      <Item Name="[len]">*len_at</Item>
+      <Item Name="[cap]">cap</Item>
+      <ArrayItems><Size>*len_at</Size><ValuePointer>data</ValuePointer></ArrayItems>
+    </Expand>
+  </Type>
+  <Type Name="list&lt;utf8,*&gt;">
+    <DisplayString>{elements,[len]s8}</DisplayString>
+    <Expand>
+      <Item Name="[len]">len</Item>
+      <ArrayItems><Size>len</Size><ValuePointer>elements</ValuePointer></ArrayItems>
+    </Expand>
+  </Type>
+  <Type Name="list&lt;*,*&gt;">
+    <DisplayString>{{len = {len}}}</DisplayString>
+    <Expand>
+      <Item Name="[len]">len</Item>
+      <ArrayItems><Size>len</Size><ValuePointer>elements</ValuePointer></ArrayItems>
+    </Expand>
+  </Type>
+`
 
 // A name no other type has, for a debugger to find a forward reference's
 // record by: as type_name writes types, a struct's, an enum's and a union's
@@ -489,7 +593,7 @@ cv_enum :: proc(cv: ^Cv_Module, et: ^Type_Enum) -> u32 {
     case "u32": base = 0x75
     case "u64": base = 0x77
     }
-    return cv_enumeration(cv, et.source_name if et.source_name != "" else et.name, et.name, base, names[:], values[:])
+    return cv_enumeration(cv, debug_name(et), et.name, base, names[:], values[:])
 }
 
 // `err`: every error kind's variants, `File_Error.Open_Failed`, and Ok (0).
@@ -540,7 +644,7 @@ cv_enumeration :: proc(cv: ^Cv_Module, name, unique: string, base: u32, names: [
 // variant its tag names.
 @(private="file")
 cv_union :: proc(cv: ^Cv_Module, ut: ^Type_Union, key: [2]u64) -> u32 {
-    name := ut.source_name if ut.source_name != "" else ut.name
+    name := debug_name(ut)
     fwd := cv_record_fwd(cv, LF_UNION, name, ut.name)
     cv.made[key] = fwd
     names := make([]string, len(ut.variants) + 1, context.temp_allocator)

@@ -882,6 +882,13 @@ ensure_runtime :: proc(clang_path, compiler_dir, name: string) -> (string, bool)
 // and nothing of Visual Studio's or the Windows SDK's is read. A foreign
 // block's C source is linked as any library is: it can call no C library
 // function, there being none.
+// The build's natvis (natvis_write), beside its objects: "" for none.
+build_natvis :: proc(objects: []string) -> string {
+    if len(objects) == 0 { return "" }
+    path, _ := filepath.join({filepath.dir(objects[0]), "mara.natvis"}, context.temp_allocator)
+    return path if os.exists(path) else ""
+}
+
 link_no_crt :: proc(ll_paths: []string, exe_name: string, lf: Link_Flags, compiler_dir: string, debug: bool, icon: []u8, no_console: bool, release := false) -> bool {
     b: strings.Builder
     lld, _ := filepath.join({compiler_dir, "tools", "lld-link.exe"})
@@ -889,6 +896,7 @@ link_no_crt :: proc(ll_paths: []string, exe_name: string, lf: Link_Flags, compil
     stem := exe_name[:len(exe_name) - len(filepath.ext(exe_name))]
     if debug {
         fmt.sbprintf(&b, ` -debug "-pdb:%s.pdb"`, stem)
+        if natvis := build_natvis(ll_paths); natvis != "" { fmt.sbprintf(&b, ` "-natvis:%s"`, natvis) }
     } else {
         os.remove(strings.concatenate({stem, ".pdb"}, context.temp_allocator))
     }
@@ -1071,6 +1079,7 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     // crash's report, would take it for this program's.
     if debug {
         strings.write_string(&b, " -g")
+        if natvis := build_natvis(ll_paths); natvis != "" { fmt.sbprintf(&b, ` "-Wl,/natvis:%s"`, natvis) }
     } else {
         os.remove(strings.concatenate({exe_name[:len(exe_name) - len(filepath.ext(exe_name))], ".pdb"}, context.temp_allocator))
     }
