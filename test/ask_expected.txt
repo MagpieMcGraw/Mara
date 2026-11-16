@@ -21,7 +21,7 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
     mara.font      13 types  · 20 funs
     mara.math      5 types   · 91 funs
     mara.memory    2 types   · 1 fun
-    mara.open_gl   39 types  · 4 funs
+    mara.open_gl   31 types  · 4 funs
     mara.os        35 types  · 99 funs
     mara.paths     3 types   · 12 funs
     mara.sdl       22 types  · 1 fun
@@ -247,7 +247,7 @@ above (flow) — what feeds values of type Camera  (13 values, backward slice)
 === Pounce | Megastruct type above 2
 Megastruct — struct  Pounce.mara:53   (module Pounce)
 
-above (types)   (36 types, depth 2)
+above (types)   (32 types, depth 2)
   initialized : bool
   running : bool
   window : mara.sdl.Window
@@ -278,10 +278,10 @@ above (types)   (36 types, depth 2)
   cam : camera.Camera  (shown above)
   mouse_look : bool
   vao : gfx.VAO_State
-    vao : mara.open_gl.Vertex_Array
-    vertex_vbo : mara.open_gl.Buffer
-    ebo : mara.open_gl.Buffer
-    instance_vbo : mara.open_gl.Buffer
+    vao : u32
+    vertex_vbo : u32
+    ebo : u32
+    instance_vbo : u32
     vertex_offset : i64
     index_offset : i64
     max_vertices : i64
@@ -290,10 +290,10 @@ above (types)   (36 types, depth 2)
     meshes : [512!]gfx.VAO_Mesh
     mesh_count : i64
   draw_state_object : gfx.DrawState
-    shader_id : mara.open_gl.Program
-    texture : mara.open_gl.Texture
+    shader_id : u32
+    texture : u32
     vao_state : ^gfx.VAO_State  (shown above)
-    command_buffer : mara.open_gl.Buffer
+    command_buffer : u32
     batches : [16]gfx.Mesh_Batch
     batch_count : i64
     instance_capacity : i64
@@ -302,9 +302,9 @@ above (types)   (36 types, depth 2)
   draw_state_highlight : gfx.DrawState  (shown above)
   draw_state_text : gfx.DrawState  (shown above)
   assets : asset.Assets
-    texture_id : mara.open_gl.Texture
+    texture_id : u32
     texture_size : i32
-    font_texture_id : mara.open_gl.Texture
+    font_texture_id : u32
     font_texture_size : i32
     textures : [1024]object.Texture
     meshes : [512]object.Mesh
@@ -317,9 +317,9 @@ above (types)   (36 types, depth 2)
     on_disk : asset.Disk
     needs_resolve : bool
   quad : test_draw.Quad_Renderer
-    program : mara.open_gl.Program
-    vao : mara.open_gl.Vertex_Array
-    vbo : mara.open_gl.Buffer
+    program : u32
+    vao : u32
+    vbo : u32
     u_pos : i32
     u_size : i32
     u_screen : i32
@@ -2018,6 +2018,7 @@ Tokens in module askmod: 104 in 1 file
   dispatch    0
   overload    0
   do          0
+  end         0
   var         0
   intrinsic   0
   int         0
