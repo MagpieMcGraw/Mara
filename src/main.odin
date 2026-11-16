@@ -1399,8 +1399,8 @@ CLI_Args :: struct {
     compiler_dir: string,
     web:          bool,
     shared:       bool,    // -shared — emit a .dll/.so instead of an executable
-    release:      bool,    // -release — pass -O3 to clang for an optimized build (LLVM's: the x86 backend doesn't optimize)
-    llvm:         bool,    // -llvm — the LLVM backend (clang compiles the IR) instead of the x86 one (x86.odin)
+    release:      bool,    // -release — pass -O3 to clang for an optimized build
+    x86:          bool,    // -x86 — the x86 backend (x86.odin), not LLVM's: the fastest build, not optimized, Windows only
     no_assert:    bool,    // -no assert — compile asserts out (they stay on in -release)
     no_console:   bool,    // -no console — a Windows program that opens no console window (build.mara's `console = false`)
     no_crt:       bool,    // a Windows program with no C library: its runtime code/runtime.mara's, linked by lld-link alone — the default where it can be had
@@ -1455,7 +1455,7 @@ CLI_Args :: struct {
     lsp:          bool,
 }
 
-USAGE :: "Usage: mara build [module|build] [-web] [-shared] [-release] [-llvm] [-profile time|memory] [-no assert] [-no console] [-crt]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
+USAGE :: "Usage: mara build [module|build] [-web] [-shared] [-release] [-x86] [-profile time|memory] [-no assert] [-no console] [-crt]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
 PROFILE_USAGE :: `-profile needs what to measure:
     -profile time     how long each fun takes: profile.txt, next to the program, when it ends
     -profile memory   how full each partial array and arena gets: memory.txt`
@@ -1742,7 +1742,7 @@ parse_args :: proc() -> CLI_Args {
         if arg == "-shared"  { args.shared  = true; i += 1; continue }
         if arg == "-crt"     { args.crt     = true; i += 1; continue }
         if arg == "-release" { args.release = true; i += 1; continue }
-        if arg == "-llvm"    { args.llvm    = true; i += 1; continue }
+        if arg == "-x86"     { args.x86     = true; i += 1; continue }
         if arg == "-profile" {
             // Which profiler: `-profile time`, `-profile memory`.
             what := os.args[i + 1] if i + 1 < len(os.args) else ""
@@ -1936,7 +1936,7 @@ parse_args :: proc() -> CLI_Args {
     if picked {
         args.pkg_name, args.search_dirs, args.out = spec.module, spec.dirs[:], spec.out
         args.release ||= spec.release
-        args.llvm ||= spec.llvm
+        args.x86 ||= spec.x86
         args.no_console ||= spec.no_console
         args.crt ||= spec.crt
         // (Its icon: read now, a wrong one said before the build, not after.)
@@ -2201,10 +2201,15 @@ main :: proc() {
 
     perf_timer_mark(&perf, "codegen")
     ll_path := strings.concatenate({args.pkg_name, ".ll"})
-    // The x86 backend for a native Windows build; LLVM's for the web, for
-    // -release (it optimizes) and with -llvm (or MARA_LLVM set: the IR
-    // differential's builds).
-    x86 := ODIN_OS == .Windows && !args.web && !args.release && !args.llvm && os.get_env("MARA_LLVM", context.temp_allocator) == ""
+    // LLVM's backend; with -x86 the x86 one, a native Windows build's that
+    // isn't optimized (MARA_LLVM set: LLVM's anyway, the IR differential's
+    // builds).
+    if args.x86 && (ODIN_OS != .Windows || args.web || args.release) {
+        fmt.printf("-x86 builds a native Windows program, not optimized; '%s' is built %s\n", args.pkg_name,
+                   "for the web" if args.web else "with -release" if args.release else "here, not on Windows")
+        os.exit(1)
+    }
+    x86 := args.x86 && os.get_env("MARA_LLVM", context.temp_allocator) == ""
     // Its debug info, linked into a PDB: the x86 backend's (codeview.odin),
     // LLVM's (llvm_dbg.odin) but for the web and -release.
     debug := !args.web && !args.release

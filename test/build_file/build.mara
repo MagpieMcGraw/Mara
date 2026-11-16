@@ -10,7 +10,7 @@ build_file :: Build(){
 	module_name = "bf_game"
 	dirs = ["engine"]
 	icon = "game.ico"
-	llvm = true
+	x86 = true
 }
 
 other :: Build(){module_name = "bf_other", out = "other", console = false}

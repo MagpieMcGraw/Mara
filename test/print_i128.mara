@@ -1,5 +1,4 @@
 module print_i128
-//@ build-flags: -llvm
 
 //@ expect-output: 0 -5 1000000000 1000000000000000001
 //@ expect-output: 170141183460469231731687303715884105727

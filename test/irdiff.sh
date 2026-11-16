@@ -13,14 +13,14 @@
 #                       output and exit code (the runtime differential)
 #   test/irdiff.sh -j N N programs at a time (default: every core)
 #   test/irdiff.sh -x86 the x86 backend against LLVM's: every program built by
-#                       the working compiler with each (LLVM's as -llvm does), run, and
+#                       the working compiler with each (x86's as -x86 does), run, and
 #                       their build output, program output and exit code
 #                       compared — no IR (the x86 backend writes objects)
 #
 # Build output (diagnostics, minus timings) must match either way. Both sides
 # are kept under $OUT for inspection: $OUT/old and $OUT/new. Without -r no
 # program is linked (MARA_NO_LINK): the IR is all that's compared — LLVM's IR
-# (MARA_LLVM: the IR the x86 backend reads too).
+# (MARA_LLVM: LLVM's from a baseline older than LLVM as the default too).
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${OUT:-${TMP:-/tmp}/mara_irdiff}
 NORMALIZE=0 RUN=0 X86=0
@@ -36,12 +36,16 @@ while [ $# -gt 0 ]; do
 done
 BASE=$ROOT/Mara_base_tmp.exe WORK=${MARA_EXE:-$ROOT/mara_dev.exe}
 if [ $X86 = 1 ]; then
-  # LLVM's side: the working compiler with MARA_LLVM set (a script outside $OUT, which
-  # is made anew).
+  # x86's side: the working compiler with -x86 (a script outside $OUT, which
+  # is made anew) — not for a -release or a web build, which only LLVM makes.
   mkdir -p "$OUT.sides"
-  printf '#!/usr/bin/env bash\nMARA_LLVM=1 exec "%s" "$@"\n' "$WORK" > "$OUT.sides/mara_llvm"
-  chmod +x "$OUT.sides/mara_llvm"
-  SIDES="old:$OUT.sides/mara_llvm new:$WORK"
+  cat > "$OUT.sides/mara_x86" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *" -release "*|*" -web "*) exec "$WORK" "\$@" ;; esac
+exec "$WORK" "\$@" -x86
+EOF
+  chmod +x "$OUT.sides/mara_x86"
+  SIDES="old:$WORK new:$OUT.sides/mara_x86"
 else
   export MARA_LLVM=1
 fi

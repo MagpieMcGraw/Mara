@@ -194,7 +194,7 @@ x86_fail :: proc(what, part: string) -> ! {
         ir_print(&b, x86_ins^)
         at = strings.trim_space(strings.to_string(b))
     }
-    fmt.eprintf("x86 backend: can't translate %s (%s) in: %s\n(`mara build -llvm` builds it with LLVM)\n", what, strings.trim_space(part), at)
+    fmt.eprintf("x86 backend: can't translate %s (%s) in: %s\n(a build without -x86 builds it with LLVM)\n", what, strings.trim_space(part), at)
     os.exit(1)
 }
 

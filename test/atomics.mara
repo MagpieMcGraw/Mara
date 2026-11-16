@@ -5,6 +5,7 @@ use mara.memory
 use mara.os
 use mara.atomic
 
+//@ build-flags: -x86
 //@ expect-output: one thread: 5 7 12 12 9 4
 //@ expect-output: widths: 3 4 5 6
 //@ expect-output: wraps: -2147483648 0
@@ -15,8 +16,8 @@ use mara.atomic
 
 // mara.atomic: each operation by itself, then eight threads adding to one number with
 // atomic_add, adding to a plain one under a lock made of atomic_compare_swap, and
-// taking turns through atomic_swap. Any lost update would show in the totals. 
-// atomics_llvm does the same through LLVM.
+// taking turns through atomic_swap. Any lost update would show in the totals. Built
+// by the x86 backend (-x86); atomics_llvm does the same through LLVM.
 
 #allocator Arena_Basic(1 * MB)
 

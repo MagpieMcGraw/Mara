@@ -5,13 +5,12 @@ use mara.memory
 use mara.os
 use mara.atomic
 
-//@ build-flags: -llvm
 //@ expect-output: one thread: 5 7 12 12 9 4
 //@ expect-output: counted: 8000000
 //@ expect-output: locked: 8000000
 
-// atomics, through LLVM: atomicrmw, cmpxchg and load atomic, which is what Linux builds
-// use. The other test goes through the x86 backend on Windows.
+// atomics, through LLVM: atomicrmw, cmpxchg and load atomic. The other test,
+// atomics, goes through the x86 backend (-x86).
 
 #allocator Arena_Basic(1 * MB)
 
