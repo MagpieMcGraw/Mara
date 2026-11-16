@@ -818,16 +818,8 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false, build_dir
 // -fuse-ld=lld points clang at lld-link.exe (bundled on Windows; lld via
 // PATH on Linux). -Wno-override-module silences the warning our IR
 // module's target triple triggers.
-// Per-compile task data: spawned thread reads ll/o paths + clang flags and
-// fills exit_code on completion. Stored as ^Compile_Task so the thread pool
-// can pass it around via `rawptr` without copies.
-Compile_Task :: struct {
-    ll_path:   string,
-    o_path:    string,
-    err_path:  string,   // per-task stderr capture file
-    clang_cmd: cstring,  // full quoted command for libc.system (redirects stderr to err_path)
-    exit_code: i32,
-}
+// How many clangs run at once per logical core (link_native).
+CLANGS_PER_CORE :: 2
 
 @(private="file")
 clang_resolve_path :: proc(compiler_dir: string) -> string {
@@ -847,21 +839,6 @@ ll_to_o_path :: proc(ll_path: string) -> string {
     }
 
     return strings.concatenate({ll_path, ".o"})
-}
-
-// Compile one .ll to its corresponding .o. Invoked from the thread pool;
-// each worker thread runs one of these via libc.system (which blocks the
-// worker but the other workers run in parallel).
-//
-// This body MUST NOT ALLOCATE. Compilation runs out of one growing
-// virtual.Arena (see main), which is a bump allocator with no locking, and
-// core:thread hands every task `context.allocator` — so an allocation here is
-// N workers racing on one arena offset. The command line is therefore built as
-// a cstring on the main thread and merely read here.
-@(private="file")
-compile_task_proc :: proc(t: thread.Task) {
-    data := cast(^Compile_Task)t.data
-    data.exit_code = libc.system(data.clang_cmd)
 }
 
 // A runtime file (runtime/<name>.c) a native build links: mara_crash, in
@@ -965,101 +942,80 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         append(&runtime_os, o)
     }
 
-    // ---- Stage 1: parallel `clang -c <ll> -o <o>` per module ----
+    // ---- Stage 1: `clang -c` of each module's .ll, in parallel ----
     //
-    // Each per-module .ll is an independent translation unit and the
-    // resulting .o files are linked together at the end. With N worker
-    // threads (defaulting to the host's core count), the slowest .ll
-    // pace-sets compile time rather than the sum.
-    tasks: [dynamic]^Compile_Task
-    defer {
-        for t in tasks {
-            delete(t.clang_cmd)
-            delete(t.o_path)
-            delete(t.err_path)
-            free(t)
-        }
-        delete(tasks)
-    }
+    // Each module's .ll is a translation unit of its own, its .o linked with
+    // the others at the end: a clang each, started straight (no shell — a
+    // cmd.exe takes ~40 ms to start, clang ~50), the biggest first, at most
+    // CLANGS_PER_CORE per logical core running at once, the next started as
+    // the oldest is done. (One clang given several runs them one after
+    // another, ~20 ms more each: slower.) Each one's stderr into a file of its
+    // own, so parallel clangs' diagnostics don't interleave: printed in order
+    // once they're all done.
     objects: [dynamic]string   // (the x86 backend's: objects already, only linked)
+    o_paths: [dynamic]string   // (each .ll's, in their order: the link's)
+    Clang :: struct { ll_path, err_path: string, size: i64, err: ^os.File, process: os.Process, running: bool, exit_code: int }
+    clangs := make([dynamic]Clang, context.temp_allocator)
     for ll_path in ll_paths {
         if strings.has_suffix(ll_path, ".o") {
             append(&objects, ll_path)
             continue
         }
-        t := new(Compile_Task)
-        t.ll_path = ll_path
-        t.o_path = ll_to_o_path(ll_path)
-        t.err_path = strings.concatenate({t.ll_path, ".err"})
-        // Per-TU compile command. -Wno-override-module silences the
-        // "overriding the module target triple" warning that emcc/clang
-        // raises when our IR's target triple differs from the host's
-        // default (we set it explicitly per file, so it's expected).
-        cb: strings.Builder
-        strings.write_byte(&cb, '"'); strings.write_string(&cb, clang_path); strings.write_byte(&cb, '"')
-        strings.write_string(&cb, " -c ")
-        strings.write_byte(&cb, '"'); strings.write_string(&cb, t.ll_path); strings.write_byte(&cb, '"')
-        strings.write_string(&cb, " -o ")
-        strings.write_byte(&cb, '"'); strings.write_string(&cb, t.o_path); strings.write_byte(&cb, '"')
-        strings.write_string(&cb, " -Wno-override-module -mf16c")
+        append(&o_paths, ll_to_o_path(ll_path))
+        size: i64
+        if fi, err := os.stat(ll_path, context.temp_allocator); err == nil { size = fi.size }
+        append(&clangs, Clang{ll_path = ll_path, err_path = strings.concatenate({ll_path, ".err"}, context.temp_allocator), size = size})
+    }
+    slice.sort_by(clangs[:], proc(a, b: Clang) -> bool { return a.size > b.size || a.size == b.size && a.ll_path < b.ll_path })
+    limit := max(os_old.processor_core_count() * CLANGS_PER_CORE, 1)
+    wait :: proc(c: ^Clang) {
+        if !c.running { return }
+        c.running = false
+        state, err := os.process_wait(c.process)
+        os.close(c.err)
+        c.exit_code = state.exit_code if err == nil else -1
+    }
+    for &c, i in clangs {
+        if i >= limit { wait(&clangs[i - limit]) }
+        command := make([dynamic]string, context.temp_allocator)
+        append(&command, clang_path, "-c", c.ll_path, "-o", ll_to_o_path(c.ll_path))
+        // -Wno-override-module silences the "overriding the module target
+        // triple" warning clang raises when our IR's target triple differs
+        // from the host's default (we set it explicitly per file).
+        append(&command, "-Wno-override-module", "-mf16c")
+        march := strings.trim_space(RELEASE_MARCH)
         if release {
-            strings.write_string(&cb, " -O3 -flto" + RELEASE_MARCH)   // (bitcode: optimized whole at the link)
-        } else if checked.no_crt {
+            append(&command, "-O3", "-flto")   // (bitcode: optimized whole at the link)
+            if march != "" { append(&command, march) }
+        } else if checked.no_crt && march != "" {
             // (With no C library there's no floor or ceil to call: the
             // release build's machine, which has them as instructions.)
-            strings.write_string(&cb, RELEASE_MARCH)
+            append(&command, march)
         }
-        // Redirect stderr to a per-task file so parallel clangs don't
-        // interleave their diagnostics on the shared parent stderr.
-        // Read back and print serially after the pool finishes.
-        strings.write_string(&cb, ` 2>"`); strings.write_string(&cb, t.err_path); strings.write_byte(&cb, '"')
-        // Pull -I and -D flags from lf.extra_inputs only if they're
-        // compile-level options (we exclude .obj/.lib paths which only
-        // matter at link). For now: skip extra_inputs entirely on the
-        // -c step; they're added only to the link command below.
-        cmd: string
-        when ODIN_OS == .Windows {
-            cmd = strings.concatenate({`"`, strings.to_string(cb), `"`})
-        } else {
-            cmd = strings.to_string(cb)
+        // (lf.extra_inputs, the link's, aren't the -c step's.)
+        err: os.Error
+        if c.err, err = os.create(c.err_path); err == nil {
+            c.process, err = os.process_start({command = command[:], stderr = c.err})
+            if err != nil { os.close(c.err) }
         }
-        // Convert here, on the main thread — compile_task_proc must not
-        // allocate (the shared arena isn't thread-safe).
-        t.clang_cmd = strings.clone_to_cstring(cmd)
-        append(&tasks, t)
+        if err != nil {
+            fmt.printf("Couldn't start clang (%s) for '%s': %v\n", clang_path, c.ll_path, err)
+            for &other in clangs { wait(&other) }
+            return false
+        }
+        c.running = true
     }
+    for &c in clangs { wait(&c) }
 
-    if len(tasks) > 0 {
-        pool: thread.Pool
-        num_workers := os_old.processor_core_count()
-        if num_workers < 1 { num_workers = 1 }
-        if num_workers > len(tasks) { num_workers = len(tasks) }
-        thread.pool_init(&pool, context.allocator, num_workers)
-        defer thread.pool_destroy(&pool)
-        thread.pool_start(&pool)
-        for t in tasks {
-            thread.pool_add_task(&pool, context.allocator, compile_task_proc, rawptr(t))
-        }
-        thread.pool_finish(&pool)
-    }
-
-    // Print captured stderr in deterministic per-task order so parallel
-    // workers' diagnostics don't shred each other on the shared stderr.
-    // Print before deciding to bail so the user sees every failing TU's
-    // errors, not just the first one's existence.
     any_failed := false
-    for t in tasks {
-        if t.err_path != "" {
-            if data, ok := os_old.read_entire_file(t.err_path); ok {
-                if len(data) > 0 {
-                    fmt.eprint(string(data))
-                }
-                delete(data)
-            }
-            os_old.remove(t.err_path)
+    for c in clangs {
+        if data, ok := os_old.read_entire_file(c.err_path); ok {
+            if len(data) > 0 { fmt.eprint(string(data)) }
+            delete(data)
         }
-        if t.exit_code != 0 {
-            fmt.printf("clang -c failed for '%s' (exit %d)\n", t.ll_path, t.exit_code)
+        os_old.remove(c.err_path)
+        if c.exit_code != 0 {
+            fmt.printf("clang -c failed for '%s' (exit %d)\n", c.ll_path, c.exit_code)
             any_failed = true
         }
     }
@@ -1069,7 +1025,7 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     when ODIN_OS == .Windows {
         if checked.no_crt {
             all := make([dynamic]string, context.temp_allocator)
-            for t in tasks { append(&all, t.o_path) }
+            for o in o_paths { append(&all, o) }
             for o in objects { append(&all, o) }
             return link_no_crt(all[:], exe_name, lf, compiler_dir, debug, icon, no_console, release)
         }
@@ -1080,9 +1036,9 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     } else {
         strings.write_string(&b, CLANG_BIN)
     }
-    for t in tasks {
+    for o in o_paths {
         strings.write_byte(&b, ' ')
-        strings.write_byte(&b, '"'); strings.write_string(&b, t.o_path); strings.write_byte(&b, '"')
+        strings.write_byte(&b, '"'); strings.write_string(&b, o); strings.write_byte(&b, '"')
     }
     for o in objects {
         strings.write_byte(&b, ' ')
