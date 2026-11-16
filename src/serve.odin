@@ -220,7 +220,7 @@ serve_stamp :: proc(compiler_dir: string, search_dirs: []string = nil) -> string
     context.allocator = context.temp_allocator
     b := strings.builder_make()
     if compiler_dir != "" {
-        for dir in code_search_dirs(compiler_dir) { serve_stamp_dir(&b, dir) }
+        for dir in module_search_dirs(compiler_dir) { serve_stamp_dir(&b, dir) }
     }
     serve_stamp_dir(&b, ".")
     for dir in search_dirs { serve_stamp_dir(&b, dir) }

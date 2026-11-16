@@ -356,11 +356,11 @@ emit_label :: proc(g: ^Codegen, label: Ir_Label) {
     ir_emit(g, {op = .Label, l = label})
 }
 
-// The runtime's module, code/runtime.mara, and the program's one Runtime: its
+// The runtime's module, runtime/runtime.mara, and the program's one Runtime: its
 // state, all zero at the start, handed to each of its funs first.
 RUNTIME_MODULE :: "mara.runtime"
 RUNTIME_STATE  :: "__mara_rt"
-// Its funs the compiler calls (rt_call), as code/runtime.mara names them.
+// Its funs the compiler calls (rt_call), as runtime/runtime.mara names them.
 RUNTIME_FUNS :: [?]string{"text_out", "cstr_out", "char_out", "int_out", "uint_out", "float_out", "ptr_out", "exit", "cstr_len",
                           "crash_begin", "crash_end", "crash_install", "crash_filter", "err_made", "err_passed", "err_where",
                           "err_trace", "main_err", "arg_count", "arg_at"}
@@ -371,7 +371,7 @@ nocrt :: proc(g: ^Codegen) -> bool {
 }
 
 // A call of the runtime's `name` (print_text, exit, err_made, …): C's
-// `__mara_<name>` (runtime/*.c) — or, with no C library, code/runtime.mara's
+// `__mara_<name>` (runtime/*.c) — or, with no C library, runtime/runtime.mara's
 // fun for it, the program's Runtime its first argument.
 rt_call :: proc(g: ^Codegen, to: Val, ret: Ir_Type, name: string, args: ..Ir_Arg) {
     if !nocrt(g) {

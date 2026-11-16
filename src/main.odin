@@ -69,6 +69,18 @@ code_search_dirs :: proc(compiler_dir: string) -> []string {
     return dirs[:]
 }
 
+// The folders the compiler's own modules are found in: code/'s
+// (code_search_dirs), the library people use, then runtime/ — the runtime's
+// files, its C ones (compiled in by ensure_runtime) and its Mara module,
+// mara.runtime, which programs don't `use`: the compiler calls it.
+module_search_dirs :: proc(compiler_dir: string) -> []string {
+    dirs: [dynamic]string
+    append(&dirs, ..code_search_dirs(compiler_dir))
+    runtime_dir, _ := filepath.join({compiler_dir, "runtime"})
+    append(&dirs, runtime_dir)
+    return dirs[:]
+}
+
 // One entry of a folder, as list_dir has it (list_dir_windows.odin).
 Dir_Item :: struct {
     name:    string,
@@ -189,7 +201,7 @@ discover_all_files :: proc(compiler_dir: string, search_dir: string, extra_dirs:
 
     if compiler_dir != "" {
         stdlib := Found{out = &result, problem = &problem, stdlib = true}
-        for dir in code_search_dirs(compiler_dir) { scan_dir(dir, &stdlib) }
+        for dir in module_search_dirs(compiler_dir) { scan_dir(dir, &stdlib) }
     }
 
     // User project files shadow stdlib bare names on conflict — the
@@ -1368,7 +1380,7 @@ CLI_Args :: struct {
     x86:          bool,    // -x86 — the x86 backend (x86.odin), not LLVM's: the fastest build, not optimized, Windows only
     no_assert:    bool,    // -no assert — compile asserts out (they stay on in -release)
     no_console:   bool,    // -no console — a Windows program that opens no console window (build.mara's `console = false`)
-    no_crt:       bool,    // a Windows program with no C library: its runtime code/runtime.mara's, linked by lld-link alone — the default where it can be had
+    no_crt:       bool,    // a Windows program with no C library: its runtime runtime/runtime.mara's, linked by lld-link alone — the default where it can be had
     no_crt_asked: bool,    // -no crt — asked for: an error where it can't be had
     crt:          bool,    // -crt — built with the C library, as every program was (build.mara's `crt = true`): for C source that calls it
     profile:      bool,    // -profile time — time the program's funs, written to profile.txt at exit (runtime/mara_prof.c)

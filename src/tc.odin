@@ -532,7 +532,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
 
     tc_check_uses(k, main_package)
     // (A program built with no C library: its runtime is a module of it,
-    // code/runtime.mara — the compiler calls its funs, no `use` names it.)
+    // runtime/runtime.mara — the compiler calls its funs, no `use` names it.)
     if no_crt && RUNTIME_MODULE in modules { tc_check_module(k, RUNTIME_MODULE, {}) }
     tc_module_names_ready(k, main_package)
     k.pkg = main_package
@@ -1163,7 +1163,7 @@ Checked_Program :: struct {
     // origin variant when emitting bodies, declares, and the dynamic loader.
     functions:      map[string]^Type_Scope,
     foreign_libs:   map[string]bool,
-    // Built with no C library (`-no crt`): the runtime is code/runtime.mara's,
+    // Built with no C library (`-no crt`): the runtime is runtime/runtime.mara's,
     // handed the program's Runtime (codegen.odin: rt_call).
     no_crt:         bool,
 

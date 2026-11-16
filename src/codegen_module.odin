@@ -1162,7 +1162,7 @@ program_globals :: proc(checked: ^Checked_Program, own: bool) -> []Ir_Global {
         }
         append(&gls, Ir_Global{name = "__mara_args", ty = partial_array_ir_type(SLICE_IR_TYPE, 64), init = {v = IR_ZERO}})
     }
-    // The runtime's state, with no C library: the room of code/runtime.mara's
+    // The runtime's state, with no C library: the room of runtime/runtime.mara's
     // Runtime, all zero, in the module that owns the program's globals; the
     // others name it. (As words: its fields are the runtime's to know.)
     if checked.no_crt {
