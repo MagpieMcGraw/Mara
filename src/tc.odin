@@ -442,6 +442,13 @@ tc_call_name :: proc(k: ^TC, n: Tree_Id) -> string {
     return tc_name(k, n)
 }
 
+// A call's fun's name as written, for what's said: tc_call_name's is the
+// flat one a qualified call resolves to (`gl.Clear`'s mara_open_gl_Clear).
+tc_call_written :: proc(k: ^TC, n: Tree_Id) -> string {
+    if k.t.tag[n] == .Method_Call { return tc_text(method_view(k.t, n).name) }
+    return tc_name(k, n)
+}
+
 // Whether a node is a call: plain, or of a method.
 tc_is_call :: proc(k: ^TC, n: Tree_Id) -> bool {
     return k.t.tag[n] == .Call || k.t.tag[n] == .Method_Call

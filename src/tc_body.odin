@@ -140,7 +140,7 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
         if tc_is_call(k, e) && rt != nil {
             _, is_void := rt.(Type_Void)
             _, is_error := rt.(Type_Error)
-            if !is_void && !is_error { tc_error(k, span, TYPE_DISCARDED_RETURN, tc_call_name(k, e)) }
+            if !is_void && !is_error { tc_error(k, span, TYPE_DISCARDED_RETURN, tc_call_written(k, e)) }
         } else if op := tc_unparen(k, e); (t.tag[op] == .Binary || t.tag[op] == .Unary) && rt != nil {
             tc_dropped_value(k, op, rt, span)
         } else if name := tc_diag_name(k, op); t.tag[op] == .Ident && rt != nil && tc_type_source_name(rt) == name {
@@ -725,7 +725,7 @@ tc_return :: proc(k: ^TC, s: Tree_Id) {
             k.several_ok = 0
             if returns := tc_call_returns(k, values[0]); len(returns) > 1 {
                 if len(returns) > expected || len(returns) < least {
-                    tc_error(k, span, TYPE_RETURN_SEVERAL_COUNT, len(returns), expected, tc_call_name(k, call))
+                    tc_error(k, span, TYPE_RETURN_SEVERAL_COUNT, len(returns), expected, tc_call_written(k, call))
                     return
                 }
                 for rt, i in returns {
@@ -944,7 +944,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
             if is_error {
             } else if tc_is_call(k, call) {
                 // (A call of one result: what a loop over a call needs said.)
-                tc_error(k, span, TYPE_CANNOT_LOOP_OVER_CALL, tc_call_name(k, call), type_name(ct), type_name(ct))
+                tc_error(k, span, TYPE_CANNOT_LOOP_OVER_CALL, tc_call_written(k, call), type_name(ct), type_name(ct))
             } else if st, is_scope := ct.(^Type_Scope); is_scope {
                 tc_error(k, span, TYPE_CANNOT_ITERATE_OVER_STRUCT_TYPE, scope_display_name(st))
             } else {
@@ -1125,7 +1125,7 @@ tc_for_call :: proc(k: ^TC, s: Tree_Id, v: For_View, ct: Type, returns: []Type) 
     span := tree_span(k.t, s)
     names := loop_names(v)
     flag, values, shaped := loop_call_shape(returns)
-    call := tc_call_name(k, tc_unparen(k, v.collection))
+    call := tc_call_written(k, tc_unparen(k, v.collection))
     bad := false
     if _, is_error := ct.(Type_Error); is_error {
         bad = true

@@ -779,8 +779,8 @@ tc_takes_several :: proc(k: ^TC, n: Tree_Id) -> bool {
 // is an error — the others would be lost.
 tc_one_value :: proc(k: ^TC, n: Tree_Id, count: int) {
     if count <= 1 { return }
-    example := fmt.tprintf("%s(…)", tc_call_name(k, n))
-    if k.t.tag[n] == .Try { example = fmt.tprintf("%s(…)?", tc_call_name(k, tc_unparen(k, Tree_Id(k.t.a[n])))) }
+    example := fmt.tprintf("%s(…)", tc_call_written(k, n))
+    if k.t.tag[n] == .Try { example = fmt.tprintf("%s(…)?", tc_call_written(k, tc_unparen(k, Tree_Id(k.t.a[n])))) }
     tc_error(k, tree_span(k.t, n), TYPE_MULTI_RETURN_AS_ONE, count, example)
 }
 
@@ -895,9 +895,11 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
     tc_set_ref(k, n, ref if indirect else Ref{ft.decl, .Type if is_struct else .Fun})
     k.annot.forms[tc_sid(k, n)] = .Value if indirect else .Fun
     if is_struct { tc_struct_ensure(k, ft) }
+    // (Said as written: a qualified call's `name` is its fun's flat one, `gl.Clear`'s mara_open_gl_Clear.)
+    shown := tc_text(method_view(tr, n).name) if tr.tag[n] == .Method_Call else name
     if len(args) < count_required_params(ft) || len(args) > len(ft.params) {
-        qualified := name
-        if ft.home_package != "" { qualified = strings.concatenate({ft.home_package, ".", name}) }
+        qualified := shown
+        if ft.home_package != "" { qualified = strings.concatenate({ft.home_package, ".", shown}) }
         tc_error(k, span, TYPE_EXPECTS_ARGS, qualified, len(ft.params), fn_params_desc(ft), len(args))
     }
     // (The params it leaves off: their defaults, each checked in its fun's
@@ -914,7 +916,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
             // (`_`: its param's default — said so when it has none.)
             if tr.tag[a] == .Ident && tc_name(k, a) == "_" && i < len(ft.params) {
                 if ft.params[i].default_node == 0 {
-                    tc_error(k, span, TYPE_ARGUMENT_REQUIRES_DEFAULT_VALUE_PARAMETER, i + 1, name, ft.params[i].name)
+                    tc_error(k, span, TYPE_ARGUMENT_REQUIRES_DEFAULT_VALUE_PARAMETER, i + 1, shown, ft.params[i].name)
                 } else {
                     append(&items, default_arg(k, ft.params[i], ft, tree_span(tr, a)))
                     continue
@@ -968,7 +970,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
             hint := tc_partial_hint(k, a, at, pt)
             if hint == "" { hint = tc_items_hint(at, pt) }
             want, got := type_names_apart(pt, at)
-            tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, name, ft.params[i].name, want, got, hint)
+            tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, shown, ft.params[i].name, want, got, hint)
         }
         // (A runtime string into a `cstring` param: `cstring(s)`, written —
         // the copy and the terminator seen. A literal, or a constant one,
@@ -989,7 +991,7 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
             }
         }
         if sd == nil {
-            tc_error(k, span, TYPE_FIELD_OVERRIDE_BLOCK_NEEDS_STRUCT, name)
+            tc_error(k, span, TYPE_FIELD_OVERRIDE_BLOCK_NEEDS_STRUCT, shown)
         } else {
             tc_literal_fields(k, overrides, tree_list(tr, tr.b[overrides]), sd)
         }
