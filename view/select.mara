@@ -49,11 +49,11 @@ lines_spot_at :: fun(ui: ^Ui, l: ^Lines, r: Rect, x: f32, y: f32) -> Spot {
 	// (Each character measured in its font, as the row was laid out:
 	// line_char.)
 	s := l.text[ln.at : ln.at + ln.len]
-	end := row.at - ln.at + row.len
+	stop := row.at - ln.at + row.len
 	pen := r.x + PAD + row.indent
 	at := row.at - ln.at
 	code := ln.style == STYLE_DOC and doc_code_at(s, at)
-	for at < end {
+	for at < stop {
 		w, n := line_char(ui, ln.style, s, at, &code)
 		if x < pen + w / 2.0 do break
 		pen += w
@@ -69,18 +69,18 @@ draw_selected :: fun(ui: ^Ui, l: ^Lines, row: Line_Row, from: Spot, to: Spot, x:
 	if row.line < from.line or row.line > to.line do return
 	ln := l.lines[row.line]
 	start := row.at - ln.at
-	end := start + row.len
+	stop := start + row.len
 	lo : i64 = 0
 	if row.line == from.line do lo = from.off
 	hi := ln.len + 1
 	if row.line == to.line do hi = to.off
 	a := max_int(lo, start)
-	b := min_int(hi, end)
+	b := min_int(hi, stop)
 	if a > b do return
 	s := l.text[ln.at : ln.at + ln.len]
 	x0 := x + line_width(ui, ln.style, s, start, a)
 	x1 := x + line_width(ui, ln.style, s, start, b)
-	if hi > end do x1 += char_width(&ui.text, u32(' '))
+	if hi > stop do x1 += char_width(&ui.text, u32(' '))
 	if x1 > x0 do fill(ui.renderer, x0, y, x1 - x0, ui.text.line, ui.selected)
 }
 

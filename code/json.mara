@@ -70,10 +70,10 @@ json_parse :: fun(text: []utf8, values: ^[]Json) -> err {
 		key := text[0:0]
 		if depth > 0 and values[stack[depth - 1]].kind == Json_Object {
 			if at >= text.len or text[at] != '"' do return Bad_Json
-			end := json_string_end(text, at)
-			if end < 0 do return Bad_Json
-			key = text[at + 1:end]
-			at = json_skip(text, end + 1)
+			stop := json_string_end(text, at)
+			if stop < 0 do return Bad_Json
+			key = text[at + 1:stop]
+			at = json_skip(text, stop + 1)
 			if at >= text.len or text[at] != ':' do return Bad_Json
 			at = json_skip(text, at + 1)
 		}
@@ -97,15 +97,15 @@ json_parse :: fun(text: []utf8, values: ^[]Json) -> err {
 			at += 1
 			depth -= 1
 		elif c == '"'
-			end := json_string_end(text, at)
-			if end < 0 do return Bad_Json
-			values ++ Json{kind = Json_String, text = text[at + 1:end], key = key, span = 1}
-			at = end + 1
+			stop := json_string_end(text, at)
+			if stop < 0 do return Bad_Json
+			values ++ Json{kind = Json_String, text = text[at + 1:stop], key = key, span = 1}
+			at = stop + 1
 		elif c == '-' or (c >= '0' and c <= '9')
-			end := json_number_end(text, at)
-			if end < 0 do return Bad_Json
-			values ++ Json{kind = Json_Number, text = text[at:end], key = key, span = 1}
-			at = end
+			stop := json_number_end(text, at)
+			if stop < 0 do return Bad_Json
+			values ++ Json{kind = Json_Number, text = text[at:stop], key = key, span = 1}
+			at = stop
 		elif json_word_at(text, at, "true")
 			values ++ Json{kind = Json_True, text = text[at:at + 4], key = key, span = 1}
 			at += 4

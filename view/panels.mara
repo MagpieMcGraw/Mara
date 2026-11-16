@@ -680,13 +680,13 @@ layout_load :: fun(ui: ^Ui) -> bool {
 	first := true
 	at : i64 = 0
 	for at < text.len {
-		end := at
-		for end < text.len {
-			if text[end] == '\n' do break
-			end += 1
+		stop := at
+		for stop < text.len {
+			if text[stop] == '\n' do break
+			stop += 1
 		}
-		line : []utf8 = text[at : end]
-		at = end + 1
+		line : []utf8 = text[at : stop]
+		at = stop + 1
 		if line.len > 0 {
 			if line[line.len - 1] == '\r' do line = line[0 : line.len - 1]
 		}

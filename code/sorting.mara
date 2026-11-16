@@ -89,11 +89,11 @@ sort_heap :: fun(items: ^[]$T, before: $P, lo: i64, hi: i64) {
 		start -= 1
 		sort_sift(items, before, lo, start, n)
 	}
-	end := n
-	for end > 1 {
-		end -= 1
-		sort_swap(items, lo, lo + end)
-		sort_sift(items, before, lo, 0, end)
+	stop := n
+	for stop > 1 {
+		stop -= 1
+		sort_swap(items, lo, lo + stop)
+		sort_sift(items, before, lo, 0, stop)
 	}
 }
 

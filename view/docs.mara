@@ -255,15 +255,15 @@ docs_reopen_folds :: fun(l: ^Lines, folds: []utf8) {
 		&key ++ line_text(l, k)[0 : min_int(line_text(l, k).len, 1000)]
 		at : i64 = 0
 		for at < folds.len {
-			end := at
-			for end < folds.len and folds[end] != '\n' {
-				end += 1
+			stop := at
+			for stop < folds.len and folds[stop] != '\n' {
+				stop += 1
 			}
-			if folds[at : end] == key {
+			if folds[at : stop] == key {
 				_ = lines_toggle(l, k)
 				break
 			}
-			at = end + 1
+			at = stop + 1
 		}
 	}
 }
@@ -313,19 +313,19 @@ docs_words :: fun(d: ^Docs, asked: []utf8) {
 			at += 1
 			continue
 		}
-		end := at
-		for end < asked.len {
-			if not is_word_char(asked[end]) do break
-			end += 1
+		stop := at
+		for stop < asked.len {
+			if not is_word_char(asked[stop]) do break
+			stop += 1
 		}
-		if end - at >= 2 and d.words.len < d.words.cap and d.query.len + end - at <= d.query.cap {
-			w := Field{at = d.query.len, len = end - at}
-			for k in at:end {
+		if stop - at >= 2 and d.words.len < d.words.cap and d.query.len + stop - at <= d.query.cap {
+			w := Field{at = d.query.len, len = stop - at}
+			for k in at:stop {
 				&d.query ++ lower(asked[k])
 			}
 			&d.words ++ w
 		}
-		at = end
+		at = stop
 	}
 }
 
@@ -446,19 +446,19 @@ docs_scan :: fun(d: ^Docs, f: i64, ex: Exact) {
 	in_example := false        // in an entry's example: nothing found there
 	block : i64 = 0            // inside a `/* … */` this deep: its lines the comment's
 	for at < text.len {
-		end := line_end(text, at)
+		stop := line_end(text, at)
 		line += 1
-		indent, from := indentation(text, at, end)
-		rest := trimmed(text[from : end])
+		indent, from := indentation(text, at, stop)
+		rest := trimmed(text[from : stop])
 		if block > 0 {
 			block += comment_depth(rest)
-			at = end + 1
+			at = stop + 1
 			continue
 		}
 		// (An example ends at a comment line at the top level.)
 		if in_example {
 			if indent > 0 or not (starts_with(rest, "//") or starts_with(rest, "/*")) {
-				at = end + 1
+				at = stop + 1
 				continue
 			}
 			in_example = false
@@ -498,7 +498,7 @@ docs_scan :: fun(d: ^Docs, f: i64, ex: Exact) {
 			if is_entry(fd.kind) do in_example = true
 			// (A struct's body follows: its fields.)
 			if fd.kind == DEF_TYPE and rest[rest.len - 1] == '{' {
-				w := text[fd.name.at + fd.name.len : end]
+				w := text[fd.name.at + fd.name.len : stop]
 				if contains(w, "struct") or contains(w, "class") {
 					owner = fd.name
 					owner_indent = indent
@@ -507,7 +507,7 @@ docs_scan :: fun(d: ^Docs, f: i64, ex: Exact) {
 			}
 			doc = -1
 		}
-		at = end + 1
+		at = stop + 1
 	}
 }
 
@@ -637,8 +637,8 @@ comment_depth :: fun(s: []utf8) -> i64 {
 }
 
 // Where text[at : end] ends less its spaces and carriage return at the end.
-trim_end :: fun(text: []utf8, at: i64, end: i64) -> i64 {
-	e := end
+trim_end :: fun(text: []utf8, at: i64, stop: i64) -> i64 {
+	e := stop
 	for e > at {
 		if text[e - 1] != ' ' and text[e - 1] != '\t' and text[e - 1] != '\r' do break
 		e -= 1
@@ -658,9 +658,9 @@ doc_words :: fun(text: []utf8, from: i64, to: i64, out: ^[DOC_LINES]Field) {
 	block := false
 	block_indent : i64 = 0   // its `/*` line's indentation, in characters
 	for at < to and out.len < out.cap {
-		end := line_end(text, at)
-		_, start := indentation(text, at, end)
-		e := trim_end(text, at, end)
+		stop := line_end(text, at)
+		_, start := indentation(text, at, stop)
+		e := trim_end(text, at, stop)
 		c := start
 		keep := true
 		if not block and starts_with(text[start : e], "//") {
@@ -695,7 +695,7 @@ doc_words :: fun(text: []utf8, from: i64, to: i64, out: ^[DOC_LINES]Field) {
 			if c > e do c = e
 			out ++ Field{at = c, len = e - c}
 		}
-		at = end + 1
+		at = stop + 1
 	}
 	for out.len > 0 {
 		if out[out.len - 1].len > 0 do break
@@ -725,8 +725,8 @@ docs_score :: fun(d: ^Docs, text: []utf8, fd: ^Found) {
 	if fd.doc >= 0 do doc = text[fd.doc : fd.at]
 	trailing := text[0 : 0]
 	if fd.kind == DEF_FIELD {
-		end := line_end(text, fd.at)
-		line := text[fd.at : end]
+		stop := line_end(text, fd.at)
+		line := text[fd.at : stop]
 		for i in 0 : line.len - 1 {
 			if line[i] == '/' and line[i + 1] == '/' {
 				trailing = line[i : line.len]
@@ -831,9 +831,9 @@ line_start :: fun(text: []utf8, n: i64) -> i64 {
 	at : i64 = 0
 	line : i64 = 1
 	for line < n {
-		end := line_end(text, at)
-		if end >= text.len do return -1
-		at = end + 1
+		stop := line_end(text, at)
+		if stop >= text.len do return -1
+		at = stop + 1
 		line += 1
 	}
 	return at
@@ -979,13 +979,13 @@ docs_footer :: fun(d: ^Docs, l: ^Lines, fd: Found, names: []utf8) {
 // with the spaces after: 0 for none.
 names_end :: fun(first: []utf8) -> i64 {
 	at : i64 = 0
-	end : i64 = 0
+	stop : i64 = 0
 	for at < first.len {
 		if first[at] == ' ' or first[at] == ',' {
 			at += 1
 			continue
 		}
-		if first[at] == ':' and end > 0 {
+		if first[at] == ':' and stop > 0 {
 			at += 1
 			for at < first.len and first[at] == ' ' {
 				at += 1
@@ -999,13 +999,13 @@ names_end :: fun(first: []utf8) -> i64 {
 			closing += 1
 		}
 		if closing == first.len do break
-		end = closing + 1
-		at = end
+		stop = closing + 1
+		at = stop
 	}
-	for end > 0 and end < first.len and first[end] == ' ' {
-		end += 1
+	for stop > 0 and stop < first.len and first[stop] == ' ' {
+		stop += 1
 	}
-	return end
+	return stop
 }
 
 // A definition's doc comment and code, as the panel shows them below its
@@ -1028,8 +1028,8 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 		for w, i in words {
 			line := text[w.at : w.at + w.len]
 			if i == 0 and is_entry(fd.kind) {
-				end := names_end(line)
-				for ch in line[0 : end] {
+				stop := names_end(line)
+				for ch in line[0 : stop] {
 					if ch != '`' and names.len < names.cap do &names ++ ch
 				}
 				for names.len > 0 {
@@ -1037,7 +1037,7 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 					if last != ' ' and last != ':' and last != ',' do break
 					names.len -= 1
 				}
-				line = line[end : line.len]
+				line = line[stop : line.len]
 				if line.len == 0 do continue
 			}
 			words_in := trimmed(line)
@@ -1097,10 +1097,10 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 	depth : i64 = 0   // parentheses open
 	shown : i64 = 0
 	for at < text.len {
-		end := line_end(text, at)
-		code := text[at : end]
-		line_indent, from := indentation(text, at, end)
-		rest := trimmed(text[from : end])
+		stop := line_end(text, at)
+		code := text[at : stop]
+		line_indent, from := indentation(text, at, stop)
+		rest := trimmed(text[from : stop])
 		last := shown + 1 == most
 		if fd.kind == DEF_OTHER or fd.kind == DEF_LINE {
 			for ch in rest {
@@ -1119,7 +1119,7 @@ docs_show_body :: fun(d: ^Docs, l: ^Lines, fd: Found) {
 		if fd.kind == DEF_TYPE and shown == 0 and contains(rest, "}") do last = true
 		if trimmed(code).len > 0 or not last do lines_add_code(l, code, indent)
 		shown += 1
-		at = end + 1
+		at = stop + 1
 		if last do break
 		if shown == most {
 			lines_add(l, "  …", STYLE_DIM)
@@ -1165,11 +1165,11 @@ docs_show_fun :: fun(l: ^Lines, text: []utf8, from: i64, indent: i64) {
 	depth : i64 = 0   // the signature's parentheses open
 	at := from
 	for at < text.len {
-		end := line_end(text, at)
-		line_indent, start := indentation(text, at, end)
-		rest := trimmed(text[start : end])
+		stop := line_end(text, at)
+		line_indent, start := indentation(text, at, stop)
+		rest := trimmed(text[start : stop])
 		count += 1
-		at = end + 1
+		at = stop + 1
 		for ch in rest {
 			if sig > 0 do break
 			if ch == '(' do depth += 1
@@ -1184,9 +1184,9 @@ docs_show_fun :: fun(l: ^Lines, text: []utf8, from: i64, indent: i64) {
 	first := l.lines.len
 	at = from
 	for _ in 0:most {
-		end := line_end(text, at)
-		lines_add_code(l, text[at : end], indent)
-		at = end + 1
+		stop := line_end(text, at)
+		lines_add_code(l, text[at : stop], indent)
+		at = stop + 1
 	}
 	if most < count {
 		more : [60]utf8
@@ -1210,11 +1210,11 @@ docs_show_example :: fun(l: ^Lines, text: []utf8, fd: Found) {
 	blanks : i64 = 0   // blank lines held back, shown when code follows
 	shown : i64 = 0
 	for at < text.len {
-		end := line_end(text, at)
-		line_indent, from := indentation(text, at, end)
-		rest := trimmed(text[from : end])
+		stop := line_end(text, at)
+		line_indent, from := indentation(text, at, stop)
+		rest := trimmed(text[from : stop])
 		if line_indent == 0 and at > fd.at and (starts_with(rest, "//") or starts_with(rest, "/*")) do break
-		line_after := end + 1
+		line_after := stop + 1
 		if rest.len == 0 {
 			blanks += 1
 			at = line_after
@@ -1229,7 +1229,7 @@ docs_show_example :: fun(l: ^Lines, text: []utf8, fd: Found) {
 			blanks -= 1
 			shown += 1
 		}
-		lines_add_code(l, text[at : end], indent)
+		lines_add_code(l, text[at : stop], indent)
 		shown += 1
 		at = line_after
 	}
@@ -1307,23 +1307,23 @@ lines_add_code :: fun(l: ^Lines, code: []utf8, indent: i64) {
 		}
 		k += 1
 	}
-	end := code.len
-	for end > k {
-		if code[end - 1] != ' ' and code[end - 1] != '\t' and code[end - 1] != '\r' do break
-		end -= 1
+	stop := code.len
+	for stop > k {
+		if code[stop - 1] != ' ' and code[stop - 1] != '\t' and code[stop - 1] != '\r' do break
+		stop -= 1
 	}
 	shown : [1200]utf8
 	&shown ++ "  "
-	&shown ++ code[k : min_int(end, k + 1000)]
+	&shown ++ code[k : min_int(stop, k + 1000)]
 	lines_add(l, shown, STYLE_MARA)
 }
 
 // The line's indentation in columns (a tab, TAB_SPACES), and where its text
 // begins — a carriage return at its end left off by the caller's end.
-indentation :: fun(text: []utf8, at: i64, end: i64) -> i64, i64 {
+indentation :: fun(text: []utf8, at: i64, stop: i64) -> i64, i64 {
 	col : i64 = 0
 	k := at
-	for k < end {
+	for k < stop {
 		if text[k] == '\t' {
 			col += TAB_SPACES
 		elif text[k] == ' '

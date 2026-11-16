@@ -82,15 +82,15 @@ Arena_Basic :: class(cap: i64) {
 		span: atom = #caller_span) -> []byte
 	{
 		off := (a.base.len + 15) & -16
-		end := off + size
+		stop := off + size
 
-		if end > a.capacity {
+		if stop > a.capacity {
 			dump(a, size, name, span)
 			crash()
 		}
 
-		result := a.base[off : end]
-		a.base.len = end
+		result := a.base[off : stop]
+		a.base.len = stop
 		#if #profile_memory {
 			__mara_mem_arena("Arena_Basic", &a.base)
 		}
@@ -171,9 +171,9 @@ Arena_Debug :: class(cap: i64) {
 	{
 		off := (a.base.len + 15) & -16
 		cap := a.capacity
-		end := off + HEADER_SIZE + size
+		stop := off + HEADER_SIZE + size
 
-		if end > cap {
+		if stop > cap {
 			dump(a, size, name, span)
 			crash()
 		}
@@ -183,7 +183,7 @@ Arena_Debug :: class(cap: i64) {
 			size = size,
 			name = name,
 			span = span }
-		a.base.len = end
+		a.base.len = stop
 		a.base[off] = h
 
 		data_off := off + HEADER_SIZE

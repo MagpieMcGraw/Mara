@@ -91,13 +91,13 @@ profile_read :: fun(p: ^Profile, path: []utf8) {
 	text : []utf8 = p.text
 	at : i64 = 0
 	for at < text.len {
-		end := at
-		for end < text.len {
-			if text[end] == '\n' do break
-			end += 1
+		stop := at
+		for stop < text.len {
+			if text[stop] == '\n' do break
+			stop += 1
 		}
-		line := Field{at = at, len = end - at}
-		at = end + 1
+		line := Field{at = at, len = stop - at}
+		at = stop + 1
 		if line.len > 0 {
 			if text[line.at + line.len - 1] == '\r' do line.len -= 1
 		}
@@ -140,12 +140,12 @@ read_columns :: fun(p: ^Profile, line: Field) -> bool {
 		found : i64 = -1
 		for k in 0:KNOWN {
 			title := column_title(k)
-			end := at + title.len
-			if end <= words.len {
-				if words[at : end] == title {
+			stop := at + title.len
+			if stop <= words.len {
+				if words[at : stop] == title {
 					// (The whole title: the words after it are another's.)
-					whole := end == words.len
-					if not whole do whole = words[end] == ' '
+					whole := stop == words.len
+					if not whole do whole = words[stop] == ' '
 					if whole {
 						found = k
 						break

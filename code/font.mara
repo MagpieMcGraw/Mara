@@ -223,9 +223,9 @@ rasterize_coverage :: fun(outline: ^Outline, scale: f32, origin_x: f32, origin_y
 	}
 	start : i64 = 0
 	for c in 0:outline.contour_end_pts.len {
-		end := i64(outline.contour_end_pts[c])
-		coverage_contour(outline, start, end, scale, origin_x, origin_y, w, h, acc)
-		start = end + 1
+		stop := i64(outline.contour_end_pts[c])
+		coverage_contour(outline, start, stop, scale, origin_x, origin_y, w, h, acc)
+		start = stop + 1
 	}
 	out.len = w * h
 	for y in 0:h {
@@ -240,9 +240,9 @@ rasterize_coverage :: fun(outline: ^Outline, scale: f32, origin_x: f32, origin_y
 // One contour's edges: a line between points on the curve, a quadratic
 // curve around each point off it — between two off it, a point on it
 // halfway, implied.
-coverage_contour :: fun(o: ^Outline, start: i64, end: i64, scale: f32, ox: f32, oy: f32,
+coverage_contour :: fun(o: ^Outline, start: i64, stop: i64, scale: f32, ox: f32, oy: f32,
                         w: i64, h: i64, acc: ^[]f32) {
-	n := end - start + 1
+	n := stop - start + 1
 	if n < 2 do return
 	// (Begin at a point on the curve; with none, halfway from the last to
 	// the first, the points after it all of them.)
@@ -255,7 +255,7 @@ coverage_contour :: fun(o: ^Outline, start: i64, end: i64, scale: f32, ox: f32, 
 	}
 	sx, sy := coverage_point(o, start + max_int(first, 0), scale, ox, oy)
 	if first < 0 {
-		lx, ly := coverage_point(o, end, scale, ox, oy)
+		lx, ly := coverage_point(o, stop, scale, ox, oy)
 		sx = (sx + lx) * 0.5
 		sy = (sy + ly) * 0.5
 		first = n - 1
@@ -549,10 +549,10 @@ rasterize_msdf :: fun(outline: ^Outline, glyph: ^Glyph, atlas: ^Atlas) -> err
 					pen = node_i
 					node_i += 1
 				else
-					end := node_i + 1
-					if end >= nodes.len do end = 0
-					&segments ++ make_segment(nodes[pen], nodes[node_i], nodes[end], true)
-					pen = end
+					stop := node_i + 1
+					if stop >= nodes.len do stop = 0
+					&segments ++ make_segment(nodes[pen], nodes[node_i], nodes[stop], true)
+					pen = stop
 					node_i += 2
 				}
 			}
@@ -1025,11 +1025,11 @@ parse_glyph :: fun(t: ^TTF, glyph_index: u16, outline: ^Outline, depth: i64 = 0)
 	outline.points.len = 0
 	if i64(glyph_index) >= i64(t.maxp.num_glyphs) do return Bad_Glyph
 	start := i64(t.loca.offsets[glyph_index])
-	end := i64(t.loca.offsets[i64(glyph_index) + 1])
-	if end == start do return   // empty glyph (e.g. space): no outline
-	if end - start < 10 do return Bad_Glyph   // (no room for its header)
+	stop := i64(t.loca.offsets[i64(glyph_index) + 1])
+	if stop == start do return   // empty glyph (e.g. space): no outline
+	if stop - start < 10 do return Bad_Glyph   // (no room for its header)
 
-	glyph_bytes := t.glyf.data[start : end]
+	glyph_bytes := t.glyf.data[start : stop]
 	outline.header = #big_endian glyph_bytes[0]
 	if outline.header.num_contours > 0 {
 		parse_simple_glyph_body(outline, glyph_bytes)?
@@ -1180,10 +1180,10 @@ parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) -> err {
 	outline.contour_end_pts.len = n_contours
 	last : i64 = -1
 	for i in 0:n_contours {
-		end := read_u16be(glyph_bytes[cursor])
-		if i64(end) <= last do return Bad_Glyph
-		outline.contour_end_pts[i] = end
-		last = i64(end)
+		stop := read_u16be(glyph_bytes[cursor])
+		if i64(stop) <= last do return Bad_Glyph
+		outline.contour_end_pts[i] = stop
+		last = i64(stop)
 		cursor += 2
 	}
 	n_points := last + 1
@@ -1612,22 +1612,22 @@ cmap_pick :: fun(bytes: ^[]byte, cmap: i64, cmap_len: i64) -> i64 {
 	}
 	// Whether the subtable at `sub` is in a format char_glyph reads and its
 	// arrays end by `end` (the cmap table's end).
-	cmap_readable :: fun(bytes: ^[]byte, sub_table: i64, end: i64) -> bool {
-		if sub_table + 4 > end do return false
+	cmap_readable :: fun(bytes: ^[]byte, sub_table: i64, stop: i64) -> bool {
+		if sub_table + 4 > stop do return false
 		format := read_u16be(bytes[sub_table])
-		if format == 0 do return sub_table + 262 <= end
+		if format == 0 do return sub_table + 262 <= stop
 		if format == 4 {
-			if sub_table + 14 > end do return false
+			if sub_table + 14 > stop do return false
 			seg_x2 := i64(read_u16be(bytes[sub_table + 6]))
-			return seg_x2 % 2 == 0 and sub_table + 16 + 4 * seg_x2 <= end
+			return seg_x2 % 2 == 0 and sub_table + 16 + 4 * seg_x2 <= stop
 		}
 		if format == 6 {
-			if sub_table + 10 > end do return false
-			return sub_table + 10 + 2 * i64(read_u16be(bytes[sub_table + 8])) <= end
+			if sub_table + 10 > stop do return false
+			return sub_table + 10 + 2 * i64(read_u16be(bytes[sub_table + 8])) <= stop
 		}
 		if format == 12 {
-			if sub_table + 16 > end do return false
-			return sub_table + 16 + 12 * i64(read_u32be(bytes[sub_table + 12])) <= end
+			if sub_table + 16 > stop do return false
+			return sub_table + 16 + 12 * i64(read_u32be(bytes[sub_table + 12])) <= stop
 		}
 		return false
 	}

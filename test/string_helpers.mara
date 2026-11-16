@@ -44,10 +44,10 @@ main :: fun() {
 	lines : str64
 	at : i64 = 0
 	for at <= text.len {
-		end := line_end(text, at)
-		&lines ++ trimmed(text[at : end])
-		if end < text.len do &lines ++ '|'
-		at = end + 1
+		stop := line_end(text, at)
+		&lines ++ trimmed(text[at : stop])
+		if stop < text.len do &lines ++ '|'
+		at = stop + 1
 	}
 	print("lines:", lines)
 

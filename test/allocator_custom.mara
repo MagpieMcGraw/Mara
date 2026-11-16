@@ -32,14 +32,14 @@ Counting :: class(cap: i64) {
 
 	alloc :: fun(a: ^Self, size: i64, name: atom = #caller_name, span: atom = #caller_span) -> []byte {
 		off := (a.base.len + 15) & -16
-		end := off + size
-		if end > a.capacity {
+		stop := off + size
+		if stop > a.capacity {
 			dump(a, size, name, span)
 			crash()
 		}
 		a.allocs += 1
-		result := a.base[off : end]
-		a.base.len = end
+		result := a.base[off : stop]
+		a.base.len = stop
 		return result
 	}
 

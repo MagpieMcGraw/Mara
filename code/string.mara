@@ -12,8 +12,8 @@ find :: fun(haystack: []utf8, needle: []utf8, start: i64 = 0) -> i64, bool {
 	if needle.len == 0 do return 0, true
 	if haystack.len < needle.len do return -1, false
 
-	end := haystack.len - needle.len + 1
-	for i in start:end {
+	stop := haystack.len - needle.len + 1
+	for i in start:stop {
 		matched := true
 		for j in 0:needle.len {
 			if haystack[i + j] != needle[j] {
@@ -128,12 +128,12 @@ skip_spaces :: fun(s: []utf8, k: i64) -> i64 {
 // through a text's lines with it: the next starts at end + 1.
 // (A '\r' before the '\n' is the line's last character.)
 line_end :: fun(text: []utf8, at: i64) -> i64 {
-	end := at
-	for end < text.len {
-		if text[end] == '\n' do break
-		end += 1
+	stop := at
+	for stop < text.len {
+		if text[stop] == '\n' do break
+		stop += 1
 	}
-	return end
+	return stop
 }
 
 // A letter in lower case (A to Z); any other character as it is.
@@ -502,17 +502,17 @@ float_text_f64 :: fun(x: f64, decimals: i64 = -1, significant: i64 = 6) -> str64
 	}
 	// (The digits from `from` up to `end`, rounded at end, with one more digit
 	// first: '0', unless the rounding carried into it.)
-	rounded :: fun(limbs: []u32, from: i64, end: i64) -> str64 {
+	rounded :: fun(limbs: []u32, from: i64, stop: i64) -> str64 {
 		kept : str64
 		&kept ++ '0'
-		for k in from:end {
+		for k in from:stop {
 			&kept ++ utf8(i64('0') + digit(limbs, k))
 		}
-		after := digit(limbs, end)
+		after := digit(limbs, stop)
 		up := after > 5
 		if after == 5 {
-			up = digit(limbs, end - 1) % 2 == 1
-			for k in end + 1:limbs.len * 9 {
+			up = digit(limbs, stop - 1) % 2 == 1
+			for k in stop + 1:limbs.len * 9 {
 				if digit(limbs, k) != 0 do up = true
 			}
 		}
@@ -616,11 +616,11 @@ float_text_f64 :: fun(x: f64, decimals: i64 = -1, significant: i64 = 6) -> str64
 		kept := rounded(digits, from, point + decimals)
 		start := 1
 		if kept[0] != '0' do start = 0
-		end := 1 + point - from
-		&out ++ kept[start:end]
+		stop := 1 + point - from
+		&out ++ kept[start:stop]
 		if decimals > 0 {
 			&out ++ '.'
-			&out ++ kept[end:kept.len]
+			&out ++ kept[stop:kept.len]
 		}
 		return out
 	}

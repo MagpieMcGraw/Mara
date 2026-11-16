@@ -44,21 +44,21 @@ crash_load :: fun(ui: ^Ui, path: []utf8, own: bool) -> bool {
 		&ui.crash_dir ++ get_dir(path)
 	}
 	text : []utf8 = ui.crash_text
-	end := text.len
-	for end > 0 {
-		if text[end - 1] != '\n' and text[end - 1] != '\r' do break
-		end -= 1
+	limit := text.len
+	for limit > 0 {
+		if text[limit - 1] != '\n' and text[limit - 1] != '\r' do break
+		limit -= 1
 	}
 	start : i64 = 0
-	for k in 1:end {
+	for k in 1:limit {
 		if text[k - 1] == '\n' and text[k] == '\n' do start = k + 1
 	}
 	// (Its first line when; the calls in code's color; the rest, what went
 	// wrong.)
 	at := start
-	for at < end {
+	for at < limit {
 		stop := at
-		for stop < end {
+		for stop < limit {
 			if text[stop] == '\n' do break
 			stop += 1
 		}

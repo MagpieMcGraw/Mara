@@ -236,7 +236,7 @@ def moved_results_params(c):
     check("results: the action, and putting them back", put is not None and "Put span's results back in the old order (i64, bool)" in acts, list(acts))
     fixed = apply(swapped, put and [e for es in put["edit"]["changes"].values() for e in es] or [])
     check("results: returns and destructures swapped", "return false, 0" in fixed and "return true, at + len" in fixed
-          and "ok, end := span(3, 4)" in fixed and "fine, more := span(10, 0)" in fixed, fixed)
+          and "ok, stop := span(3, 4)" in fixed and "fine, more := span(10, 0)" in fixed, fixed)
     check("results: then nothing said", edit(fixed) == [], None)
 
     params = fixed.replace("span :: fun(at: i64, len: i64)", "span :: fun(len: i64, at: i64)", 1)

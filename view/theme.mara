@@ -168,12 +168,12 @@ theme_sublime :: fun(ui: ^Ui) {
 		for at < text.len and (text[at] == ' ' or text[at] == '\t' or text[at] == '\n' or text[at] == '\r') {
 			at += 1
 		}
-		end := at
-		for end < text.len and text[end] != ' ' and text[end] != '\t' and text[end] != '\n' and text[end] != '\r' {
-			end += 1
+		stop := at
+		for stop < text.len and text[stop] != ' ' and text[stop] != '\t' and text[stop] != '\n' and text[stop] != '\r' {
+			stop += 1
 		}
-		word := text[at : end]
-		at = end
+		word := text[at : stop]
+		at = stop
 		eq := -1
 		for k in 0:word.len {
 			if word[k] == '=' and eq < 0 do eq = k

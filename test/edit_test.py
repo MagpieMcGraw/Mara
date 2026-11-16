@@ -57,7 +57,7 @@ def main():
         text = read(d, "funs.mara")
         check("results: the declaration, the returns and destructures", code == 0 and "-> bool, i64 {" in text
               and "return false, 0" in text and "return true, at + len" in text
-              and "ok, end := span(3, 4)" in text and "fine, more := span(10, 0)" in text, out + text)
+              and "ok, stop := span(3, 4)" in text and "fine, more := span(10, 0)" in text, out + text)
         code, out = mara(d, "edit", "span.params", "len,", "at")
         text = read(d, "funs.mara")
         check("params: the declaration and the calls (parts with commas)", code == 0 and "span :: fun(len: i64, at: i64)" in text

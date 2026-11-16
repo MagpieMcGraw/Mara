@@ -30,8 +30,8 @@ expand :: fun(out: ^[]utf8, text: []utf8, filepath: []utf8) -> i64, err {
 	line : i64 = 1
 	at : i64 = 0
 	for at < text.len {
-		end := line_end(text, at)
-		this := text[at:end]
+		stop := line_end(text, at)
+		this := text[at:stop]
 		renumber := false
 		if this.starts_with(INCLUDE_TAG) {
 			name := trimmed(this[INCLUDE_TAG.len:.len])
@@ -57,7 +57,7 @@ expand :: fun(out: ^[]utf8, text: []utf8, filepath: []utf8) -> i64, err {
 		}
 		if renumber do out ++ "#line " ++ int_text(line + 1) ++ "\n"
 		line += 1
-		at = end + 1
+		at = stop + 1
 	}
 	if versions != 2 do return 0, Bad_Text
 	return fragment_at

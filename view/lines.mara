@@ -249,11 +249,11 @@ wrap :: fun(ui: ^Ui, s: []utf8, style: i64, w: f32, line: i64, base: i64, rows: 
 	more := true
 	for more {
 		if rows.len == rows.cap do return false
-		end := row_end(ui, s, style, at, w - x)
+		stop := row_end(ui, s, style, at, w - x)
 		rows.len += 1
-		rows[rows.len - 1] = Line_Row{line = line, at = base + at, len = end - at, indent = x}
+		rows[rows.len - 1] = Line_Row{line = line, at = base + at, len = stop - at, indent = x}
 		// (The spaces it broke at shown by neither row.)
-		at = end
+		at = stop
 		for at < s.len {
 			if s[at] != ' ' do break
 			at += 1

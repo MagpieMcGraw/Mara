@@ -79,10 +79,10 @@ words :: fun(line: []utf8) -> [12][]utf8 {
 row :: fun(text: []utf8, column: i64, name: []utf8) -> [12][]utf8 {
 	at : i64 = 0
 	for at < text.len {
-		end := line_end(text, at)
-		w := words(text[at : end])
+		stop := line_end(text, at)
+		w := words(text[at : stop])
 		if w.len > column and w[column] == name do return w
-		at = end + 1
+		at = stop + 1
 	}
 	none : [12][]utf8
 	return none

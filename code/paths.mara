@@ -43,12 +43,12 @@ get_file :: fun(path: []utf8) -> []utf8 {
 // including its last separator, so a name can go after it: `dir :=
 // get_dir(exe)`, `&dir ++ "font.ttf"`. A name alone gives an empty Path.
 get_dir :: fun(path: []utf8) -> Path {
-	end : i64 = 0
+	stop : i64 = 0
 	for ch, i in path {
-		if path_separator(ch) do end = i + 1
+		if path_separator(ch) do stop = i + 1
 	}
 	dir : Path
-	&dir ++ path[0 : end]
+	&dir ++ path[0 : stop]
 	os.slashes_forward(&dir)
 	return dir
 }

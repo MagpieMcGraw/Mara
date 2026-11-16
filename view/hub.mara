@@ -114,19 +114,19 @@ serve_command :: fun(h: ^Hub) {
 line_place :: fun(line: []utf8) -> ([]utf8, []utf8, []utf8) {
 	if not starts_with(line, "-in \"") do return line[0 : 0], line[0 : 0], line
 	start : i64 = 5
-	end := start
-	for end < line.len {
-		if line[end] == '"' do break
-		end += 1
+	stop := start
+	for stop < line.len {
+		if line[stop] == '"' do break
+		stop += 1
 	}
-	dir := line[start : end]
-	start = min_int(end + 2, line.len)
-	end = start
-	for end < line.len {
-		if line[end] == ' ' do break
-		end += 1
+	dir := line[start : stop]
+	start = min_int(stop + 2, line.len)
+	stop = start
+	for stop < line.len {
+		if line[stop] == ' ' do break
+		stop += 1
 	}
-	return dir, line[start : end], line[min_int(end + 1, line.len) : line.len]
+	return dir, line[start : stop], line[min_int(stop + 1, line.len) : line.len]
 }
 
 // The window moved to where an editor is: the module named, in its folder. The
@@ -546,31 +546,31 @@ cursor_style :: fun(n: i64, line: []utf8) -> i64 {
 // `  <file>:<line>  <what it's in>`; 0 for a line that's no place.
 place_end :: fun(line: []utf8) -> i64 {
 	if line.len < 3 or line[0] != ' ' or line[1] != ' ' or line[2] == ' ' do return 0
-	end := 2
-	for end < line.len {
-		if line[end] == ' ' and end + 1 < line.len and line[end + 1] == ' ' do break
-		end += 1
+	stop := 2
+	for stop < line.len {
+		if line[stop] == ' ' and stop + 1 < line.len and line[stop + 1] == ' ' do break
+		stop += 1
 	}
-	colon := end - 1
+	colon := stop - 1
 	for colon > 2 {
 		if line[colon] < '0' or line[colon] > '9' do break
 		colon -= 1
 	}
-	if colon + 1 == end or colon < 7 or line[colon] != ':' do return 0
+	if colon + 1 == stop or colon < 7 or line[colon] != ':' do return 0
 	if line[colon - 5 : colon] != ".mara" do return 0
-	return end
+	return stop
 }
 
 // A line of the answer added, in its style. A place shows its file's name alone,
 // and opens where it says, clicked: its folder's kept, from this window's folder
 // when it's not whole.
 cursor_add :: fun(l: ^Lines, h: ^Hub, line: []utf8) {
-	end := place_end(line)
-	if end == 0 {
+	stop := place_end(line)
+	if stop == 0 {
 		lines_add(l, line, cursor_style(l.lines.len, line))
 		return
 	}
-	name := end
+	name := stop
 	for name > 2 {
 		if line[name - 1] == '\\' or line[name - 1] == '/' do break
 		name -= 1
@@ -585,7 +585,7 @@ cursor_add :: fun(l: ^Lines, h: ^Hub, line: []utf8) {
 		&link ++ h.dir
 		&link ++ "/"
 	}
-	&link ++ line[2 : min_int(end, 900)]
+	&link ++ line[2 : min_int(stop, 900)]
 	lines_link(l, link)
 }
 
