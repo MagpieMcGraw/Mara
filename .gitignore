@@ -8,6 +8,8 @@
 *.lib.flags
 # The names a build's generated import libraries are made of (<name>_build/kernel32.def)
 **/*_build/*.def
+# ... and its natvis, for Visual Studio's debugger (natvis_write)
+**/*_build/mara.natvis
 *.a
 *.a.flags
 *.dll
