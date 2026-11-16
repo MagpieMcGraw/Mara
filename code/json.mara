@@ -234,9 +234,9 @@ json_first :: fun(values: []Json, list: i64) -> i64 {
 
 // The value after `item` in the array or object `list`, 0 after the last.
 json_next :: fun(values: []Json, list: i64, item: i64) -> i64 {
-	next_item := item + values[item].span
-	if next_item >= list + values[list].span do return 0
-	return next_item
+	after := item + values[item].span
+	if after >= list + values[list].span do return 0
+	return after
 }
 
 // An object's value with this key, and whether it's there. A key with escapes in it

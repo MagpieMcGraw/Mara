@@ -62,6 +62,14 @@ slice_add_item :: fun(dst: ^[]$T, src: $T) -> ^[]T {
 	return dst
 }
 
+// Makes list one item longer and gives that item, to write into; it must fit
+// in list's capacity. The item holds whatever was in its place before.
+next_item :: fun(list: ^[]$T) -> ^T {
+	n := list.len
+	list.len = n + 1
+	return &list[n]
+}
+
 // A new list: a's items, then b's — of a's own type, its room (a Path
 // joined is a Path: `cwd ++ "/code"`), a itself as it was. `a ++ b`. Past the
 // room, the program stops, as an add does. (`&a ++ b` adds into a itself.)
