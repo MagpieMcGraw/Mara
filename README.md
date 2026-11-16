@@ -33,7 +33,7 @@ odin build src -out:Mara.exe
 
 Mara uses clang and lld to build it's executables. For the windows build, I placed these in the tools folder so you don't have to download LLVM. For the linux build, I recommend you download them via the package manager.
 
-On windows, Mara needs needs MSVC C++ build tools, and the Windows SDK. You can download these from Microsoft.
+On windows, Mara needs nothing else: programs are built without the C library. Only a `-crt` build (for C code that calls the C library) needs the MSVC C++ build tools and the Windows SDK. You can download these from Microsoft.
 
 ## Using Mara
 
