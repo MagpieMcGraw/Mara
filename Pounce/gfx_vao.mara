@@ -35,10 +35,10 @@ MAX_VAO_MESHES :: 512
 
 // VAO_State tracks the state of a unified VAO buffer for incremental updates
 VAO_State :: struct(max_v, max_ind, max_ins := 1 << 16) {
-    vao:            gl.Vertex_Array
-    vertex_vbo:     gl.Buffer
-    ebo:            gl.Buffer
-    instance_vbo:   gl.Buffer
+    vao:            u32
+    vertex_vbo:     u32
+    ebo:            u32
+    instance_vbo:   u32
 
     // Current offsets (where next geometry will be written)
     vertex_offset:  i64

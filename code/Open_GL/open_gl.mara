@@ -2,26 +2,15 @@ module mara.open_gl
 
 // OpenGL's functions as C has them, each named as the GL reference names it
 // less its `gl` (gl.BufferData is glBufferData), its parameters too. GL's
-// constants are grouped into types by the parameters they go in, and its
-// objects are distinct types: a Texture can't go where a Buffer does.
-// GL 1.1's functions are opengl32.dll's; the rest are loaded by gl_load once
-// a context is current, and called through open_gl.c.
+// constants are grouped into types by the parameters they go in; its objects
+// are u32s, as C's GLuint (0: none, or the default one: framebuffer 0 is the
+// window's). GL 1.1's functions are opengl32.dll's; the rest are loaded by
+// gl_load once a context is current, and called through open_gl.c.
 
 core :: use mara.core
 os :: use mara.os
 
-// --- objects --------------------------------------------------------------------
-// GL's names for its objects (a GLuint each; 0: none, or the default one).
-
-Buffer       :: distinct u32
-Vertex_Array :: distinct u32
-Texture      :: distinct u32
-Shader       :: distinct u32
-Program      :: distinct u32
-Framebuffer  :: distinct u32   // 0: the window's
-Renderbuffer :: distinct u32
-Query        :: distinct u32
-Sync         :: ^byte          // a fence (GLsync)
+Sync :: ^byte   // a fence (GLsync)
 
 // --- constants --------------------------------------------------------------------
 
@@ -371,9 +360,9 @@ foreign static_lib "opengl32" prefix gl {
 	fun Clear(mask: Clear_Mask)
 
 	// textures
-	fun GenTextures(n: i32, textures: ^Texture)
-	fun DeleteTextures(n: i32, textures: ^Texture)
-	fun BindTexture(target: Texture_Target, texture: Texture)
+	fun GenTextures(n: i32, textures: ^u32)
+	fun DeleteTextures(n: i32, textures: ^u32)
+	fun BindTexture(target: Texture_Target, texture: u32)
 	fun TexImage2D(target: Texture_Target, level: i32, internalformat: Tex_Format, width: i32, height: i32, border: i32, format: Tex_Format, type: Type, data: ^byte)
 	fun TexParameteri(target: Texture_Target, pname: Tex_Param, param: i32)
 	fun TexParameterf(target: Texture_Target, pname: Tex_Param, param: f32)
@@ -390,17 +379,17 @@ foreign static_lib "opengl32" prefix gl {
 
 foreign static_lib "open_gl" prefix gl {
 	// buffers
-	fun GenBuffers(n: i32, buffers: ^Buffer)
-	fun DeleteBuffers(n: i32, buffers: ^Buffer)
-	fun BindBuffer(target: Buffer_Target, buffer: Buffer)
-	fun BindBufferBase(target: Buffer_Target, index: u32, buffer: Buffer)
+	fun GenBuffers(n: i32, buffers: ^u32)
+	fun DeleteBuffers(n: i32, buffers: ^u32)
+	fun BindBuffer(target: Buffer_Target, buffer: u32)
+	fun BindBufferBase(target: Buffer_Target, index: u32, buffer: u32)
 	fun BufferData(target: Buffer_Target, size: isize, data: ^byte, usage: Buffer_Usage)
 	fun BufferSubData(target: Buffer_Target, offset: isize, size: isize, data: ^byte)
 
 	// vertex arrays
-	fun GenVertexArrays(n: i32, arrays: ^Vertex_Array)
-	fun DeleteVertexArrays(n: i32, arrays: ^Vertex_Array)
-	fun BindVertexArray(array: Vertex_Array)
+	fun GenVertexArrays(n: i32, arrays: ^u32)
+	fun DeleteVertexArrays(n: i32, arrays: ^u32)
+	fun BindVertexArray(array: u32)
 	fun EnableVertexAttribArray(index: u32)
 	fun VertexAttribPointer(index: u32, size: i32, type: Type, normalized: u8, stride: i32, pointer: usize)
 	fun VertexAttribIPointer(index: u32, size: i32, type: Type, stride: i32, pointer: usize)
@@ -418,25 +407,25 @@ foreign static_lib "open_gl" prefix gl {
 	fun GenerateMipmap(target: Texture_Target)
 
 	// shaders
-	fun CreateShader(shaderType: Shader_Type) -> Shader
-	fun ShaderSource(shader: Shader, count: i32, string: ^^utf8, length: ^i32)
-	fun CompileShader(shader: Shader)
-	fun DeleteShader(shader: Shader)
-	fun GetShaderiv(shader: Shader, pname: Shader_Param, params: ^i32)
-	fun GetShaderInfoLog(shader: Shader, maxLength: i32, length: ^i32, infoLog: ^utf8)
+	fun CreateShader(shaderType: Shader_Type) -> u32
+	fun ShaderSource(shader: u32, count: i32, string: ^^utf8, length: ^i32)
+	fun CompileShader(shader: u32)
+	fun DeleteShader(shader: u32)
+	fun GetShaderiv(shader: u32, pname: Shader_Param, params: ^i32)
+	fun GetShaderInfoLog(shader: u32, maxLength: i32, length: ^i32, infoLog: ^utf8)
 
 	// programs
-	fun CreateProgram() -> Program
-	fun AttachShader(program: Program, shader: Shader)
-	fun DetachShader(program: Program, shader: Shader)
-	fun LinkProgram(program: Program)
-	fun UseProgram(program: Program)
-	fun DeleteProgram(program: Program)
-	fun GetProgramiv(program: Program, pname: Shader_Param, params: ^i32)
-	fun GetProgramInfoLog(program: Program, maxLength: i32, length: ^i32, infoLog: ^utf8)
+	fun CreateProgram() -> u32
+	fun AttachShader(program: u32, shader: u32)
+	fun DetachShader(program: u32, shader: u32)
+	fun LinkProgram(program: u32)
+	fun UseProgram(program: u32)
+	fun DeleteProgram(program: u32)
+	fun GetProgramiv(program: u32, pname: Shader_Param, params: ^i32)
+	fun GetProgramInfoLog(program: u32, maxLength: i32, length: ^i32, infoLog: ^utf8)
 
 	// uniforms
-	fun GetUniformLocation(program: Program, name: cstring) -> i32
+	fun GetUniformLocation(program: u32, name: cstring) -> i32
 	fun Uniform1f(location: i32, v0: f32)
 	fun Uniform1i(location: i32, v0: i32)
 	fun Uniform2f(location: i32, v0: f32, v1: f32)
@@ -445,22 +434,22 @@ foreign static_lib "open_gl" prefix gl {
 	fun UniformMatrix4fv(location: i32, count: i32, transpose: u8, value: ^f32)
 
 	// framebuffers
-	fun GenFramebuffers(n: i32, ids: ^Framebuffer)
-	fun DeleteFramebuffers(n: i32, framebuffers: ^Framebuffer)
-	fun BindFramebuffer(target: Framebuffer_Target, framebuffer: Framebuffer)
-	fun FramebufferTexture2D(target: Framebuffer_Target, attachment: Attachment, textarget: Texture_Target, texture: Texture, level: i32)
-	fun FramebufferTextureLayer(target: Framebuffer_Target, attachment: Attachment, texture: Texture, level: i32, layer: i32)
+	fun GenFramebuffers(n: i32, ids: ^u32)
+	fun DeleteFramebuffers(n: i32, framebuffers: ^u32)
+	fun BindFramebuffer(target: Framebuffer_Target, framebuffer: u32)
+	fun FramebufferTexture2D(target: Framebuffer_Target, attachment: Attachment, textarget: Texture_Target, texture: u32, level: i32)
+	fun FramebufferTextureLayer(target: Framebuffer_Target, attachment: Attachment, texture: u32, level: i32, layer: i32)
 	fun CheckFramebufferStatus(target: Framebuffer_Target) -> u32
 	fun DrawBuffers(n: i32, bufs: ^Attachment)
 	fun BlitFramebuffer(srcX0: i32, srcY0: i32, srcX1: i32, srcY1: i32, dstX0: i32, dstY0: i32, dstX1: i32, dstY1: i32, mask: Clear_Mask, filter: Tex_Filter)
 
 	// renderbuffers
-	fun GenRenderbuffers(n: i32, renderbuffers: ^Renderbuffer)
-	fun DeleteRenderbuffers(n: i32, renderbuffers: ^Renderbuffer)
-	fun BindRenderbuffer(target: Renderbuffer_Target, renderbuffer: Renderbuffer)
+	fun GenRenderbuffers(n: i32, renderbuffers: ^u32)
+	fun DeleteRenderbuffers(n: i32, renderbuffers: ^u32)
+	fun BindRenderbuffer(target: Renderbuffer_Target, renderbuffer: u32)
 	fun RenderbufferStorage(target: Renderbuffer_Target, internalformat: Tex_Format, width: i32, height: i32)
 	fun RenderbufferStorageMultisample(target: Renderbuffer_Target, samples: i32, internalformat: Tex_Format, width: i32, height: i32)
-	fun FramebufferRenderbuffer(target: Framebuffer_Target, attachment: Attachment, renderbuffertarget: Renderbuffer_Target, renderbuffer: Renderbuffer)
+	fun FramebufferRenderbuffer(target: Framebuffer_Target, attachment: Attachment, renderbuffertarget: Renderbuffer_Target, renderbuffer: u32)
 
 	// drawing
 	fun MultiDrawElementsIndirect(mode: Draw_Mode, type: Type, indirect: usize, drawcount: i32, stride: i32)
@@ -472,16 +461,16 @@ foreign static_lib "open_gl" prefix gl {
 	fun DeleteSync(sync: Sync)
 
 	// queries
-	fun GenQueries(n: i32, ids: ^Query)
-	fun DeleteQueries(n: i32, ids: ^Query)
-	fun QueryCounter(id: Query, target: Query_Target)
-	fun BeginQuery(target: Query_Target, id: Query)
+	fun GenQueries(n: i32, ids: ^u32)
+	fun DeleteQueries(n: i32, ids: ^u32)
+	fun QueryCounter(id: u32, target: Query_Target)
+	fun BeginQuery(target: Query_Target, id: u32)
 	fun EndQuery(target: Query_Target)
-	fun GetQueryObjectiv(id: Query, pname: Query_Param, params: ^i32)
-	fun GetQueryObjectui64v(id: Query, pname: Query_Param, params: ^u64)
+	fun GetQueryObjectiv(id: u32, pname: Query_Param, params: ^i32)
+	fun GetQueryObjectui64v(id: u32, pname: Query_Param, params: ^u64)
 
 	// bindless textures (ARB_bindless_texture: gl_has_extension)
-	fun GetTextureHandleARB(texture: Texture) -> u64
+	fun GetTextureHandleARB(texture: u32) -> u64
 	fun MakeTextureHandleResidentARB(handle: u64)
 	fun MakeTextureHandleNonResidentARB(handle: u64)
 	fun UniformHandleui64ARB(location: i32, value: u64)
@@ -493,8 +482,8 @@ foreign static_lib "open_gl" {
 	fun mara_gl_proc_count() -> i32
 	fun mara_gl_proc_name(i: i32) -> ^byte
 	fun mara_gl_proc_set(i: i32, address: ^byte)
-	fun mara_gl_compile_shader(type: Shader_Type, src: cstring) -> Shader
-	fun mara_gl_link_program(vs: Shader, fs: Shader) -> Program
+	fun mara_gl_compile_shader(type: Shader_Type, src: cstring) -> u32
+	fun mara_gl_link_program(vs: u32, fs: u32) -> u32
 	fun mara_gl_log() -> ^byte
 	fun mara_gl_has_extension(name: cstring) -> u8
 }
@@ -512,14 +501,14 @@ gl_load :: fun(get_proc: fun([]utf8) -> ^byte) {
 }
 
 // A shader compiled from one text: 0 when it doesn't compile, its log printed.
-gl_compile_shader :: fun(type: Shader_Type, src: []utf8) -> Shader {
+gl_compile_shader :: fun(type: Shader_Type, src: []utf8) -> u32 {
 	shader := mara_gl_compile_shader(type, cstring(src))
 	if shader == 0 do print("[gl] shader compile error:", os.read_cstring(1024, mara_gl_log()))
 	return shader
 }
 
 // A program of two shaders: 0 when it doesn't link, its log printed.
-gl_link_program :: fun(vs: Shader, fs: Shader) -> Program {
+gl_link_program :: fun(vs: u32, fs: u32) -> u32 {
 	program := mara_gl_link_program(vs, fs)
 	if program == 0 do print("[gl] program link error:", os.read_cstring(1024, mara_gl_log()))
 	return program

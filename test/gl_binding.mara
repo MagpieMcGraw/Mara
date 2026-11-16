@@ -19,7 +19,7 @@ gl :: use mara.open_gl
 // call to each is built (not run — that needs a GL context) so a name
 // missing from opengl32 or open_gl.c stops the build. They're C's
 // functions: data as a pointer and its size in bytes, text as a cstring,
-// GL's objects as their own types.
+// GL's objects as u32s.
 
 uses :: fun() {
 	gl.ActiveTexture(gl.TEXTURE31)
@@ -59,7 +59,7 @@ uses :: fun() {
 	gl.Uniform4f(0, 1.0, 0.5, 0.25, 1.0)
 	// (A framebuffer of a color texture and a depth texture — a
 	// reflection's, the scene's depth — and one of a depth renderbuffer.)
-	fbo : gl.Framebuffer
+	fbo : u32
 	gl.GenFramebuffers(1, &fbo)
 	gl.BindFramebuffer(gl.FRAMEBUFFER, fbo)
 	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, 512, 512, 0, gl.RGBA, gl.HALF_FLOAT, void)
@@ -71,7 +71,7 @@ uses :: fun() {
 	outs : [2!]gl.Attachment = [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]
 	gl.DrawBuffers(2, &outs[0])
 	if gl.CheckFramebufferStatus(gl.FRAMEBUFFER) != u32(gl.FRAMEBUFFER_COMPLETE) do print("incomplete")
-	rbo : gl.Renderbuffer
+	rbo : u32
 	gl.GenRenderbuffers(1, &rbo)
 	gl.BindRenderbuffer(gl.RENDERBUFFER, rbo)
 	gl.RenderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, 512, 512)
@@ -100,7 +100,7 @@ uses :: fun() {
 	fence := gl.FenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
 	if gl.ClientWaitSync(fence, gl.SYNC_FLUSH_COMMANDS_BIT, 1000000) == u32(gl.TIMEOUT_EXPIRED) do print("late")
 	gl.DeleteSync(fence)
-	queries : [2!]gl.Query
+	queries : [2!]u32
 	gl.GenQueries(2, &queries[0])
 	gl.QueryCounter(queries[0], gl.TIMESTAMP)
 	gl.BeginQuery(gl.TIME_ELAPSED, queries[1])

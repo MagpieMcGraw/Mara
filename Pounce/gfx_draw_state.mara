@@ -30,14 +30,14 @@ DrawCommand :: struct {
 // DrawState bundles everything needed for one MDI draw call
 DrawState :: struct {
 	// Shader and texture
-	shader_id: gl.Program,
-	texture: gl.Texture,
+	shader_id: u32,
+	texture: u32,
 
 	// Reference to VAO state (for dynamic mesh access)
 	vao_state: ^VAO_State,
 
 	// OpenGL resources
-	command_buffer: gl.Buffer,
+	command_buffer: u32,
 
 	// Per-mesh batches (one instance array per mesh type)
 	batches: [MAX_BATCHES]Mesh_Batch
@@ -65,7 +65,7 @@ draw_state_init :: fun(
 	if bool(shader_err) do print(shader_err)
 
 	// Create persistent command buffer for MDI
-	command_buffer: gl.Buffer
+	command_buffer: u32
 	gl.GenBuffers(1, &command_buffer)
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, command_buffer)
 	gl.BufferData(gl.DRAW_INDIRECT_BUFFER,

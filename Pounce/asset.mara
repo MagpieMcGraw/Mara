@@ -48,11 +48,11 @@ Assets :: struct {
 	// cache: Cache,
 
 	// GPU texture array for images
-	texture_id:   gl.Texture,
+	texture_id:   u32,
 	texture_size: i32,
 
 	// GPU texture array for fonts (single-channel)
-	font_texture_id:   gl.Texture,
+	font_texture_id:   u32,
 	font_texture_size: i32,
 
 	textures:	[MAX_TEXTURES]Texture

@@ -65,7 +65,7 @@ expand :: fun(out: ^[]utf8, text: []utf8, filepath: []utf8) -> i64, err {
 
 // Compiles a file's two shaders (expand says what the file holds). What the
 // GL compiler says is printed.
-load_and_compile :: fun(filepath: []utf8) -> gl.Shader, gl.Shader, err {
+load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
 	// filled by the read — skip the zero-init
 	data: [32 * KB]byte = void
 	read_entire_file(filepath, &data)?
@@ -74,7 +74,7 @@ load_and_compile :: fun(filepath: []utf8) -> gl.Shader, gl.Shader, err {
 	text : [128 * KB]utf8
 	fragment_at := expand(&text, raw, filepath)?
 
-	compile :: fun(name: []utf8, text: []utf8, shader_type: gl.Shader_Type) -> gl.Shader, err {
+	compile :: fun(name: []utf8, text: []utf8, shader_type: gl.Shader_Type) -> u32, err {
 		shader := gl.CreateShader(shader_type)
 		source := text.ptr
 		n := i32(text.len)
@@ -107,7 +107,7 @@ load_and_compile :: fun(filepath: []utf8) -> gl.Shader, gl.Shader, err {
 }
 
 // A program linked from a file's two shaders (load_and_compile).
-make_program :: fun(filepath: []utf8) -> gl.Program, err {
+make_program :: fun(filepath: []utf8) -> u32, err {
 	vshader, fshader, e := load_and_compile(filepath)
 	defer gl.DeleteShader(vshader)
 	defer gl.DeleteShader(fshader)
