@@ -1,0 +1,113 @@
+module end_blocks
+
+//@ expect-output: if: big elif: middle else: small
+//@ expect-output: braced: 1 2 mixed: yes
+//@ expect-output: point: 3 4 7
+//@ expect-output: match: red green other
+//@ expect-output: loops: 0 1 2 | 3 2 1 | 6
+//@ expect-output: union: 2 error: Load_Error.Missing
+//@ expect-output: foreign: true dispatch: 5 five
+//@ expect-output: deferred last
+
+// A block opened without `{` runs to `end`: if (its elif and else inside),
+// match, for, defer, a fun's and a struct's body, a union, an error set, a
+// foreign block, a dispatch group, #if. Braces still work, side by side.
+
+use mara.core
+
+Point :: struct
+	x: i64
+	y: i64
+end
+
+sum :: fun(p: Point) -> i64
+	return p.x + p.y
+end
+
+Color :: union(tag u32)
+	RED = 1
+	GREEN = 2
+	BLUE = 3
+end
+
+Load_Error :: error
+	Missing
+end
+
+foreign static_lib "kernel32"
+	fun GetTickCount() -> u32
+end
+
+show_int :: fun(n: i64) -> i64 { return n }
+show_text :: fun(t: []utf8) -> []utf8
+	return t
+end
+show :: dispatch
+	show_int
+	show_text
+end
+
+size :: fun(n: i64) -> str64
+	if n > 100
+		return "big"
+	elif n > 10
+		return "middle"
+	else
+		return "small"
+	end
+end
+
+color_name :: fun(c: Color) -> str64
+	match c
+		RED do return "red"
+		GREEN
+			name := "green"
+			return name
+		else do return "other"
+	end
+end
+
+load :: fun(ok: bool) -> err
+	if not ok do return Missing
+end
+
+main :: fun()
+	defer
+		print("deferred last")
+	end
+	print("if:", size(500), "elif:", size(50), "else:", size(5))
+	a := 0
+	b := 0
+	if true {
+		a = 1
+	}
+	if a == 1
+		b = 2
+	end
+	mixed := "no"
+	if b == 2 { mixed = "yes" }
+	print("braced:", a, b, "mixed:", mixed)
+	p := Point{x = 3, y = 4}
+	print("point:", p.x, p.y, sum(p))
+	print("match:", color_name(.RED), color_name(.GREEN), color_name(.BLUE))
+	ups : [3]i64
+	for i in 0:3
+		&ups ++ i
+	end
+	downs : [3]i64
+	n := 3
+	for n > 0
+		&downs ++ n
+		n -= 1
+	end
+	total := 0
+	for true
+		total += 1
+		if total == 6 do break
+	end
+	print("loops:", ups[0], ups[1], ups[2], "|", downs[0], downs[1], downs[2], "|", total)
+	print("union:", u32(Color.GREEN), "error:", load(false))
+	#if #windows
+		print("foreign:", GetTickCount() > 0, "dispatch:", show(5), show("five"))
+	end
+end

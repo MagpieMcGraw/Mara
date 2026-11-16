@@ -121,14 +121,44 @@ tp_recover :: proc(p: ^Tree_Parser) {
     p.boundary_error = -1
     for {
         k := tp_kind(p)
-        if k == .Newline || k == .Semicolon || k == .Right_Brace || k == .EOF { return }
+        if tp_is_boundary(k) { return }
         p.pos += 1
     }
 }
 
-// Whether a token ends a statement: a line's end, a `;`, a block's `}`, the file's end.
+// Whether a token ends a statement: a line's end, a `;`, a block's `}` or
+// `end`, the file's end.
 tp_is_boundary :: proc(k: Token_Kind) -> bool {
-    return k == .Newline || k == .Semicolon || k == .Right_Brace || k == .EOF
+    return k == .Newline || k == .Semicolon || k == .Right_Brace || k == .End || k == .EOF
+}
+
+// A block's opening, its header read: a `{`, on the header's line or the
+// next; or, the header's line ending without one, none: the block runs to
+// `end`. Whether it's braced.
+tp_open :: proc(p: ^Tree_Parser) -> bool {
+    if tp_kind(p) == .Left_Brace {
+        tp_advance(p)
+        return true
+    }
+    if tp_kind(p) != .Newline {
+        tp_expect(p, .Left_Brace)   // (said: more on the header's line)
+        return true
+    }
+    tp_skip_newlines(p)
+    if tp_kind(p) != .Left_Brace { return false }
+    tp_advance(p)
+    return true
+}
+
+// Whether a block's items stop here: at its `}` (braced) or its `end`.
+tp_block_stop :: proc(p: ^Tree_Parser, braced: bool) -> bool {
+    k := tp_kind(p)
+    return k == .EOF || k == (.Right_Brace if braced else .End)
+}
+
+// A block's close: its `}`, or its `end`.
+tp_close :: proc(p: ^Tree_Parser, braced: bool) {
+    tp_expect(p, .Right_Brace if braced else .End)
 }
 
 // --- nodes ----------------------------------------------------------------
@@ -303,11 +333,11 @@ tp_module :: proc(p: ^Tree_Parser) -> Tree_Id {
 
 // `{ stmt* }`: the statements' list.
 tp_block :: proc(p: ^Tree_Parser, commas := false) -> u32 {
-    tp_expect(p, .Left_Brace)
+    braced := tp_open(p)
     tp_skip_newlines(p)
     stmts := tp_items()
     outer, outer_start := p.boundary_error, p.stmt_start   // (the statement holding the block's: its own)
-    for tp_kind(p) != .Right_Brace && tp_kind(p) != .EOF {
+    for !tp_block_stop(p, braced) {
         errs := p.errors
         p.boundary_error = -1
         p.stmt_start = p.pos
@@ -316,7 +346,7 @@ tp_block :: proc(p: ^Tree_Parser, commas := false) -> u32 {
         tp_skip_separator(p, commas)
     }
     p.boundary_error, p.stmt_start = outer, outer_start
-    tp_expect(p, .Right_Brace)
+    tp_close(p, braced)
     return tp_list(p, stmts)
 }
 
@@ -330,7 +360,11 @@ tp_is_intrinsic_part :: proc(k: Token_Kind) -> bool {
 }
 
 // A scope's body: its statements, or — `{ @llvm.<name> }` — an intrinsic's.
+// (Its `{` on the header's line or the next; none: its lines to `end`.)
 tp_scope_body :: proc(p: ^Tree_Parser, commas := false) -> (body: u32, intrinsic: Tree_Id) {
+    line_end := tp_mark(p)
+    tp_skip_newlines(p)
+    if tp_kind(p) != .Left_Brace { tp_reset(p, line_end) }
     if tp_kind(p) == .Left_Brace {
         m := tp_mark(p)
         start := p.pos
@@ -373,7 +407,7 @@ tp_return :: proc(p: ^Tree_Parser) -> Tree_Id {
     kw := tp_advance(p)
     values := tp_items()
     k := tp_kind(p)
-    if k != .Newline && k != .Right_Brace && k != .Semicolon && k != .EOF && k != .Else && k != .Elif {
+    if k != .Newline && k != .Right_Brace && k != .End && k != .Semicolon && k != .EOF && k != .Else && k != .Elif {
         append(&values, tp_expr(p))
         for tp_kind(p) == .Comma {
             tp_advance(p)
@@ -387,15 +421,15 @@ tp_defer :: proc(p: ^Tree_Parser) -> Tree_Id {
     start := p.pos
     kw := tp_advance(p)
     body := tp_items()
-    tp_skip_newlines(p)
-    if tp_kind(p) == .Left_Brace {
-        tp_advance(p)
+    // (`defer s` on its line; else a block: `{…}`, or its lines to `end`.)
+    if tp_kind(p) == .Left_Brace || tp_kind(p) == .Newline {
+        braced := tp_open(p)
         tp_skip_newlines(p)
-        for tp_kind(p) != .Right_Brace && tp_kind(p) != .EOF {
+        for !tp_block_stop(p, braced) {
             append(&body, tp_stmt(p))
             tp_skip_separator(p)
         }
-        tp_expect(p, .Right_Brace)
+        tp_close(p, braced)
     } else {
         append(&body, tp_stmt(p))
     }
@@ -404,7 +438,7 @@ tp_defer :: proc(p: ^Tree_Parser) -> Tree_Id {
 
 tp_if_branch_end :: proc(p: ^Tree_Parser) -> bool {
     k := tp_kind(p)
-    return k == .Right_Brace || k == .Else || k == .Elif || k == .EOF
+    return k == .Right_Brace || k == .End || k == .Else || k == .Elif || k == .EOF
 }
 
 // A braced chain's branch: its statements, to the next elif, else or `}` —
@@ -433,12 +467,14 @@ tp_condition :: proc(p: ^Tree_Parser) -> Tree_Id {
     return c
 }
 
-// `if c {…}` (its else and elif chain inside the braces), `if c do s` (its
-// `elif c do s`, `else do s` after it: tp_do_chain); `#if` with its `#`.
+// `if c {…}`, or `if c` and its lines to `end` (its else and elif chain
+// inside), `if c do s` (its `elif c do s`, `else do s` after it:
+// tp_do_chain); `#if` with its `#`.
 tp_if :: proc(p: ^Tree_Parser, hash: Token_Id) -> Tree_Id {
     start := int(hash) if hash != 0 else p.pos
     kw := tp_advance(p)
     cond := tp_condition(p)
+    m := tp_mark(p)
     tp_skip_newlines(p)
     if tp_kind(p) == .Do {
         tp_advance(p)
@@ -447,7 +483,8 @@ tp_if :: proc(p: ^Tree_Parser, hash: Token_Id) -> Tree_Id {
         then := tp_list(p, body)
         return tp_node(p, .If, kw, start, u32(cond), tree_rec_add(p.t, then, tp_do_chain(p, kw), u32(hash)))
     }
-    tp_expect(p, .Left_Brace)
+    tp_reset(p, m)
+    braced := tp_open(p)
     tp_skip_newlines(p)
     then := tp_if_branch(p)
     else_: u32
@@ -460,7 +497,7 @@ tp_if :: proc(p: ^Tree_Parser, hash: Token_Id) -> Tree_Id {
         tp_skip_newlines(p)
         else_ = tp_if_branch(p)
     }
-    tp_expect(p, .Right_Brace)
+    tp_close(p, braced)
     return tp_node(p, .If, kw, start, u32(cond), tree_rec_add(p.t, then, else_, u32(hash)))
 }
 
@@ -560,7 +597,7 @@ line_lead :: proc(t: Token) -> (lead: string, first: bool) {
 
 tp_match_arm_start :: proc(p: ^Tree_Parser) -> bool {
     k := tp_kind(p)
-    if k == .Right_Brace || k == .EOF { return true }
+    if k == .Right_Brace || k == .End || k == .EOF { return true }
     if k == .Dot && tp_peek(p) == .Identifier { return true }
     if k == .Identifier {
         #partial switch tp_peek(p) {
@@ -625,13 +662,13 @@ tp_match :: proc(p: ^Tree_Parser) -> Tree_Id {
         tp_error(p, tp_here(p), PARSE_MATCH_NEEDS_SUBJECT)
     } else {
         subject = tp_condition(p)
-        tp_skip_newlines(p)
     }
-    tp_expect(p, .Left_Brace)
+    braced := tp_open(p)
     tp_skip_newlines(p)
     arms := tp_items()
-    for tp_kind(p) != .Right_Brace && tp_kind(p) != .EOF {
+    for !tp_block_stop(p, braced) {
         tp_skip_newlines(p)
+        if tp_block_stop(p, braced) { break }
         arm_start := p.pos
         if tp_kind(p) == .Else {
             kw := tp_advance(p)
@@ -656,7 +693,7 @@ tp_match :: proc(p: ^Tree_Parser) -> Tree_Id {
             append(&arms, tp_node(p, .Arm_Value, p.t.main[value], arm_start, u32(value), body))
         }
     }
-    tp_expect(p, .Right_Brace)
+    tp_close(p, braced)
     return tp_node(p, .Match, kw, start, u32(subject), tp_list(p, arms))
 }
 
@@ -672,6 +709,7 @@ tp_arm_body_lines :: proc(p: ^Tree_Parser) -> u32 {
 }
 
 tp_loop_body :: proc(p: ^Tree_Parser) -> u32 {
+    m := tp_mark(p)
     tp_skip_newlines(p)
     if tp_kind(p) == .Do {
         tp_advance(p)
@@ -679,6 +717,7 @@ tp_loop_body :: proc(p: ^Tree_Parser) -> u32 {
         append(&body, tp_stmt(p))
         return tp_list(p, body)
     }
+    tp_reset(p, m)
     return tp_block(p)
 }
 
@@ -785,11 +824,10 @@ tp_foreign :: proc(p: ^Tree_Parser) -> Tree_Id {
         tp_advance(p)
         fails = tp_expect(p, .Identifier)
     }
-    tp_skip_newlines(p)
-    tp_expect(p, .Left_Brace)
+    braced := tp_open(p)
     tp_skip_newlines(p)
     funs := tp_items()
-    for tp_kind(p) != .Right_Brace && tp_kind(p) != .EOF {
+    for !tp_block_stop(p, braced) {
         fun_start := p.pos
         fun_kw := tp_expect(p, .Fun)
         name := tp_expect(p, .Identifier)
@@ -800,7 +838,7 @@ tp_foreign :: proc(p: ^Tree_Parser) -> Tree_Id {
         append(&funs, tp_node(p, .Foreign_Fun, fun_kw, fun_start, tree_rec_add(p.t, u32(name), params, returns)))
         tp_skip_newlines(p)
     }
-    tp_expect(p, .Right_Brace)
+    tp_close(p, braced)
     return tp_node(p, .Foreign, kw, start, tree_rec_add(p.t, u32(static_lib), u32(lib), u32(prefix_kw), u32(prefix), tp_list(p, funs)), u32(fails))
 }
 
@@ -837,7 +875,7 @@ tp_type_ahead :: proc(p: ^Tree_Parser) -> bool {
     case:
         if tp_is_type_keyword(tp_kind(p)) && tp_text(p) != "void" {
             #partial switch tp_peek(p) {
-            case .Newline, .EOF, .Semicolon, .Right_Brace: return true
+            case .Newline, .EOF, .Semicolon, .Right_Brace, .End: return true
             }
         }
     }
@@ -904,7 +942,7 @@ tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
             first := tp_here(p)
             base := tp_type(p)
             #partial switch tp_kind(p) {
-            case .Newline, .EOF, .Semicolon, .Right_Brace:
+            case .Newline, .EOF, .Semicolon, .Right_Brace, .End:
                 value = tp_node(p, .Distinct_Def, first, def_start, u32(base))
             case:
                 tp_reset(p, m)
@@ -1301,7 +1339,8 @@ tp_scope_def :: proc(p: ^Tree_Parser, tag: Tree_Tag, packed: Token_Id, bare := f
     kw := Token_Id(p.pos) if bare else tp_advance(p)
     commas := tag == .Struct_Def
     generics, params, returns: u32
-    if tp_kind(p) == .Left_Brace {
+    // (No params: its body, `{…}` or its lines to `end`.)
+    if tp_kind(p) == .Left_Brace || tp_kind(p) == .Newline {
         saved_ptrs := p.ptr_params
         p.ptr_params = nil
         body, intrinsic := tp_scope_body(p, commas)
@@ -1322,12 +1361,10 @@ tp_scope_def :: proc(p: ^Tree_Parser, tag: Tree_Tag, packed: Token_Id, bare := f
     if tp_kind(p) == .Right_Paren {
         tp_advance(p)
         returns = tp_optional_returns(p)
-        tp_skip_newlines(p)
     } else {
         params = tp_param_loop(p, true)
         tp_expect(p, .Right_Paren)
         returns = tp_optional_returns(p)
-        tp_skip_newlines(p)
     }
     // (Its params typed `^T`, for its body: `out = v` writes what out points
     // at — tp_write_target. A fun inside has its own.)
@@ -1509,11 +1546,10 @@ tp_union_def :: proc(p: ^Tree_Parser) -> Tree_Id {
         }
         tp_expect(p, .Right_Paren)
     }
-    tp_skip_newlines(p)
-    tp_expect(p, .Left_Brace)
+    braced := tp_open(p)
     tp_skip_newlines(p)
     variants := tp_items()
-    for tp_kind(p) != .Right_Brace && tp_kind(p) != .EOF {
+    for !tp_block_stop(p, braced) {
         v_start := p.pos
         name := tp_expect(p, .Identifier)
         // (Its params, as a struct's: what its body is built from.)
@@ -1550,37 +1586,36 @@ tp_union_def :: proc(p: ^Tree_Parser) -> Tree_Id {
         if tp_kind(p) == .Comma { tp_advance(p) }
         tp_skip_newlines(p)
     }
-    tp_expect(p, .Right_Brace)
+    tp_close(p, braced)
     return tp_node(p, .Union_Def, kw, start, tp_list(p, options), tp_list(p, variants))
 }
 
 tp_error_def :: proc(p: ^Tree_Parser) -> Tree_Id {
     start := p.pos
     kw := tp_advance(p)
-    tp_skip_newlines(p)
-    tp_expect(p, .Left_Brace)
+    braced := tp_open(p)
     tp_skip_newlines(p)
     names := tp_token_items()
-    for tp_kind(p) != .Right_Brace && tp_kind(p) != .EOF {
+    for !tp_block_stop(p, braced) {
         append(&names, tp_expect(p, .Identifier))
         if tp_kind(p) == .Comma { tp_advance(p) }
         tp_skip_newlines(p)
     }
-    tp_expect(p, .Right_Brace)
+    tp_close(p, braced)
     return tp_node(p, .Error_Def, kw, start, tp_tokens(p, names))
 }
 
 tp_dispatch_def :: proc(p: ^Tree_Parser) -> Tree_Id {
     start := p.pos
     kw := tp_advance(p)
-    tp_expect(p, .Left_Brace)
+    braced := tp_open(p)
     tp_skip_newlines(p)
     names := tp_token_items()
-    for tp_kind(p) != .Right_Brace && tp_kind(p) != .EOF {
+    for !tp_block_stop(p, braced) {
         append(&names, tp_expect(p, .Identifier))
         tp_skip_separator(p, commas = true)
     }
-    tp_expect(p, .Right_Brace)
+    tp_close(p, braced)
     return tp_node(p, .Dispatch_Def, kw, start, tp_tokens(p, names))
 }
 
@@ -2048,7 +2083,7 @@ tp_type_as_value_end :: proc(p: ^Tree_Parser) -> int {
     for pos := p.pos; pos < len(p.tokens); pos += 1 {
         k := p.tokens[pos].kind
         #partial switch k {
-        case .Newline, .Semicolon, .Right_Brace, .EOF:
+        case .Newline, .Semicolon, .Right_Brace, .End, .EOF:
             if depth != 0 { return -1 }
             if !closed || (last != .Identifier && !tp_is_type_keyword(last)) { return -1 }
             return pos
