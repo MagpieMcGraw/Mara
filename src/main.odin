@@ -2125,7 +2125,9 @@ main :: proc() {
             fmt.printf("`-no crt` %s.\n", cant)
             os.exit(1)
         }
-        args.no_crt = cant == "" && RUNTIME_MODULE in all_files
+        // (A query only checks: the runtime, the compiler's own, is no part of
+        // what it answers about — as serve's check has none.)
+        args.no_crt = cant == "" && RUNTIME_MODULE in all_files && !args.ask
     }
     files := compute_use_closure(all_files, args.pkg_name, &perf, RUNTIME_MODULE if args.no_crt else "")
 

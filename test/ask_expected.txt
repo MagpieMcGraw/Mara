@@ -8,7 +8,7 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
     camera         1 type    · 9 funs
     event          4 types   · 1 fun
     gfx            8 types   · 15 funs
-    gfx.shader     1 type    · 2 funs
+    gfx.shader     1 type    · 3 funs
     object         5 types   · 3 funs
     perf           1 type    · 3 funs
     test_draw      1 type    · 2 funs
@@ -19,10 +19,11 @@ Pounce — module map   (run `mara ask <module>` to look inside one)
     mara.endian    0 types   · 9 funs
     mara.files     2 types   · 17 funs
     mara.font      13 types  · 20 funs
-    mara.math      4 types   · 91 funs
+    mara.math      5 types   · 91 funs
     mara.memory    2 types   · 1 fun
-    mara.open_gl   29 types  · 100 funs
-    mara.os        34 types  · 98 funs
+    mara.open_gl   39 types  · 4 funs
+    mara.os        35 types  · 99 funs
+    mara.paths     3 types   · 12 funs
     mara.sdl       22 types  · 1 fun
     mara.skyline   2 types   · 6 funs
     mara.string    0 types   · 21 funs
@@ -208,7 +209,7 @@ above (calls)   (0 functions)
 Camera — struct  camera.mara:10   (module camera)
 
 below (calls)   (13 functions)
-  fun    append_one             gfx_draw_state.mara:172   (param cam : Camera)
+  fun    append_one             gfx_draw_state.mara:173   (param cam : Camera)
   fun    camera_align_with_gravity camera.mara:44   (param camera : ^Camera)
   fun    camera_look_down       camera.mara:39   (param camera : ^Camera)
   fun    camera_move            camera.mara:48   (param camera : ^Camera)
@@ -217,7 +218,7 @@ below (calls)   (13 functions)
   fun    camera_update          camera.mara:140   (param camera : ^Camera)
   fun    camera_update_size     camera.mara:153   (param camera : ^Camera)
   fun    draw_marker            Pounce.mara:235   (param cam : Camera)
-  fun    draw_state_append      gfx_draw_state.mara:136   (param cam : Camera)
+  fun    draw_state_append      gfx_draw_state.mara:137   (param cam : Camera)
   fun    mouse_ray              camera.mara:196   (param camera : ^Camera)
   fun    view_and_projections   camera.mara:25   (param cam : ^Camera)
   fun    world_to_screen        camera.mara:174   (param camera : ^Camera)
@@ -246,7 +247,7 @@ above (flow) — what feeds values of type Camera  (13 values, backward slice)
 === Pounce | Megastruct type above 2
 Megastruct — struct  Pounce.mara:53   (module Pounce)
 
-above (types)   (32 types, depth 2)
+above (types)   (36 types, depth 2)
   initialized : bool
   running : bool
   window : mara.sdl.Window
@@ -277,10 +278,10 @@ above (types)   (32 types, depth 2)
   cam : camera.Camera  (shown above)
   mouse_look : bool
   vao : gfx.VAO_State
-    vao : u32
-    vertex_vbo : u32
-    ebo : u32
-    instance_vbo : u32
+    vao : mara.open_gl.Vertex_Array
+    vertex_vbo : mara.open_gl.Buffer
+    ebo : mara.open_gl.Buffer
+    instance_vbo : mara.open_gl.Buffer
     vertex_offset : i64
     index_offset : i64
     max_vertices : i64
@@ -289,10 +290,10 @@ above (types)   (32 types, depth 2)
     meshes : [512!]gfx.VAO_Mesh
     mesh_count : i64
   draw_state_object : gfx.DrawState
-    shader_id : u32
-    texture : u32
+    shader_id : mara.open_gl.Program
+    texture : mara.open_gl.Texture
     vao_state : ^gfx.VAO_State  (shown above)
-    command_buffer : u32
+    command_buffer : mara.open_gl.Buffer
     batches : [16]gfx.Mesh_Batch
     batch_count : i64
     instance_capacity : i64
@@ -301,9 +302,9 @@ above (types)   (32 types, depth 2)
   draw_state_highlight : gfx.DrawState  (shown above)
   draw_state_text : gfx.DrawState  (shown above)
   assets : asset.Assets
-    texture_id : u32
+    texture_id : mara.open_gl.Texture
     texture_size : i32
-    font_texture_id : u32
+    font_texture_id : mara.open_gl.Texture
     font_texture_size : i32
     textures : [1024]object.Texture
     meshes : [512]object.Mesh
@@ -316,9 +317,9 @@ above (types)   (32 types, depth 2)
     on_disk : asset.Disk
     needs_resolve : bool
   quad : test_draw.Quad_Renderer
-    program : u32
-    vao : u32
-    vbo : u32
+    program : mara.open_gl.Program
+    vao : mara.open_gl.Vertex_Array
+    vbo : mara.open_gl.Buffer
     u_pos : i32
     u_size : i32
     u_screen : i32
@@ -343,22 +344,22 @@ camera_update — fun  camera.mara:140   (module camera)
   camera_update :: fun(camera: ^Camera, loop_time: f32)
 
 above (calls)   (8 direct callees, depth 1)
-  <root>/code/math.mara:524  mara.math.pow_f32
+  <root>/code/math.mara:525  mara.math.pow_f32
     at camera.mara:145  camera.obj.accel *= math.pow(damping_factor, physics_this_frame)
-  <root>/code/math.mara:969  mara.math.vec3_scale
+  <root>/code/math.mara:970  mara.math.vec3_scale
     at camera.mara:145  camera.obj.accel *= math.pow(damping_factor, physics_this_frame)
     at camera.mara:146  camera.obj.pos += (camera.obj.accel * loop_time)
-  <root>/code/math.mara:937  mara.math.vec3_add
+  <root>/code/math.mara:938  mara.math.vec3_add
     at camera.mara:146  camera.obj.pos += (camera.obj.accel * loop_time)
-  <root>/code/math.mara:977  mara.math.vec3_negate
+  <root>/code/math.mara:978  mara.math.vec3_negate
     at camera.mara:148  translation_mx := mat4_translate(-camera.obj.pos)
-  <root>/code/math.mara:1067  mara.math.mat4_translate
+  <root>/code/math.mara:1068  mara.math.mat4_translate
     at camera.mara:148  translation_mx := mat4_translate(-camera.obj.pos)
-  <root>/code/math.mara:1057  mara.math.mat4_transpose
+  <root>/code/math.mara:1058  mara.math.mat4_transpose
     at camera.mara:149  rotation_mx := mat4_transpose(mat4_from_quat(camera.obj.dir))
-  <root>/code/math.mara:1154  mara.math.mat4_from_quat
+  <root>/code/math.mara:1155  mara.math.mat4_from_quat
     at camera.mara:149  rotation_mx := mat4_transpose(mat4_from_quat(camera.obj.dir))
-  <root>/code/math.mara:1026  mara.math.mat4_mul
+  <root>/code/math.mara:1027  mara.math.mat4_mul
     at camera.mara:150  camera.view = rotation_mx * translation_mx
   (8 more: add a depth, or 'all')
 
@@ -381,22 +382,22 @@ below (types)   (no type dependencies)
 camera_update — fun  camera.mara:140   (module camera)
 
 above (calls)   (8 direct callees, depth 1)
-  <root>/code/math.mara:524  mara.math.pow_f32
+  <root>/code/math.mara:525  mara.math.pow_f32
     at camera.mara:145  camera.obj.accel *= math.pow(damping_factor, physics_this_frame)
-  <root>/code/math.mara:969  mara.math.vec3_scale
+  <root>/code/math.mara:970  mara.math.vec3_scale
     at camera.mara:145  camera.obj.accel *= math.pow(damping_factor, physics_this_frame)
     at camera.mara:146  camera.obj.pos += (camera.obj.accel * loop_time)
-  <root>/code/math.mara:937  mara.math.vec3_add
+  <root>/code/math.mara:938  mara.math.vec3_add
     at camera.mara:146  camera.obj.pos += (camera.obj.accel * loop_time)
-  <root>/code/math.mara:977  mara.math.vec3_negate
+  <root>/code/math.mara:978  mara.math.vec3_negate
     at camera.mara:148  translation_mx := mat4_translate(-camera.obj.pos)
-  <root>/code/math.mara:1067  mara.math.mat4_translate
+  <root>/code/math.mara:1068  mara.math.mat4_translate
     at camera.mara:148  translation_mx := mat4_translate(-camera.obj.pos)
-  <root>/code/math.mara:1057  mara.math.mat4_transpose
+  <root>/code/math.mara:1058  mara.math.mat4_transpose
     at camera.mara:149  rotation_mx := mat4_transpose(mat4_from_quat(camera.obj.dir))
-  <root>/code/math.mara:1154  mara.math.mat4_from_quat
+  <root>/code/math.mara:1155  mara.math.mat4_from_quat
     at camera.mara:149  rotation_mx := mat4_transpose(mat4_from_quat(camera.obj.dir))
-  <root>/code/math.mara:1026  mara.math.mat4_mul
+  <root>/code/math.mara:1027  mara.math.mat4_mul
     at camera.mara:150  camera.view = rotation_mx * translation_mx
   (8 more: add a depth, or 'all')
 === Pounce | camera_update call below
@@ -444,13 +445,13 @@ below (flow) — what this variable affects  (forward slice)
       vec3_scale             (param v : Vec3)  camera.mara:146
       vec3_scale             (param s : f32)  camera.mara:145
     2 hops:
-      abs_f64                (param x : f64)  <root>/code/math.mara:529  (+1 more)
-      pow_exp_short          (param x : f64)  <root>/code/math.mara:538
-      pow_special            (param y : f64)  <root>/code/math.mara:530
+      abs_f64                (param x : f64)  <root>/code/math.mara:530  (+1 more)
+      pow_exp_short          (param x : f64)  <root>/code/math.mara:539
+      pow_special            (param y : f64)  <root>/code/math.mara:531
     3 hops:
-      f64_bits               (param x : f64)  <root>/code/math.mara:857
-      f64_from_bits          (param u : u64)  <root>/code/math.mara:857
-      floor_f64              (param x : f64)  <root>/code/math.mara:575  (+1 more)
+      f64_bits               (param x : f64)  <root>/code/math.mara:858
+      f64_from_bits          (param u : u64)  <root>/code/math.mara:858
+      floor_f64              (param x : f64)  <root>/code/math.mara:576  (+1 more)
 === Pounce | physics_this_frame in camera_update flow above
 physics_this_frame — local in camera_update  camera.mara:142   (module camera)
 
@@ -480,13 +481,13 @@ below (flow) — what this variable affects  (forward slice)
       vec3_scale             (param v : Vec3)  camera.mara:146
       vec3_scale             (param s : f32)  camera.mara:145
     2 hops:
-      abs_f64                (param x : f64)  <root>/code/math.mara:529  (+1 more)
-      pow_exp_short          (param x : f64)  <root>/code/math.mara:538
-      pow_special            (param y : f64)  <root>/code/math.mara:530
+      abs_f64                (param x : f64)  <root>/code/math.mara:530  (+1 more)
+      pow_exp_short          (param x : f64)  <root>/code/math.mara:539
+      pow_special            (param y : f64)  <root>/code/math.mara:531
     3 hops:
-      f64_bits               (param x : f64)  <root>/code/math.mara:857
-      f64_from_bits          (param u : u64)  <root>/code/math.mara:857
-      floor_f64              (param x : f64)  <root>/code/math.mara:575  (+1 more)
+      f64_bits               (param x : f64)  <root>/code/math.mara:858
+      f64_from_bits          (param u : u64)  <root>/code/math.mara:858
+      floor_f64              (param x : f64)  <root>/code/math.mara:576  (+1 more)
 === Pounce | physics_this_frame in camera_update call below
 physics_this_frame — local in camera_update  camera.mara:142   (module camera)
 
@@ -502,13 +503,13 @@ below (calls) — calls physics_this_frame supplies
       vec3_scale             (param v : Vec3)  camera.mara:146
       vec3_scale             (param s : f32)  camera.mara:145
     2 hops:
-      abs_f64                (param x : f64)  <root>/code/math.mara:529  (+1 more)
-      pow_exp_short          (param x : f64)  <root>/code/math.mara:538
-      pow_special            (param y : f64)  <root>/code/math.mara:530
+      abs_f64                (param x : f64)  <root>/code/math.mara:530  (+1 more)
+      pow_exp_short          (param x : f64)  <root>/code/math.mara:539
+      pow_special            (param y : f64)  <root>/code/math.mara:531
     3 hops:
-      f64_bits               (param x : f64)  <root>/code/math.mara:857
-      f64_from_bits          (param u : u64)  <root>/code/math.mara:857
-      floor_f64              (param x : f64)  <root>/code/math.mara:575  (+1 more)
+      f64_bits               (param x : f64)  <root>/code/math.mara:858
+      f64_from_bits          (param u : u64)  <root>/code/math.mara:858
+      floor_f64              (param x : f64)  <root>/code/math.mara:576  (+1 more)
 === Pounce | translation_mx in camera_update call above
 translation_mx — local in camera_update  camera.mara:148   (module camera)
 
@@ -791,7 +792,7 @@ Outer.[4]i64
 
 operations
   .len .cap   l[i]   l[a:b]   for x, i in l   for &x in l   x in l   &l ++ x   l ++ x a new list
-  mara.core: filter
+  mara.core: filter next_item
 
 declared
   askuses.mara:16  Outer
@@ -812,7 +813,7 @@ Outer.[]i64
 
 operations
   .len .cap .ptr   s[i]   s[a:b]   for x, i in s   for &x in s   &s ++ x within its cap
-  mara.core: filter
+  mara.core: filter next_item
 
 declared
   askuses.mara:17  Outer
@@ -852,7 +853,7 @@ Outer.[8]utf8
 
 operations
   .len .cap   t[i]   t[a:b]   for c, i in t   ==   &t ++ "more"  &t ++ 'c'   t ++ "x" a new buffer   cstring(t)
-  mara.core: filter
+  mara.core: filter next_item
 
 declared
   askuses.mara:19  Outer
@@ -2565,7 +2566,7 @@ binds
 operations
   .len .cap (3)   a[i]   a[a:b]   for x, i in a   for &x in a   a[Action.v]   for v in Action do a[v] (i in a loop over a is a number)
   askcando: bind_count
-  mara.core: filter
+  mara.core: filter next_item
 
 declared
   askcando.mara:21  main
@@ -2617,7 +2618,7 @@ read 1
   &name ++ "dir" ++ "/"   : ^[]utf8
 === test/askop.mara | what at askop.mara:21:15
 ++ — calls join
-  declared  <root>/code/core.mara:68
+  declared  <root>/code/core.mara:76
   join :: fun(a: [$N]$T, b: []T) -> [N]T
 
   name ++ "file"   : [64]utf8
@@ -2644,7 +2645,7 @@ read 1
   same := full == "dir/file"
 === test/askop.mara | what at askop.mara:25:13
 in — calls includes
-  declared  <root>/code/core.mara:91
+  declared  <root>/code/core.mara:99
   includes :: fun(items: []$T, x: $U) -> bool
 
   'd' in full   : bool
@@ -2713,7 +2714,7 @@ items
 
 operations
   .len .cap (4)   a[i]   a[a:b]   for x, i in a   for &x in a   .x .y .z .w  .xy .xyz
-  mara.core: filter
+  mara.core: filter next_item
 
 declared
   askcursor.mara:17  main
@@ -2835,15 +2836,15 @@ Camera.view_and_projections — fun  camera.mara:25   (module camera)
   view_and_projections :: fun(cam: ^Self) -> Mat4, Mat4, Mat4
 
 above (calls)   (5 direct callees, depth 1)
-  <root>/code/math.mara:1085  mara.math.mat4_perspective
+  <root>/code/math.mara:1086  mara.math.mat4_perspective
     at camera.mara:27  proj := mat4_perspective(cam.fov_y, w/h, cam.near_plane, cam.far_plane)
-  <root>/code/math.mara:1098  mara.math.mat4_ortho
+  <root>/code/math.mara:1099  mara.math.mat4_ortho
     at camera.mara:30  ortho := mat4_ortho(-half_w, half_w, -half_h, half_h, -1, 1)
-  <root>/code/math.mara:1067  mara.math.mat4_translate
+  <root>/code/math.mara:1068  mara.math.mat4_translate
     at camera.mara:31  t := mat4_translate(cam.obj.pos)
-  <root>/code/math.mara:1154  mara.math.mat4_from_quat
+  <root>/code/math.mara:1155  mara.math.mat4_from_quat
     at camera.mara:32  r := mat4_from_quat(cam.obj.dir)
-  <root>/code/math.mara:1026  mara.math.mat4_mul
+  <root>/code/math.mara:1027  mara.math.mat4_mul
     at camera.mara:33  view := r * t
   (15 more: add a depth, or 'all')
 
@@ -2857,15 +2858,15 @@ Camera.view_and_projections — fun  camera.mara:25   (module camera)
   view_and_projections :: fun(cam: ^Self) -> Mat4, Mat4, Mat4
 
 above (calls)   (5 direct callees, depth 1)
-  <root>/code/math.mara:1085  mara.math.mat4_perspective
+  <root>/code/math.mara:1086  mara.math.mat4_perspective
     at camera.mara:27  proj := mat4_perspective(cam.fov_y, w/h, cam.near_plane, cam.far_plane)
-  <root>/code/math.mara:1098  mara.math.mat4_ortho
+  <root>/code/math.mara:1099  mara.math.mat4_ortho
     at camera.mara:30  ortho := mat4_ortho(-half_w, half_w, -half_h, half_h, -1, 1)
-  <root>/code/math.mara:1067  mara.math.mat4_translate
+  <root>/code/math.mara:1068  mara.math.mat4_translate
     at camera.mara:31  t := mat4_translate(cam.obj.pos)
-  <root>/code/math.mara:1154  mara.math.mat4_from_quat
+  <root>/code/math.mara:1155  mara.math.mat4_from_quat
     at camera.mara:32  r := mat4_from_quat(cam.obj.dir)
-  <root>/code/math.mara:1026  mara.math.mat4_mul
+  <root>/code/math.mara:1027  mara.math.mat4_mul
     at camera.mara:33  view := r * t
   (15 more: add a depth, or 'all')
 
