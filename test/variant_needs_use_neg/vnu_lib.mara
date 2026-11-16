@@ -1,5 +1,0 @@
-module vnu_lib
-
-use mara.core
-
-Shape :: union { Rect { w: i64 }  Circle }

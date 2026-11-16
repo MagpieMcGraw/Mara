@@ -28,9 +28,9 @@ When implementing a feature, prefer hard errors over silent fallbacks for unhand
 
 # Testing
 
-Always build tests from inside the test folder so the resulting `test.exe` and `output.ll` land there instead of polluting the repo root.
+The tests live beside the repo, in C:\Code\test (not in git). Always build tests from inside that folder so the resulting `test.exe` and `output.ll` land there instead of polluting the repo root.
 
-The test suite (test/run.sh) must not block work. Once a change passes the tests aimed at it, rebuild Mara.exe (keep the old one as Mara.prev.exe) and commit. Then run the suite in the background, in a git worktree of that commit, with JOBS=4. Keep working meanwhile. Fix whatever it finds in a new commit. One run covers a batch of small changes.
+The test suite (run.sh in the tests' folder) must not block work. Once a change passes the tests aimed at it, rebuild Mara.exe (keep the old one as Mara.prev.exe) and commit. Then run the suite in the background against a git worktree of that commit (MARA_ROOT and MARA_EXE pointed at it, a copy of the tests' folder), with JOBS=4. Keep working meanwhile. Fix whatever it finds in a new commit. One run covers a batch of small changes.
 
 # Surprise
 

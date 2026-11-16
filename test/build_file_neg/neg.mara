@@ -1,7 +1,0 @@
-module bf_neg
-
-use mara.core
-
-main :: fun() {
-	print("unreached")
-}

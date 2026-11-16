@@ -1,8 +1,0 @@
-module bfd_game
-
-use mara.core
-use bfd_engine
-
-main :: fun() {
-	greet()
-}

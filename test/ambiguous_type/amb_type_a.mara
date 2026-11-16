@@ -1,3 +1,0 @@
-module amb_type_a
-
-Thing :: struct { v: i64 }

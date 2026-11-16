@@ -1,4 +1,0 @@
-module from_group
-
-pick :: dispatch { pick_i64 }
-pick_i64 :: fun(a: i64) -> i64 { return a }

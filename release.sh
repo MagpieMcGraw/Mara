@@ -2,7 +2,7 @@
 # Fills release/: the compiler other projects build with (sox copies it into
 # its own compiler/ with its update_compiler.bat), and what a GitHub release
 # zips. Made from HEAD, and only when the working tree is clean and the full
-# suite passes with the very Mara.exe and stdlib being released: a whole
+# suite (the tests beside the repo, ../test; MARA_TESTS=… names another) passes with the very Mara.exe and stdlib being released: a whole
 # compiler home — Mara.exe, code/, runtime/, tools/ — with doc/, LICENSE
 # (the bundled libraries' and tools' licenses sit in their folders) and
 # MARA_VERSION.txt saying which Mara it is. release/ is gitignored. Built in
@@ -50,7 +50,12 @@ if [ ! -f "$STAGE/Mara.exe" ]; then
 fi
 
 echo "release: running the suite with it"
-SUITE=$(cd test && MARA_EXE="$STAGE/Mara.exe" bash run.sh 2>&1) || true
+TESTS=${MARA_TESTS:-$ROOT/../test}
+if [ ! -f "$TESTS/run.sh" ]; then
+  echo "release: no tests in $TESTS (MARA_TESTS names them); release/ unchanged"
+  exit 1
+fi
+SUITE=$(cd "$TESTS" && MARA_ROOT="$ROOT" MARA_EXE="$STAGE/Mara.exe" bash run.sh 2>&1) || true
 SUMMARY=$(echo "$SUITE" | grep -E '^pass=' | tail -1)
 if ! echo "$SUITE" | grep -q 'OK — all fixtures matched expectations'; then
   echo "$SUITE" | tail -30

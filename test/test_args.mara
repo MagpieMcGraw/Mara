@@ -1,9 +1,0 @@
-module test
-
-test_args :: fun(args: [][]utf8) {
-	print("arg count:")
-	print(args.len)
-	for arg in args {
-		print(arg)
-	}
-}

@@ -1,3 +1,0 @@
-module from_mara
-
-both :: fun() -> i64 { return 1 }

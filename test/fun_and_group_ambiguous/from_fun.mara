@@ -1,3 +1,0 @@
-module from_fun
-
-pick :: fun(a: []utf8) -> i64 { return 0 }

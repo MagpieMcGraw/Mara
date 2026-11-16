@@ -57,8 +57,6 @@ view/layout.txt
 view/editor.txt
 view/colors.txt
 
-# mara lsp crash hunt (test/lsp_fuzz.py): texts that crashed it
-test/lsp_crashes/
 
 # The compiler released to other projects (release.sh), and its makings
 release/

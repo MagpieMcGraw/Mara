@@ -1,7 +1,0 @@
-module escape_unknown_char_neg
-//@ expect-fail: unknown escape '\q'
-
-main :: fun() {
-	c := '\q'
-	print(c)
-}
