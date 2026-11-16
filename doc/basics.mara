@@ -743,6 +743,11 @@ Input_Number :: alias Input.f32
 // function that calls it, taking Mara's types: text as []utf8, data as a slice
 // (`[]` for none, where C takes NULL).
 //
+// C takes items as the first one's address and their count: `take(&list[0],
+// list.len)`. A list, a slice or a `^[]T` where C takes a pointer, or in a
+// foreign block's signature, is an error: C would read Mara's own record of
+// them (a list's len before its items, a slice's {len, cap, ptr}).
+//
 // Many C libraries report success, not failure: a function returns true when it
 // worked, or a pointer that's NULL when it didn't. `fails Failed` after the
 // library's name, Failed being a variant of an error set in sight, makes such a

@@ -30,9 +30,9 @@
 //
 // Arenas (mara.memory, under #profile_memory) tell it themselves, after
 // their cursor moves:
-//   __mara_mem_arena(kind, base)  base, a mutable slice of the arena's bytes
-//                                 (`&a.base`): its len the bytes in use, its
-//                                 cap the arena's size, its elements which
+//   __mara_mem_arena(kind, used, size, data)  the arena's bytes in use, its
+//                                 size, and where its bytes are, which
+//                                 arena it is
 //
 // What's at a list's address later may be something else: the instance there
 // ended (its frame left, its storage reused) — told by a new one laid down
@@ -87,14 +87,6 @@ typedef struct Mara_Header {
 typedef struct Mara_List {
     int64_t len;
 } Mara_List;
-// A mutable slice, `^[]T`, as Mara hands one over (codegen_array.odin,
-// slice_ref_to): where its len is, its cap, its elements' address. Taken by
-// value: a C function's struct param, each ABI's way.
-typedef struct Mara_Slice_Ref {
-    int64_t* len_at;
-    int64_t  cap;
-    void*    data;
-} Mara_Slice_Ref;
 
 typedef struct Mara_Mem_Rec {
     const char* name;
@@ -330,11 +322,10 @@ void __mara_mem_slot(const Mara_List* hdr, Mara_Mem_Site* site) {
     if (s) s->peak = 0;
 }
 
-void __mara_mem_arena(const char* kind, Mara_Slice_Ref base) {
-    int64_t len = *base.len_at;
+void __mara_mem_arena(const char* kind, int64_t len, int64_t size, uint8_t* data) {
     for (size_t i = 0; i < mem.narenas; i++) {
         Mara_Mem_Arena* a = &mem.arenas[i];
-        if (a->data == base.data) {
+        if (a->data == data) {
             if (len > a->peak) a->peak = len;
             return;
         }
@@ -346,8 +337,8 @@ void __mara_mem_arena(const char* kind, Mara_Slice_Ref base) {
     }
     Mara_Mem_Arena* a = &mem.arenas[mem.narenas++];
     a->kind = kind ? kind : "arena";
-    a->data = base.data;
-    a->size = base.cap;
+    a->data = data;
+    a->size = size;
     a->peak = len;
 }
 

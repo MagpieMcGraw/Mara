@@ -26,13 +26,34 @@ tc_register_foreign :: proc(k: ^TC, s: Tree_Id, owner: string) {
         for g in v.params {
             pv := params_view(t, g)
             for pn in pv.names {
-                append(&ft.params, Struct_Type_Field{name = tc_text(pn), decl = pn, type_ = tc_type(k, pv.type_, span)})
+                pt := tc_type(k, pv.type_, span)
+                if foreign_header_type(pt) { tc_error(k, token_span(build_tokens[pn]), TYPE_FOREIGN_HEADER_TYPE, name, fmt.tprintf("param '%s'", tc_text(pn)), type_name(pt)) }
+                append(&ft.params, Struct_Type_Field{name = tc_text(pn), decl = pn, type_ = pt})
             }
         }
-        for r in v.returns { append(&ft.return_types, tc_type(k, r, span)) }
+        for r in v.returns {
+            rt := tc_type(k, r, span)
+            if foreign_header_type(rt) { tc_error(k, span, TYPE_FOREIGN_HEADER_TYPE, name, "result", type_name(rt)) }
+            append(&ft.return_types, rt)
+        }
         ft.decl = v.name
         tc_bound_set(k, ft.decl, ft)
     }
+}
+
+// A type C can't be handed as it is: Mara's own record of items — a list (its
+// len before them), a slice ({len, cap, ptr}), a ^[]T — or a pointer to one.
+// C given it reads the record, not the items.
+foreign_header_type :: proc(t: Type) -> bool {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Slice, ^Type_Partial_Array: return true
+    case ^Type_Ptr:
+        if slice_ref_of(v) != nil { return true }
+        #partial switch e in distinct_base(v.elem) {
+        case ^Type_Slice, ^Type_Partial_Array: return true
+        }
+    }
+    return false
 }
 
 // The value of the error named after `fails`; false when it's no error that can

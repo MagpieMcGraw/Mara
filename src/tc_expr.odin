@@ -986,6 +986,12 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
             want, got := type_names_apart(pt, at)
             tc_error(k, span, TYPE_ARGUMENT_EXPECTED, i + 1, clause, shown, ft.params[i].name, want, got, hint)
         }
+        // (C handed a list's or a slice's own memory where it takes a pointer
+        // reads its record, not its items.)
+        _, to_pointer := distinct_base(pt).(^Type_Ptr)
+        if ft.calling_conv == .C && to_pointer && !foreign_header_type(pt) && foreign_header_type(at) {
+            tc_error(k, tree_span(tr, a) if a != 0 else span, TYPE_FOREIGN_HEADER_ARG, i + 1, shown, ft.params[i].name, type_name(at))
+        }
         // (A runtime string into a `cstring` param: `cstring(s)`, written —
         // the copy and the terminator seen. A literal, or a constant one,
         // passes free: rodata carries the \0. `void`, a null: a C function's

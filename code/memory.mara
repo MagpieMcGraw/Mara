@@ -5,9 +5,9 @@ use mara.os
 #if #profile_memory {
 	// The memory profiler (runtime/mara_mem.c, linked into a `mara build
 	// -profile memory` build): an arena's use, told after its cursor moves
-	// on — base's len what's in use, its cap the arena's size.
+	// on — its bytes in use, the arena's size, where its bytes are.
 	foreign static_lib "mara_runtime" {
-		fun __mara_mem_arena(kind: cstring, base: ^[]byte)
+		fun __mara_mem_arena(kind: cstring, used: i64, size: i64, data: ^byte)
 	}
 }
 
@@ -69,7 +69,7 @@ Arena_Basic :: class(cap: i64) {
 		a.base[off] = prev
 		a.current_mark = off
 		#if #profile_memory {
-			__mara_mem_arena("Arena_Basic", &a.base)
+			__mara_mem_arena("Arena_Basic", a.base.len, a.base.cap, &a.base[0])
 		}
 	}
 
@@ -92,7 +92,7 @@ Arena_Basic :: class(cap: i64) {
 		result := a.base[off : stop]
 		a.base.len = stop
 		#if #profile_memory {
-			__mara_mem_arena("Arena_Basic", &a.base)
+			__mara_mem_arena("Arena_Basic", a.base.len, a.base.cap, &a.base[0])
 		}
 		return result
 	}
@@ -147,7 +147,7 @@ Arena_Debug :: class(cap: i64) {
 
 		a.current_mark = off
 		#if #profile_memory {
-			__mara_mem_arena("Arena_Debug", &a.base)
+			__mara_mem_arena("Arena_Debug", a.base.len, a.base.cap, &a.base[0])
 		}
 	}
 
@@ -190,7 +190,7 @@ Arena_Debug :: class(cap: i64) {
 		result := a.base[data_off : data_off+size]
 		a.last_alloc = off
 		#if #profile_memory {
-			__mara_mem_arena("Arena_Debug", &a.base)
+			__mara_mem_arena("Arena_Debug", a.base.len, a.base.cap, &a.base[0])
 		}
 		return result
 	}
