@@ -1,0 +1,65 @@
+{
+  "name": "mara",
+  "displayName": "Mara",
+  "description": "Mara in VS Code: colors, the language server (mara lsp), building and debugging.",
+  "version": "0.1.0",
+  "publisher": "mara",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages", "Debuggers"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:mara", "onDebugResolve:mara", "onDebugDynamicConfigurations:mara"],
+  "contributes": {
+    "languages": [{
+      "id": "mara",
+      "aliases": ["Mara"],
+      "extensions": [".mara"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "mara",
+      "scopeName": "source.mara",
+      "path": "./syntaxes/mara.tmLanguage.json"
+    }],
+    "breakpoints": [{ "language": "mara" }],
+    "debuggers": [{
+      "type": "mara",
+      "label": "Mara",
+      "languages": ["mara"],
+      "configurationAttributes": {
+        "launch": {
+          "properties": {
+            "module": { "type": "string", "description": "What `mara build` builds: a module or a build.mara build. Left out: the one in cwd." },
+            "buildArgs": { "type": "array", "items": { "type": "string" }, "description": "More for `mara build`: -x86, -crt, ..." },
+            "build": { "type": "boolean", "default": true, "description": "Build before debugging." },
+            "program": { "type": "string", "description": "The program to debug. Left out: the one the build made." },
+            "args": { "type": "array", "items": { "type": "string" }, "description": "The program's command line." },
+            "cwd": { "type": "string", "default": "${workspaceFolder}", "description": "Where it's built and run." },
+            "stopAtEntry": { "type": "boolean", "default": false },
+            "console": { "type": "string", "enum": ["internalConsole", "integratedTerminal", "externalTerminal", "newExternalWindow"], "description": "Where its output goes (the C/C++ debugger's choices)." }
+          }
+        }
+      },
+      "initialConfigurations": [
+        { "type": "mara", "request": "launch", "name": "Build and debug", "cwd": "${workspaceFolder}" }
+      ],
+      "configurationSnippets": [{
+        "label": "Mara: build and debug",
+        "description": "Build the module with `mara build`, then debug it.",
+        "body": { "type": "mara", "request": "launch", "name": "Build and debug", "cwd": "^\"\\${workspaceFolder}\"" }
+      }]
+    }],
+    "commands": [
+      { "command": "mara.restartServer", "title": "Mara: Restart the Language Server" }
+    ],
+    "configuration": {
+      "title": "Mara",
+      "properties": {
+        "mara.path": {
+          "type": "string",
+          "default": "mara",
+          "description": "The Mara compiler: a path, or a name found on PATH. The language server is its `lsp` and builds are its `build`."
+        }
+      }
+    }
+  }
+}

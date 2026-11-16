@@ -1,0 +1,392 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Mara",
+  "scopeName": "source.mara",
+  "fileTypes": [
+    "mara"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#functions-and-declarations"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#string-escaped-char"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "include": "#block-comment"
+        },
+        {
+          "begin": "//",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.mara"
+            }
+          },
+          "end": "$",
+          "name": "comment.line.double-slash.mara"
+        }
+      ]
+    },
+    "block-comment": {
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.begin.mara"
+        }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.comment.end.mara"
+        }
+      },
+      "name": "comment.block.mara",
+      "patterns": [
+        {
+          "include": "#block-comment"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(foreign)\\b",
+          "name": "keyword.control.mara"
+        },
+        {
+          "match": "\\b(module|include|use)\\b",
+          "name": "keyword.control.import.mara"
+        },
+        {
+          "match": "#[[:alpha:]_]+",
+          "name": "keyword.other.directive.mara"
+        },
+        {
+          "match": "\\b(using)\\b",
+          "name": "keyword.other.using.mara"
+        },
+        {
+          "match": "\\b(match)\\s+(all)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.control.mara"
+            },
+            "2": {
+              "name": "keyword.control.mara"
+            }
+          }
+        },
+        {
+          "match": "\\b(each)\\s+(index)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.control.mara"
+            },
+            "2": {
+              "name": "keyword.control.mara"
+            }
+          }
+        },
+        {
+          "match": "\\b(if|elif|else|for|match|each|other|return|do|end|where|defer|with)\\b",
+          "name": "keyword.control.mara"
+        },
+        {
+          "match": "\\b(break|continue)\\b",
+          "name": "keyword.control.mara"
+        },
+        {
+          "match": "(\\!\\=)",
+          "name": "keyword.operator.mara"
+        },
+        {
+          "match": "\\b(and|or|not|in)\\b",
+          "name": "keyword.operator.logical.mara"
+        },
+        {
+          "match": "(\\%|\\+|\\-|\\*|\\/|\\:|\\:\\:|\\:\\=|\\+\\=|\\*\\=|\\\\\\=|\\=|\\-\\=|\\=\\=|\\!\\=|\\<\\=|\\>\\=|\\<|\\>|\\?|\\~|\\|)",
+          "name": "keyword.operator.mara"
+        },
+        {
+          "match": "\\b(void|true|false)\\b",
+          "name": "constant.language.mara"
+        },
+        {
+          "match": "\\b(\\d(\\d|_)*(\\.\\d(\\d|_)*)?)((e|E)(\\+|-)?\\d+)?\\b",
+          "name": "constant.numeric.mara"
+        },
+        {
+          "match": "\\b((0b(0|1|_)+)|(0o(\\d|_)+)|(0d(\\d|_)+)|(0[xXh](\\h|_)+))\\b",
+          "name": "constant.numeric.mara"
+        },
+        {
+          "match": "\\b(overload)\\b",
+          "name": "keyword.other.overload.mara"
+        },
+        {
+          "match": "\\b(dispatch)\\b",
+          "name": "storage.type.mara"
+        },
+        {
+          "match": "\\b(union|error|distinct|alias|var|intrinsic)\\b",
+          "name": "storage.type.mara"
+        },
+        {
+          "match": "(\\.)(len|cap)\\b",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.mara"
+            },
+            "2": {
+              "name": "support.constant.mara"
+            }
+          }
+        },
+        {
+          "match": "(\\(|\\)|\\{|\\}|\\[|\\]|,|;)",
+          "name": "punctuation.separator.mara"
+        },
+        {
+          "match": "(\\.)",
+          "name": "punctuation.accessor.mara"
+        }
+      ]
+    },
+    "functions-and-declarations": {
+      "patterns": [
+        {
+          "match": "\\b([[:alpha:]_][[:alnum:]_]*)\\s*(:)\\s*(:)\\s*(fun)",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.mara"
+            },
+            "2": {
+              "name": "keyword.operator.mara"
+            },
+            "3": {
+              "name": "keyword.operator.mara"
+            },
+            "4": {
+              "name": "storage.type.mara"
+            }
+          }
+        },
+        {
+          "match": "\\b([[:alpha:]_][[:alnum:]_]*)\\s*(:)\\s*(:)\\s*(?=\\(\\s*(\\)|\\$|[[:alpha:]_][[:alnum:]_]*\\s*[:,](?!:)|$))",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.mara"
+            },
+            "2": {
+              "name": "keyword.operator.mara"
+            },
+            "3": {
+              "name": "keyword.operator.mara"
+            }
+          }
+        },
+        {
+          "match": "(fun)\\s*[\\(]",
+          "captures": {
+            "1": {
+              "name": "storage.type.mara"
+            }
+          }
+        },
+        {
+          "match": "\\b(print|assert|crash|take|size_of)\\b\\s*(\\()",
+          "captures": {
+            "1": {
+              "name": "support.function.builtin.mara"
+            },
+            "2": {
+              "name": "punctuation.separator.mara"
+            }
+          }
+        },
+        {
+          "match": "\\b(class|struct)\\b"
+        },
+        {
+          "match": "(\\b[[:alpha:]_][[:alnum:]_]*\\b)\\s*(\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.call.mara"
+            },
+            "2": {
+              "name": "punctuation.separator.mara"
+            }
+          }
+        },
+        {
+          "match": "\\b(\\b[[:alpha:]_][[:alnum:]_]*\\b)\\s*(:)\\s*(:)\\s*(union)",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.mara"
+            },
+            "2": {
+              "name": "keyword.operator.mara"
+            },
+            "3": {
+              "name": "keyword.operator.mara"
+            },
+            "4": {
+              "name": "storage.type.mara"
+            }
+          }
+        },
+        {
+          "match": "\\b(mara)(\\.)([[:alpha:]_][[:alnum:]_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "entity.name.namespace.mara"
+            },
+            "2": {
+              "name": "punctuation.accessor.mara"
+            },
+            "3": {
+              "name": "entity.name.namespace.mara"
+            }
+          }
+        },
+        {
+          "match": "\\b(\\b[[:alpha:]_][[:alnum:]_]*\\b)\\s*(:)\\s*(:)\\s*",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.mara"
+            },
+            "2": {
+              "name": "keyword.operator.mara"
+            },
+            "3": {
+              "name": "keyword.operator.mara"
+            }
+          }
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "match": "\\b(union)\\b(?:(\\{)(\\}))?",
+          "captures": {
+            "1": {
+              "name": "storage.type.mara"
+            },
+            "2": {
+              "name": "punctuation.definition.block.begin.mara"
+            },
+            "3": {
+              "name": "punctuation.definition.block.end.mara"
+            }
+          }
+        },
+        {
+          "match": "\\b(fun|method|fn)\\b",
+          "name": "storage.type.mara"
+        },
+        {
+          "match": "(\\[)(\\d*)(\\])(?=[[:alpha:]_])",
+          "captures": {
+            "1": {
+              "name": "punctuation.separator.mara"
+            },
+            "2": {
+              "name": "constant.numeric.mara"
+            },
+            "3": {
+              "name": "punctuation.separator.mara"
+            }
+          }
+        },
+        {
+          "include": "#basic-types"
+        }
+      ]
+    },
+    "basic-types": {
+      "patterns": [
+        {
+          "match": "\\b(int|float|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|isize|usize|bool|string|cstr|ptr|byte|utf8|err)\\b",
+          "name": "storage.type.mara"
+        },
+        {
+          "match": "\\bc8\\b",
+          "name": "invalid.illegal.reserved-type.mara"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "begin": "\"",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.mara"
+            }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.mara"
+            }
+          },
+          "name": "string.quoted.double.mara",
+          "patterns": [
+            {
+              "include": "#string-escaped-char"
+            }
+          ]
+        },
+        {
+          "begin": "'",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.mara"
+            }
+          },
+          "end": "'",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.mara"
+            }
+          },
+          "name": "string.quoted.single.mara",
+          "patterns": [
+            {
+              "include": "#string-escaped-char"
+            }
+          ]
+        }
+      ]
+    },
+    "string-escaped-char": {
+      "patterns": [
+        {
+          "match": "\\\\(\\\\|[abefnrutv'\"]|x\\h{2}|u\\h{4}|U\\h{8}|[0-7]{3}|0)",
+          "name": "constant.character.escape.mara"
+        },
+        {
+          "match": "\\\\.",
+          "name": "invalid.illegal.unknown-escape.mara"
+        }
+      ]
+    }
+  }
+}
