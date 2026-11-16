@@ -11,20 +11,20 @@
 // the first difference, and that tells an attacker how close a guess was.
 //
 // Don't store passwords as hashes like those: they're made to be fast, and so are
-// guesses. bcrypt_make(password, cost) gives text to store, with a random salt in
-// it, and bcrypt_check(password, stored) says whether a password matches. Each step
-// of cost doubles the time they take: 12 is about a fifth of a second. Only a
-// password's first 72 bytes count. A password with a 0 byte in them is refused:
-// bcrypt would stop there. pbkdf2_sha256 makes a key from a password.
+// guesses. pbkdf2_sha256(password, salt, iterations, &key) makes a key from a
+// password slowly. Keep the salt and the key; to check a password, make its key
+// again with the same salt and compare them with same_secret. A new random salt for
+// each password (random_bytes, in mara.os) keeps two same passwords from looking
+// the same. Each iteration adds time: 600,000 is today's usual advice.
 //
-// bcrypt here is the crypt_blowfish library, the same one Ruby's bcrypt gem uses. The
-// rest is written in Mara: checked against published test vectors and Python's hashlib,
-// but not reviewed by anyone, so use it for real secrets only knowing that.
+// It's all written in Mara: checked against published test vectors and Python's
+// hashlib, but not reviewed by anyone, so use it for real secrets only knowing that.
 module hashing
 
 use mara.core
 use mara.crypto
 use mara.encoding
+use mara.os
 
 main :: fun() {
 	text : [64]utf8
@@ -35,8 +35,14 @@ main :: fun() {
 	again := hmac_sha256("my secret key", "user=7")
 	print(same_secret(signature, again))       // true
 
-	stored, failed := bcrypt_make("correct horse", 4)   // (4: the fastest. Use 12.)
+	salt : [16]byte
+	failed := random_bytes(&salt)
 	if failed do print(failed)
-	print(bcrypt_check("correct horse", stored))        // true
-	print(bcrypt_check("wrong horse", stored))          // false
+	stored : [32]byte
+	pbkdf2_sha256("correct horse", salt, 1000, &stored)   // (1000: quick. Use 600,000.)
+	right, wrong : [32]byte
+	pbkdf2_sha256("correct horse", salt, 1000, &right)
+	pbkdf2_sha256("wrong horse", salt, 1000, &wrong)
+	print(same_secret(stored, right))          // true
+	print(same_secret(stored, wrong))          // false
 }

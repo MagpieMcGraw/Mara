@@ -2,14 +2,11 @@ module mara.crypto
 
 use mara.core
 use mara.math
-use mara.os
 
 // Hashes, keyed hashes and password hashing.
 //
 //     digest := sha256("some text")             // [32!]byte
 //     mac := hmac_sha256(key, message)
-//     stored := bcrypt_make(password, 12)?      // keep this text
-//     ok := bcrypt_check(password, stored)
 //
 // To hash something in pieces, a big file's say: sha256_start, then sha256_add for
 // each piece, then sha256_finish. md5 and sha1 have the same three.
@@ -18,9 +15,8 @@ use mara.os
 // the WebSocket handshake needs sha1 and upload checksums md5. To compare a digest
 // or a token someone sent, use same_secret, not `==`.
 //
-// bcrypt here is a library, crypt_blowfish. The rest is written in Mara, checked against
-// published test vectors and Python's hashlib, but not reviewed by anyone. Use it for
-// real secrets only knowing that.
+// It's written in Mara, checked against published test vectors and Python's hashlib,
+// but not reviewed by anyone. Use it for real secrets only knowing that.
 
 // Whether two byte strings are the same, taking the same time wherever they differ:
 // a comparison that stopped at the first difference would tell an attacker how
@@ -495,76 +491,4 @@ hmac_sha256_finish :: fun(h: ^Hmac_Sha256) -> [32!]byte {
 	inner_digest := sha256_finish(&h.inner)
 	sha256_add(&h.outer, inner_digest)
 	return sha256_finish(&h.outer)
-}
-
-// ---------------------------------------------------------------------------
-// bcrypt
-// ---------------------------------------------------------------------------
-
-// What making a bcrypt digest can fail with.
-Bcrypt_Error :: error {
-	Bad_Bcrypt_Cost        // not 4 to 31
-	Bad_Bcrypt_Password    // a 0 byte in it, in the 72 bytes that count: bcrypt stops at one
-	Bcrypt_Failed
-}
-
-// A new digest of password, with a random salt, as text to keep: "$2b$12$…", 60
-// characters. Each step of cost doubles the time it takes: 12 is about a fifth of
-// a second. Only a password's first 72 bytes count.
-bcrypt_make :: fun(password: []byte, cost: i64) -> str64, err {
-	out : str64
-	if cost < 4 or cost > 31 do return out, Bad_Bcrypt_Cost
-	key : [73]utf8
-	if not bcrypt_key(password, &key) do return out, Bad_Bcrypt_Password
-	salt : [16]byte
-	random_bytes(&salt)?
-	setting : [32]utf8
-	setting.len = setting.cap   // (C's to fill)
-	if gensalt_blowfish_rn("$2b$", u64(cost), &salt[0], 16, &setting[0], 32) == 0 do return out, Bcrypt_Failed
-	setting.len = 29   // (C wrote it: "$2b$12$" and 22 of salt, then its 0)
-	out.len = out.cap   // (C's to fill)
-	made := blowfish_rn(cstring(key), cstring(setting), &out[0], i32(out.cap)) != 0
-	out.len = 0
-	if not made do return out, Bcrypt_Failed
-	out.len = 60
-	return out
-}
-
-// Whether password is the one a digest was made from. A digest that isn't one, or is of
-// the old broken "$2x$" kind, is no match, and so is a password with a 0 byte in it.
-bcrypt_check :: fun(password: []byte, digest: []utf8) -> bool {
-	if digest.len != 60 or digest[0] != '$' or digest[1] != '2' or digest[3] != '$' do return false
-	kind := digest[2]
-	if kind != 'a' and kind != 'b' and kind != 'y' do return false
-	key : [73]utf8
-	if not bcrypt_key(password, &key) do return false
-	stored : [64]utf8
-	&stored ++ digest
-	out : str64
-	out.len = out.cap   // (C's to fill)
-	if blowfish_rn(cstring(key), cstring(stored), &out[0], i32(out.cap)) == 0 do return false
-	out.len = 60
-	return same_secret(out, digest)
-}
-
-// A password as C wants it: at most the 72 bytes that count, then a 0. False if there's
-// a 0 in them, which would cut the password short without saying so.
-bcrypt_key :: fun(password: []byte, key: ^[]utf8) -> bool {
-	for k in 0:password.len {
-		if k == 72 do break
-		c := u8(password[k])
-		if c == 0 do return false
-		key ++ utf8(c)
-	}
-	return true
-}
-
-// bcrypt is crypt_blowfish (code/crypt_blowfish, Solar Designer's, public domain, from
-// openwall.com), not code of ours: it's what Ruby's bcrypt gem uses, so digests Rails
-// made check the same here. It tests itself on each call.
-foreign static_lib "crypt_blowfish" prefix _crypt_ {
-	fun blowfish_rn(key: cstring, setting: cstring, output: ^utf8, size: i32) -> i64
-	// (`count` is an unsigned long: 32 bits on Windows and 64 on Linux. A register either
-	// way, and a cost fits both.)
-	fun gensalt_blowfish_rn(kind: cstring, count: u64, input: ^byte, size: i32, output: ^utf8, output_size: i32) -> i64
 }
