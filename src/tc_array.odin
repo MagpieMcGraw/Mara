@@ -234,6 +234,7 @@ tc_plain_name :: proc(k: ^TC, n: Tree_Id) -> bool {
 tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     tr := k.t
     span := tree_span(tr, n)
+    hint := k.hint
     elems := tree_list(tr, tr.a[n])
     // (The element type of where it goes, when that's an array.)
     place: Type
@@ -295,6 +296,14 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
             }
         }
         if as_place { et = place }
+    }
+    // (Where a named array of its size goes — a Vec3 field, argument or
+    // result — the literal is one, as a declaration takes it:
+    // `Vertex{position = [x, y, z]}`.)
+    if fa, is_fixed := distinct_base(hint).(^Type_Fixed_Array); is_fixed && tc_is_distinct(hint) &&
+       fa.size == len(elems) && !types_incompatible(fa.elem, et) {
+        for e in elems { tc_settle(k, e, fa.elem) }
+        return hint
     }
     for e in elems { tc_settle(k, e, et) }   // (each written to its slot, at its type)
     return type_fixed_array(len(elems), et)
