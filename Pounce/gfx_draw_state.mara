@@ -30,14 +30,14 @@ DrawCommand :: struct {
 // DrawState bundles everything needed for one MDI draw call
 DrawState :: struct {
 	// Shader and texture
-	shader_id: u32,
-	texture: u32,
+	shader_id: gl.Program,
+	texture: gl.Texture,
 
 	// Reference to VAO state (for dynamic mesh access)
 	vao_state: ^VAO_State,
 
 	// OpenGL resources
-	command_buffer: u32,
+	command_buffer: gl.Buffer,
 
 	// Per-mesh batches (one instance array per mesh type)
 	batches: [MAX_BATCHES]Mesh_Batch
@@ -65,12 +65,12 @@ draw_state_init :: fun(
 	if bool(shader_err) do print(shader_err)
 
 	// Create persistent command buffer for MDI
-	command_buffer: u32
+	command_buffer: gl.Buffer
 	gl.GenBuffers(1, &command_buffer)
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, command_buffer)
 	gl.BufferData(gl.DRAW_INDIRECT_BUFFER,
 				  max_commands * size_of(DrawCommand),
-				  [],
+				  void,
 				  gl.DYNAMIC_DRAW)
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, 0)
 
@@ -235,14 +235,16 @@ draw_state_render :: fun(state: ^DrawState) {
 	    state.command_count += 1
 	    gl.BufferSubData(gl.ARRAY_BUFFER,
 	                     gpu_offset * size_of(Instance),
-	                     batch.instances[0:count])
+	                     isize(count) * isize(size_of(Instance)),
+	                     batch.instances[0:count].ptr)
 	    gpu_offset += isize(count)
 	}
 
 	// Upload command data
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, state.command_buffer)
 	gl.BufferSubData(gl.DRAW_INDIRECT_BUFFER, 0,
-					 state.commands[0:state.command_count])
+					 isize(state.command_count) * isize(size_of(DrawCommand)),
+					 state.commands[0:state.command_count].ptr)
 
 	// ONE DRAW CALL FOR EVERYTHING
 	draw_state_bind(state)

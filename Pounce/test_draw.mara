@@ -13,9 +13,9 @@ QUAD_VS :: "#version 330 core\nlayout(location=0) in vec2 a_pos;\nuniform vec2 u
 QUAD_FS :: "#version 330 core\nuniform vec3 u_color;\nout vec4 frag_color;\nvoid main() {\n  frag_color = vec4(u_color, 1.0);\n}\n"
 
 Quad_Renderer :: struct {
-	program:  u32
-	vao:      u32
-	vbo:      u32
+	program:  Program
+	vao:      Vertex_Array
+	vbo:      Buffer
 	u_pos:    i32
 	u_size:   i32
 	u_screen: i32
@@ -41,7 +41,7 @@ quad_init :: fun(r: ^Quad_Renderer) {
 	BindVertexArray(r.vao)
 	GenBuffers(1, &r.vbo)
 	BindBuffer(ARRAY_BUFFER, r.vbo)
-	BufferData(ARRAY_BUFFER, 32, verts, STATIC_DRAW)
+	BufferData(ARRAY_BUFFER, 32, &verts[0], STATIC_DRAW)
 	EnableVertexAttribArray(0)
 	VertexAttribPointer(0, 2, FLOAT, 0, 8, 0)
 }

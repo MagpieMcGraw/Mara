@@ -48,11 +48,11 @@ Assets :: struct {
 	// cache: Cache,
 
 	// GPU texture array for images
-	texture_id:   u32,
+	texture_id:   gl.Texture,
 	texture_size: i32,
 
 	// GPU texture array for fonts (single-channel)
-	font_texture_id:   u32,
+	font_texture_id:   gl.Texture,
 	font_texture_size: i32,
 
 	textures:	[MAX_TEXTURES]Texture
@@ -116,14 +116,14 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
     gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, i32(gl.NEAREST))
 
     // Allocate texture array on GPU
-    gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, i32(gl.RGBA8),
+    gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8,
         a.texture_size, a.texture_size, ATLAS_LAYERS,
-        0, gl.RGBA, gl.UNSIGNED_BYTE, [])
+        0, gl.RGBA, gl.UNSIGNED_BYTE, void)
 
     // White pixel at (0,0) layer 0 for default
     white := [4!]u8{255, 255, 255, 255}
     gl.TexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 1, 1, 1,
-        gl.RGBA, gl.UNSIGNED_BYTE, white)
+        gl.RGBA, gl.UNSIGNED_BYTE, &white[0])
     gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
 
     // Register default texture so it can be queried by name
@@ -139,9 +139,9 @@ init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
     gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, i32(gl.LINEAR_MIPMAP_LINEAR))
     gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, i32(gl.LINEAR))
 
-    gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, i32(gl.RGBA8),
+    gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8,
         a.font_texture_size, a.font_texture_size, MAX_FONTS,
-        0, gl.RGBA, gl.UNSIGNED_BYTE, [])
+        0, gl.RGBA, gl.UNSIGNED_BYTE, void)
     gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
 
     load_font_test(a, fname)
@@ -162,7 +162,7 @@ load_font_test :: fun(a: ^Assets, fname: []utf8) {
     gl.TexSubImage3D(gl.TEXTURE_2D_ARRAY, 0,
         0, 0, i32(a.fonts.len),
         this_font.size, this_font.size, 1,
-        gl.RGB, gl.UNSIGNED_BYTE, pixels[0:pixels.cap])
+        gl.RGB, gl.UNSIGNED_BYTE, pixels[0:pixels.cap].ptr)
     gl.GenerateMipmap(gl.TEXTURE_2D_ARRAY)
     gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
 

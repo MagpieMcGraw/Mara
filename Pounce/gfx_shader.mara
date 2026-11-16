@@ -65,7 +65,7 @@ expand :: fun(out: ^[]utf8, text: []utf8, filepath: []utf8) -> i64, err {
 
 // Compiles a file's two shaders (expand says what the file holds). What the
 // GL compiler says is printed.
-load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
+load_and_compile :: fun(filepath: []utf8) -> gl.Shader, gl.Shader, err {
 	// filled by the read — skip the zero-init
 	data: [32 * KB]byte = void
 	read_entire_file(filepath, &data)?
@@ -74,16 +74,21 @@ load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
 	text : [128 * KB]utf8
 	fragment_at := expand(&text, raw, filepath)?
 
-	compile :: fun(name: []utf8, text: []utf8, shader_type: gl.Shader_Type) -> u32, err {
+	compile :: fun(name: []utf8, text: []utf8, shader_type: gl.Shader_Type) -> gl.Shader, err {
 		shader := gl.CreateShader(shader_type)
-		gl.ShaderSource(shader, text)
+		source := text.ptr
+		n := i32(text.len)
+		gl.ShaderSource(shader, 1, &source, &n)
 		gl.CompileShader(shader)
 
 		status : i32
 		gl.GetShaderiv(shader, gl.COMPILE_STATUS, &status)
 
 		log : [2048]utf8
-		gl.GetShaderInfoLog(shader, &log)
+		got : i32 = 0
+		log.len = log.cap   // (GL's to fill)
+		gl.GetShaderInfoLog(shader, i32(log.cap), &got, &log[0])
+		log.len = i64(got)
 		if log.len > 0 {
 			print(name, shader_type, "says:")
 			print(log)
@@ -102,7 +107,7 @@ load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
 }
 
 // A program linked from a file's two shaders (load_and_compile).
-make_program :: fun(filepath: []utf8) -> u32, err {
+make_program :: fun(filepath: []utf8) -> gl.Program, err {
 	vshader, fshader, e := load_and_compile(filepath)
 	defer gl.DeleteShader(vshader)
 	defer gl.DeleteShader(fshader)
@@ -118,7 +123,10 @@ make_program :: fun(filepath: []utf8) -> u32, err {
 	gl.GetProgramiv(program, gl.LINK_STATUS, &status)
 
 	log : [1024]utf8
-	gl.GetProgramInfoLog(program, &log)
+	got : i32 = 0
+	log.len = log.cap   // (GL's to fill)
+	gl.GetProgramInfoLog(program, i32(log.cap), &got, &log[0])
+	log.len = i64(got)
 	if log.len > 0 {
 		print(filepath, "linking says:")
 		print(log)
