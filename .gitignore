@@ -43,8 +43,6 @@ Pounce/Warlock.odin
 # never goes upstream.
 .git.backup-history/
 
-# Generated stress-test projects (regenerated from generator/, never committed)
-test_*/
 
 # Asset bundles — regenerated from the source assets in Pounce/data/
 # subdirs. The bundles together are ~80MB; keep them local.
