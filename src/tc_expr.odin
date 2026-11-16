@@ -375,6 +375,20 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
         case .If_Expr, .Array, .Literal: tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_EXPRESSION)
         }
         if tr.tag[tc_unparen(k, operand)] == .Slice { tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_SLICE_TEMP) }
+        // (A variable converted is a copy of it: what's written through the
+        // copy's address never reaches it — `&(i32(log.len))` handed to C.)
+        if c := tc_unparen(k, operand); tr.tag[c] == .Call {
+            form := k.annot.forms[tc_sid(k, c)] or_else .Fun
+            _, is_cast := cast_result_type(tc_name(k, c))
+            args := tree_list(tr, tr.a[c])
+            if (form == .Conversion || form == .Builtin && is_cast) && len(args) == 1 {
+                #partial switch tr.tag[tc_unparen(k, args[0])] {
+                case .Ident, .Field, .Index, .Deref:
+                    place := tc_written(k, args[0])
+                    tc_error(k, span, TYPE_CANNOT_TAKE_ADDRESS_CONVERSION, tc_written(k, c), place, place)
+                }
+            }
+        }
         t = type_ptr(ot)
     case:
         tc_unsupported(k, n, "this unary operator")

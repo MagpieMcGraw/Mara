@@ -611,6 +611,7 @@ WARN_REDUNDANT_CAST ::"redundant cast to %s — %s already has that type, drop t
 
 TYPE_CANNOT_TAKE_ADDRESS_EXPRESSION :: "cannot take the address of this expression — `&` needs a named variable (or a field/element of one), not a temporary value"
 TYPE_CANNOT_TAKE_ADDRESS_SLICE_TEMP :: "cannot take the address of a temporary slice — `buf[a:b]` builds a fresh slice header with no address to point at. To pass it to a `^[]T` parameter, bind it first (`s := buf[a:b]; f(&s)`), or — if the callee only reads it — make the parameter `[]T` and pass the slice directly (no `&`)"
+TYPE_CANNOT_TAKE_ADDRESS_CONVERSION :: "cannot take the address of `%s`: it's a converted copy of '%s', so what's written through it never reaches '%s'. Convert into a local and take its address (`n := …`, `&n`), and copy it back after if it's written"
 TYPE_ARENA_SIZE_CONSTANT :: "the program's arena size must be a constant"
 TYPE_CONST_NOT_COMPILE_TIME :: "constant '%s': its value must be known at compile time — literals, other constants and arithmetic on them (a call, or a struct with constructor params or statements in its body, needs code to run)"
 
