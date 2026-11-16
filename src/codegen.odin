@@ -828,9 +828,91 @@ runtime_fail_helpers_ir :: proc(g: ^Codegen) -> string {
     // back to "?(<val>)" for stray bits / out-of-range tags. Open-`err`-typed
     // print sites call this; concrete error_kind print sites still use the
     // inline switch from gen_print_enum.
+    runtime_from_text_helper_ir(g)
     runtime_print_err_helper_ir(g)
     g.code = {}
     return strings.to_string(g.out)
+}
+
+// `T.from_text(s)`'s names, a table (from_text_table) the one helper loops
+// over: `__mara_from_text(text, n, table, count, miss)` gives the value of
+// the name that is the text's n bytes, else miss. Each entry its name's
+// length and value (8 bytes each, unaligned), then its bytes.
+FROM_TEXT_HELPER :: "__mara_from_text"
+
+from_text_table :: proc(names: []string, values: []int) -> string {
+    b := strings.builder_make(context.temp_allocator)
+    word :: proc(b: ^strings.Builder, n: int) {
+        for i in 0 ..< 8 { strings.write_byte(b, u8(u64(n) >> uint(8 * i))) }
+    }
+    for name, i in names {
+        word(&b, len(name))
+        word(&b, values[i])
+        strings.write_string(&b, name)
+    }
+    return strings.to_string(b)
+}
+
+@(private="file")
+runtime_from_text_helper_ir :: proc(g: ^Codegen) {
+    g.code = {}
+    text, n, table, count, miss := ir_local("text"), ir_local("n"), ir_local("table"), ir_local("count"), ir_local("miss")
+    p_at, k_at, i_at := ir_local("p.at"), ir_local("k.at"), ir_local("i.at")
+    ir_emit(g, {op = .Alloca, dest = p_at, ty = IR_PTR})
+    ir_emit(g, {op = .Alloca, dest = k_at, ty = IR_I64})
+    ir_emit(g, {op = .Alloca, dest = i_at, ty = IR_I64})
+    ir_store(g, IR_PTR, table, p_at)
+    ir_store(g, IR_I64, ir_int(0), k_at)
+    loop, entry, bytes, step := ir_label(g, "loop"), ir_label(g, "entry_next"), ir_label(g, "bytes"), ir_label(g, "step")
+    compare, found, none := ir_label(g, "compare"), ir_label(g, "found"), ir_label(g, "none")
+    emit_br(g, loop)
+    // The next entry, while there's one.
+    emit_label(g, loop)
+    k, more := fresh_tmp(g), fresh_tmp(g)
+    ir_load(g, k, IR_I64, k_at)
+    ir_icmp(g, more, .Slt, IR_I64, k, count)
+    emit_cond_br(g, more, entry, none)
+    emit_label(g, entry)
+    at, length, value_at, value, name, after, k1, same := fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g)
+    ir_load(g, at, IR_PTR, p_at)
+    ir_load(g, length, IR_I64, at, align = 1)
+    ir_gep(g, value_at, IR_I8, at, {IR_I64, ir_int(8), {}})
+    ir_load(g, value, IR_I64, value_at, align = 1)
+    ir_gep(g, name, IR_I8, at, {IR_I64, ir_int(16), {}})
+    ir_gep(g, after, IR_I8, name, {IR_I64, length, {}})
+    ir_store(g, IR_PTR, after, p_at)
+    ir_bin(g, k1, .Add, IR_I64, k, ir_int(1))
+    ir_store(g, IR_I64, k1, k_at)
+    ir_icmp(g, same, .Eq, IR_I64, length, n)
+    emit_cond_br(g, same, compare, loop)
+    // Its bytes and the text's, while they're the same.
+    emit_label(g, compare)
+    ir_store(g, IR_I64, ir_int(0), i_at)
+    emit_br(g, bytes)
+    emit_label(g, bytes)
+    i, end := fresh_tmp(g), fresh_tmp(g)
+    ir_load(g, i, IR_I64, i_at)
+    ir_icmp(g, end, .Eq, IR_I64, i, n)
+    emit_cond_br(g, end, found, step)
+    emit_label(g, step)
+    a_at, a, b_at, b, eq, i1 := fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g)
+    ir_gep(g, a_at, IR_I8, text, {IR_I64, i, {}})
+    ir_load(g, a, IR_I8, a_at)
+    ir_gep(g, b_at, IR_I8, name, {IR_I64, i, {}})
+    ir_load(g, b, IR_I8, b_at)
+    ir_icmp(g, eq, .Eq, IR_I8, a, b)
+    ir_bin(g, i1, .Add, IR_I64, i, ir_int(1))
+    ir_store(g, IR_I64, i1, i_at)
+    emit_cond_br(g, eq, bytes, loop)
+    emit_label(g, found)
+    ir_ret(g, IR_I64, value)
+    emit_label(g, none)
+    ir_ret(g, IR_I64, miss)
+    code := [?][]Ir{g.code[:]}
+    params := make([]Ir_Arg, 5)
+    params[0], params[1], params[2] = {ty = IR_PTR, v = text}, {ty = IR_I64, v = n}, {ty = IR_PTR, v = table}
+    params[3], params[4] = {ty = IR_I64, v = count}, {ty = IR_I64, v = miss}
+    codegen_function(g, {name = FROM_TEXT_HELPER, ret = IR_I64, params = params}, code[:])
 }
 
 runtime_print_err_helper_ir :: proc(g: ^Codegen) {

@@ -1014,6 +1014,7 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
             strings.write_string(&b, ")\n")
         }
         strings.write_string(&b, "declare void @__mara_print_err(i64)\n")
+        strings.write_string(&b, "declare i64 @" + FROM_TEXT_HELPER + "(ptr, i64, ptr, i64, i64)\n")
     }
     strings.write_byte(&b, '\n')
 

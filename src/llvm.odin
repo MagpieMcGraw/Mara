@@ -2729,10 +2729,10 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     return true
 }
 
-// `E.from_text(s)` (Origin_From_Text), where it's called: per variant, its
-// name's length compared with the text's, then each byte — the first that
-// matches all, its value; none, 0 (E's variant written `= 0`: tc_call). A
-// text constant's variant is known here.
+// `E.from_text(s)` (Origin_From_Text): the helper's loop over E's names
+// (llvm_from_text_call) — the first that's the text, its value; none, 0
+// (E's variant written `= 0`: tc_call). A text constant's variant is known
+// here.
 @(private="file")
 llvm_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, et: ^Type_Enum) -> bool {
     g := e.g
@@ -2749,35 +2749,30 @@ llvm_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scop
         e.value[op] = ir_int(value)
         return true
     }
-    header := llvm_operand(e, ops[0], fn_param(callee, 0).type_) or_return
+    names := make([]string, len(variants), context.temp_allocator)
+    values := make([]int, len(variants), context.temp_allocator)
+    for v, i in variants { names[i], values[i] = v.name, v.value }
+    return llvm_from_text_call(e, op, ops[0], fn_param(callee, 0).type_, names, values, tag)
+}
+
+// A from_text's call of the helper (runtime_from_text_helper_ir): the text,
+// its type's names and values as a table, 0 for none; the value given at
+// `tag`'s width.
+@(private="file")
+llvm_from_text_call :: proc(e: ^Llvm, op: Node_Id, text: Operand, text_type: Type, names: []string, values: []int, tag: Ir_Type) -> bool {
+    g := e.g
+    header := llvm_operand(e, text, text_type) or_return
     data := emit_header_field(g, header, SLICE.ptr)
     n := emit_len_count(g, emit_header_field(g, header, SLICE.len))
-    at := llvm_temporary(e, {op, 0}, fn_result(callee, 0), as_local = true)
-    ir_store(g, tag, ir_int(0), at)
-    done := fresh_label(g, "from_text.done")
-    for v in variants {
-        miss := fresh_label(g, "from_text.miss")
-        same := fresh_tmp(g)
-        ir_icmp(g, same, .Eq, SLICE_LEN_IR, n, ir_int(len(v.name)))
-        for i in 0 ..= len(v.name) {
-            hit := fresh_label(g, "from_text.hit")
-            emit_cond_br(g, same, hit, miss)
-            emit_label(g, hit)
-            if i == len(v.name) { break }
-            byte_at, ch := fresh_tmp(g), fresh_tmp(g)
-            ir_gep(g, byte_at, IR_I8, data, {IR_I64, ir_int(i), {}})
-            ir_load(g, ch, IR_I8, byte_at)
-            same = fresh_tmp(g)
-            ir_icmp(g, same, .Eq, IR_I8, ch, ir_int(int(v.name[i])))
-        }
-        ir_store(g, tag, ir_int(v.value), at)
-        emit_br(g, done)
-        emit_label(g, miss)
-    }
-    emit_br(g, done)
-    emit_label(g, done)
+    table := get_string_literal(g, from_text_table(names, values))
     v := fresh_tmp(g)
-    ir_load(g, v, tag, at)
+    ir_call(g, v, IR_I64, ir_global(FROM_TEXT_HELPER), {IR_PTR, data, {}}, {IR_I64, n, {}}, {IR_PTR, table, {}},
+            {IR_I64, ir_int(len(names)), {}}, {IR_I64, ir_int(0), {}})
+    if tag != IR_I64 {
+        narrow := fresh_tmp(g)
+        ir_cast(g, narrow, .Trunc, IR_I64, v, tag)
+        v = narrow
+    }
     e.value[op] = v
     return true
 }
@@ -2936,45 +2931,17 @@ llvm_field_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Sco
     return true
 }
 
-// `R.from_text(text)` (Origin_Field_From_Text), where it's called: per field
-// of its type, its path's length compared with the text's, then each byte —
-// the first that matches all, its value; none, void (0).
+// `R.from_text(text)` (Origin_Field_From_Text): the helper's loop over the
+// paths of its type's fields (llvm_from_text_call) — the first that's the
+// text, its value; none, void (0).
 @(private="file")
 llvm_field_from_text :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, fr: ^Type_Field) -> bool {
-    g := e.g
     if len(ops) != 1 { e.note = "from_text's text"; return false }
     paths, _ := field_ref_paths(fr.owner, fr.elem)
-    header := llvm_operand(e, ops[0], fn_param(callee, 0).type_) or_return
-    at := llvm_temporary(e, {op, 0}, fn_result(callee, 0), as_local = true)
-    ir_store(g, IR_I64, ir_int(0), at)
-    data := emit_header_field(g, header, SLICE.ptr)
-    n := emit_len_count(g, emit_header_field(g, header, SLICE.len))
-    done := fresh_label(g, "field_from_text.done")
-    for p in paths {
-        miss := fresh_label(g, "field_from_text.miss")
-        same := fresh_tmp(g)
-        ir_icmp(g, same, .Eq, SLICE_LEN_IR, n, ir_int(len(p.text)))
-        for i in 0 ..= len(p.text) {
-            hit := fresh_label(g, "field_from_text.hit")
-            emit_cond_br(g, same, hit, miss)
-            emit_label(g, hit)
-            if i == len(p.text) { break }
-            byte_at, ch := fresh_tmp(g), fresh_tmp(g)
-            ir_gep(g, byte_at, IR_I8, data, {IR_I64, ir_int(i), {}})
-            ir_load(g, ch, IR_I8, byte_at)
-            same = fresh_tmp(g)
-            ir_icmp(g, same, .Eq, IR_I8, ch, ir_int(int(p.text[i])))
-        }
-        ir_store(g, IR_I64, ir_int(p.value), at)
-        emit_br(g, done)
-        emit_label(g, miss)
-    }
-    emit_br(g, done)
-    emit_label(g, done)
-    v := fresh_tmp(g)
-    ir_load(g, v, IR_I64, at)
-    e.value[op] = v
-    return true
+    names := make([]string, len(paths), context.temp_allocator)
+    values := make([]int, len(paths), context.temp_allocator)
+    for p, i in paths { names[i], values[i] = p.text, p.value }
+    return llvm_from_text_call(e, op, ops[0], fn_param(callee, 0).type_, names, values, IR_I64)
 }
 
 // main's err as the program's exit code: 0 for Ok; for a failure, 1, the
