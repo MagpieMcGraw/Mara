@@ -6,12 +6,12 @@ import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// LLVM IR from the program graph (design/graph_retrofit.md, phase 3).
+// LLVM IR from the program graph.
 //
 // A fun's code is its runs: each becomes a block — the entry's first, the rest
 // in the order they were built — and each operation in them lowers as the
-// operations table in design/program_graph.md says. A variable lives in an
-// alloca at the top of the entry block; a scalar param is its argument; a
+// operation's kind says. A variable lives in an alloca at the top of the
+// entry block; a scalar param is its argument; a
 // synthetic scalar local written once, before every read, is just that value.
 //
 // The worker loop asks llvm_function for every fun with a body, the

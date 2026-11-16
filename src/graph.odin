@@ -11,14 +11,14 @@ import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// The program's code (design/annotated_tree.md, stage 4): what the analyses
+// The program's code: what the analyses
 // and the emitter read. Lowering builds it from the annotated tree once the
 // check is clean (lower.odin, through Graph_Builder and the graph_build_*
 // procs): each fun's, struct's constructor's and constant's code, a graph of
 // its own, built one at a time and put in written order (Program_Code).
 //
 // A code's nodes are its scopes — its own and its blocks — the variables they
-// declare, and operations (the set in design/program_graph.md § Operations).
+// declare, and operations (Op_Kind).
 // Each fact is a column indexed by Node_Id, the code's own from 0: its root,
 // then everything in it, depth-first in written order, so a scope's subtree
 // is one run of ids: [id, last[id]]. Lowering builds a code's nodes in that
@@ -63,7 +63,7 @@ Op_Kind :: enum u8 {
     Run_Defer, Arena_Mark, Arena_Reset,
 }
 
-// How a node or edge is written (design/program_graph.md, Identity and editing).
+// How a node or edge is written.
 Written :: enum u8 { Explicit, Implied, Synthetic }
 
 // A `then`: a run's last operation, or a scope for its entry → a run's first
@@ -1006,7 +1006,7 @@ graph_trim :: proc(g: ^Program_Graph, n: int) {
 }
 // --- the program's code ---------------------------------------------------------
 
-// The program's code, once lowered (design/annotated_tree.md, stage 4): each
+// The program's code, once lowered: each
 // fun's, each struct's constructor's and each constant's, a graph of its own —
 // its ids its own, from 0: its node, then everything in it — and what the
 // program has once: the constants' tables, the funs that consume a param, the
@@ -3853,7 +3853,7 @@ graph_dominators :: proc(n: int, succ, pred: [][dynamic]i32, is_entry: []bool) -
 // --- dump -------------------------------------------------------------------
 
 // MARA_GRAPH=full prints every code (graph_dump_full), then the statements
-// nothing reaches: what test/graphdiff.sh compares.
+// nothing reaches: what graphdiff.sh, with the tests, compares.
 @(private="file")
 graph_dump :: proc(pc: ^Program_Code) {
     if os.get_env("MARA_GRAPH", context.temp_allocator) != "full" { return }

@@ -7,8 +7,7 @@ import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// Escape analysis — Mara's lifetime rule, checked over the program graph
-// (design/graph_retrofit.md, phase 2).
+// Escape analysis — Mara's lifetime rule, checked over the program graph.
 //
 // DEPTHS. All memory has a lifetime depth: global memory is 0, the caller's
 // memory 1, and each block of the function being checked one more (its body

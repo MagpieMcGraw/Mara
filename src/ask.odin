@@ -1,7 +1,7 @@
 package mara
 
 // ---------------------------------------------------------------------------
-// `mara ask` — the analyzer (design/mara_ask.md): what a name is and how it
+// `mara ask` — the analyzer: what a name is and how it
 // connects, read off the checked program. A subject — a module, a type, a
 // function, a variable — is shown in its natural view, or the one asked for:
 //   types   a type's fields and embeds, a fun's param and result types
@@ -13,7 +13,7 @@ package mara
 // A depth caps the levels (a tree of calls or types is one unless asked: ASK_DEPTH_OMITTED);
 // `in`/`at` narrow where the subject resolves
 // (ask_query.odin parses a query). Output is deterministic text, sorted for
-// stable diffs — AI-readable, greppable, golden-tested (test/ask.sh). It
+// stable diffs — AI-readable, greppable, golden-tested (ask.sh, with the tests). It
 // runs after the check: no codegen.
 // ---------------------------------------------------------------------------
 
@@ -2103,7 +2103,7 @@ ask_call_arg_text :: proc(n: Tree_Id, index, params: int) -> string {
 // A one-hop view — a function isn't itself "taken" by another, so there is nothing
 // to recurse. The auto-generated constructor is construction (`T{…}`), not a
 // Returns edge, so it is not listed under `above`; a true "what builds this value"
-// producer query is deferred (design/mara_ask.txt, struct call above).
+// producer query is deferred (struct call above).
 render_struct_calls :: proc(b: ^strings.Builder, checked: ^Checked_Program, target: Type, want: Ask_Edge_Kind, dir: string) {
     rev := ask_type_users(checked.table, checked.functions)
     name := ask_type_name(target)

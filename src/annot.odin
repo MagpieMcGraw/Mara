@@ -6,7 +6,7 @@ import "core:os"
 import "core:path/filepath"
 
 // ---------------------------------------------------------------------------
-// The annotations (design/annotated_tree.md): what the checker finds about
+// The annotations: what the checker finds about
 // each node, kept per instance beside the flat tree, for the passes after it.
 //
 // A node is read in an instance. Instance 0 is the tree as written; each
@@ -195,8 +195,7 @@ annot_var :: proc(a: ^Annotations, owner: ^Type_Scope, tok: Token_Id, t: Type) -
 
 // --- the check --------------------------------------------------------------
 
-// MARA_ANNOT=check: the annotations, checked against what the checker built
-// (design/annotated_tree.md, stage 1's proof).
+// MARA_ANNOT=check: the annotations, checked against what the checker built.
 //
 //   - Complete: each name the checker typed in an instance — an identifier, a
 //     variant, a member, a call's name, a type's — says what it names.

@@ -1350,7 +1350,7 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
     shared = args.shared || !has_main
 
     perf_timer_mark(perf, "type check")
-    // The checker, on the flat tree (design/flat_tree.md).
+    // The checker, on the flat tree.
     checked = tc_check_program(&build_tree, tc_modules(), args.pkg_name,
                                web           = args.web,
                                shared        = shared,
@@ -1394,7 +1394,7 @@ CLI_Args :: struct {
     out:          string,
     icon:         []u8,   // `mara build`'s: the program's icon, as Windows resources (icon_resource)
 
-    // `mara ask <target> <query>` — read-only static query (design/mara_ask.md).
+    // `mara ask <target> <query>` — read-only static query.
     // Runs the front half of the pipeline and stops after the check.
     ask:          bool,
     ask_query:    Ask_Query,  // the one query (ask_parse_query)

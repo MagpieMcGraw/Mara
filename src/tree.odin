@@ -3,7 +3,7 @@ package mara
 import "base:runtime"
 import "core:slice"
 
-// The syntax tree, flat (design/flat_tree.md): every file's nodes in one table
+// The syntax tree, flat: every file's nodes in one table
 // for the build, a node's id its index, each node the same shape — its tag,
 // its report point, its extent, two fields — and lists and records of more
 // fields in one side array. What a field holds is its tag's shape

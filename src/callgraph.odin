@@ -5,7 +5,7 @@ import "core:os"
 import "core:slice"
 
 // ---------------------------------------------------------------------------
-// Materialized call graph (design/mara_ask.md §12)
+// Materialized call graph
 //
 // A post-check artifact on Checked_Program, an index over the calls the
 // checker annotated (annot.odin: each call's callee, where its node is, what

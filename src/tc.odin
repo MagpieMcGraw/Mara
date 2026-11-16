@@ -9,13 +9,12 @@ import "core:strings"
 import "core:sync"
 import "base:runtime"
 
-// The type checker, on the flat tree (design/flat_tree.md). It fills the
+// The type checker, on the flat tree. It fills the
 // Checked_Program — the symbol table, the Type_Scopes, the diagnostics —
 // from the tree as written: nothing desugared, nothing cloned. It only
 // checks: what it finds about a node is kept by its id, in the instance it
 // is checked in (annot.odin), and the program graph is lowered from the
-// tree and those annotations once it is done (lower.odin;
-// design/annotated_tree.md).
+// tree and those annotations once it is done (lower.odin).
 //
 // Checking an expression returns its type (tc_check), not a side channel.
 
@@ -85,7 +84,7 @@ TC :: struct {
     arena_size:    Tree_Id,           // the program's arena's size (tc_scan_allocator) ...
     arena_stmt:    Tree_Id,           // its `#allocator` statement
 
-    // Names (design/name_resolution.md): what each refers to, the name table's,
+    // Names: what each refers to, the name table's,
     // found before the check; and what each declaration means now — a
     // definition's type, a variable's in the body being checked, a template's
     // in the instance being checked — by the token that declares it.
@@ -1145,7 +1144,7 @@ Checked_Program :: struct {
     err_made:       ^Type_Scope,
     err_passed:     ^Type_Scope,
 
-    // Its names (design/name_resolution.md): the name table's, and what each
+    // Its names: the name table's, and what each
     // declaration meant once the check was done (checked_binding) — mara
     // lsp's completion's.
     names:             ^Name_Table,
@@ -1172,7 +1171,7 @@ Checked_Program :: struct {
 
     // Materialized call graph (nodes = callable scopes, edges = resolved calls,
     // + strongly-connected components): an index over the annotated calls.
-    // See callgraph.odin / design/mara_ask.md §12.
+    // See callgraph.odin.
     call_graph:     Call_Graph,
 
     // The program's code (graph.odin): each fun's, struct's and constant's,

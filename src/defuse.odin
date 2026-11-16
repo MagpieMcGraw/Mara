@@ -4,8 +4,7 @@ import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// Def-use over the program graph: what `mara ask`'s flow views slice
-// (design/graph_retrofit.md, phase 2).
+// Def-use over the program graph: what `mara ask`'s flow views slice.
 //
 // A variable is a fun's param, local or named result: a declaration node of
 // its own code (a nested fun's are its own). A synthetic local (a loop's end,

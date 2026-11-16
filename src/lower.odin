@@ -5,7 +5,7 @@ import "core:slice"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// Lowering (design/annotated_tree.md, stage 2): the program graph made from
+// Lowering: the program graph made from
 // the flat tree and what the checker found about it (annot.odin), once the
 // check is done — the checker only checks.
 //
