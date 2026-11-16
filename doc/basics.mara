@@ -122,6 +122,9 @@ example_use :: fun() {
 // `n^ = v` does. A pointer a call gives back is written the same way:
 // `item_of(&list) = v`. A pointer variable is written through with `^`, since
 // `p = q` points it elsewhere. A pointer's `void` is its null: see `void`.
+// `&` of a conversion, `&i32(x)`, is an error: a conversion is a copy, so
+// what's written through it never reaches x. Convert into a variable, pass
+// its address, and copy it back after.
 //
 // `f(x, y)` calls f; so does `x.f(y)`: any fun in sight can be called on
 // its first param that way, and `&x.f()` passes `&x`. A fun defined inside
@@ -434,7 +437,8 @@ example_struct :: fun() {
 // `Rect{w = 4, h = 3}`, which runs no body: it gives every field.
 //
 // An enum can size an array: `[Light]bool` holds one for each of its values
-// (the highest value + 1 of them), indexed by them — `seen[Green]`.
+// (the highest value + 1 of them), indexed by them — `seen[Green]` — or by
+// a plain number; another enum's value is an error.
 // `Light.len` is that number (`Light.cap` too, as a fixed array's are the
 // same), known when the program is compiled: `[Light.len!]str64` is an
 // array of as many, indexed by plain numbers.
@@ -992,7 +996,10 @@ example_Self :: fun() {
 // void)`; without one it's an error, which says where the void comes from.
 // That's worked out over the whole program: a field anything sets to void
 // may be void wherever it's read, a param some call gives void, a result
-// some return does. A pointer a C function gives back may be void. A bare
+// some return does. A fun C can call — one handed to a C function, or marked
+// `#expose` — may be given void in any pointer param; so may one called
+// through a fun value, when any call through a value of its signature gives
+// void. A pointer a C function gives back may be void. A bare
 // `p : ^T` is void till it's written: following it before a write or a test
 // is an error in the fun that declares it, and handing out its address
 // (`init(&p)`) counts as a write. A struct's bare pointer field is void the
