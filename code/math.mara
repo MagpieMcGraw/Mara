@@ -1,5 +1,6 @@
 module mara.math
 
+Vec2 :: distinct [3!]f32
 Vec3 :: distinct [3!]f32
 Vec4 :: distinct [4!]f32
 Quat :: distinct [4!]f32
