@@ -88,8 +88,9 @@ Module_Task :: struct {
 
     // The x86 backend: whether it's the one, and the module's object.
     use_x86:             bool,
-    debug:               bool,    // (x86) with debug info
+    debug:               bool,    // with debug info
     x86:                 ^X86_Module,
+    dbg:                 ^Llvm_Dbg,   // (LLVM) its debug info's nodes
 }
 
 // Worker entry point. Sets up an isolated arena allocator, builds a local
@@ -112,6 +113,7 @@ module_codegen_worker :: proc(t: thread.Task) {
     local: Codegen
     init_worker_codegen(&local, task)
     if task.use_x86 { local.x86 = x86_begin(x86_program(), task.checked if task.debug else nil, task.module_name, task.checked.threads) }
+    if task.debug && !task.use_x86 { local.dbg = llvm_dbg_begin(context.allocator, task.checked) }
 
     // Emit this module's functions. switch_to_module + flush handle the
     // g.out buffer swap so emit_target routes correctly. Each function's
@@ -145,6 +147,7 @@ module_codegen_worker :: proc(t: thread.Task) {
 
     task.globals             = local.globals
     task.x86                 = local.x86
+    task.dbg                 = local.dbg
     task.overflow_intrinsics = local.overflow_intrinsics
     task.bswap_intrinsics    = local.bswap_intrinsics
     task.const_tables        = local.const_tables
@@ -333,6 +336,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     g.profile_memory = profile_memory != ""
     g.mem_build = profile_memory
     g.mem_sites = make(map[string]string)
+    if debug && !x86 { g.dbg = llvm_dbg_begin(context.allocator, checked, LLVM_DBG_MAIN) }
     checked.threads = program_starts_threads(checked)
     if checked.threads && (profile != "" || profile_memory != "") {
         codegen_fatal(&g, {}, CODE_PROFILE_THREADS)
@@ -620,6 +624,9 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
         }
         return g.module_ll_paths[:], true
     }
+
+    // raddbg's type views every module's types want, into the main TU.
+    if g.dbg != nil { llvm_dbg_views(g.dbg, g.module_tasks) }
 
     // Phase 1.6: Compute per-module imports now that both function bodies
     // and @main are emitted. The main TU's import set folds in @main's
@@ -1058,6 +1065,11 @@ build_module_ll :: proc(g: ^Codegen, checked: ^Checked_Program,
         strings.write_string(&b, main_builder_str)
         strings.write_byte(&b, '\n')
     }
+
+    // Its debug info: its worker's nodes, and in the main TU @main's and
+    // raddbg's type views.
+    if is_main_tu && g.dbg != nil { strings.write_string(&b, g.dbg.raddbg) }
+    llvm_dbg_module(&b, {module_task.dbg if module_task != nil else nil, g.dbg if is_main_tu else nil})
 
     return strings.to_string(b)
 }

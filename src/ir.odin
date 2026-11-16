@@ -575,17 +575,23 @@ ir_print_arg :: proc(b: ^strings.Builder, x: Ir_Arg) {
     ir_print_val(b, x.v)
 }
 
-// An instruction as LLVM IR, a line of it.
-ir_print :: proc(b: ^strings.Builder, ins: Ir) {
+// An instruction as LLVM IR, a line of it — with its debug location, the
+// metadata node `loc` (llvm_dbg.odin), when it's one.
+ir_print :: proc(b: ^strings.Builder, ins: Ir, loc := 0) {
     if ins.op == .Line { return }
     w :: strings.write_string
     v :: ir_print_val
+    at :: proc(b: ^strings.Builder, loc: int) {
+        if loc == 0 { return }
+        strings.write_string(b, ", !dbg !")
+        strings.write_int(b, loc)
+    }
     ty, to := ir_type_text(ins.ty), ir_type_text(ins.to)
     // (cmpxchg gives what was there and whether it swapped: the first's wanted.)
     if ins.op == .Atomic && ins.inst == .Atomic_Compare_Swap {
         w(b, "  "); v(b, ins.dest); w(b, ".pair = cmpxchg ptr "); v(b, ins.a); w(b, ", "); w(b, ty); w(b, " "); v(b, ins.b)
-        w(b, ", "); w(b, ty); w(b, " "); v(b, ins.c); w(b, " seq_cst seq_cst\n  ")
-        v(b, ins.dest); w(b, " = extractvalue { "); w(b, ty); w(b, ", i1 } "); v(b, ins.dest); w(b, ".pair, 0\n")
+        w(b, ", "); w(b, ty); w(b, " "); v(b, ins.c); w(b, " seq_cst seq_cst"); at(b, loc); w(b, "\n  ")
+        v(b, ins.dest); w(b, " = extractvalue { "); w(b, ty); w(b, ", i1 } "); v(b, ins.dest); w(b, ".pair, 0"); at(b, loc); w(b, "\n")
         return
     }
     if ins.op == .Label {
@@ -667,6 +673,7 @@ ir_print :: proc(b: ^strings.Builder, ins: Ir) {
         w(b, "unreachable")
     case .Line:
     }
+    at(b, loc)
     w(b, "\n")
 }
 
@@ -674,10 +681,15 @@ ir_print_all :: proc(b: ^strings.Builder, code: []Ir) {
     for ins in code { ir_print(b, ins) }
 }
 
-// A function's `define` line, its `{` ending it.
-ir_print_head :: proc(b: ^strings.Builder, h: Ir_Head) {
+// A function's `define` line, its `{` ending it — its debug info's
+// subprogram before that, the metadata node `dbg`, when it's one.
+ir_print_head :: proc(b: ^strings.Builder, h: Ir_Head, dbg := 0) {
     strings.write_string(b, "define ")
     ir_print_signature(b, h)
+    if dbg != 0 {
+        strings.write_string(b, " !dbg !")
+        strings.write_int(b, dbg)
+    }
     strings.write_string(b, " {")
 }
 

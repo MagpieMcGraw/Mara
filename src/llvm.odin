@@ -59,9 +59,9 @@ Llvm :: struct {
     stop:     Node_Id,             // where it stopped, when it can't lower something (llvm_unlowered)
     note:    string,              // and what it met there, when that says more
     run:     i32,                 // the run being emitted
-    // An x86 build's debug info (codeview.odin): what's told of the fun, and
-    // the line its code was last marked at — its file, where it starts and
-    // ends in its source (llvm_line).
+    // A debug build's info (codeview.odin, llvm_dbg.odin): what's told of
+    // the fun, and the line its code was last marked at — its file, where it
+    // starts and ends in its source (llvm_line).
     dbg:     Dbg_Fun,
     line_file: int,
     line_lo, line_hi: u32,
@@ -124,10 +124,11 @@ llvm_unlowered :: proc(e: ^Llvm) -> ! {
     codegen_fatal(e.g, graph_origin(pg, at), CODE_GRAPH_UNLOWERED, e.ft.name, what, graph_name(pg, at), note)
 }
 
-// Whether the build wants debug info: an x86 build's (codeview.odin).
+// Whether the build wants debug info: the x86 backend's (codeview.odin) or
+// LLVM's (llvm_dbg.odin).
 @(private="file")
 llvm_debug :: proc(e: ^Llvm) -> bool {
-    return e.g.x86 != nil && e.g.x86.cv != nil
+    return e.g.dbg != nil || e.g.x86 != nil && e.g.x86.cv != nil
 }
 
 // The source line an operation is on, marked where its code begins when it

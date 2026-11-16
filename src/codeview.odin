@@ -411,8 +411,7 @@ cv_array :: proc(cv: ^Cv_Module, elem: u32, size: int) -> u32 {
 
 // A name no other type has, for a debugger to find a forward reference's
 // record by: as type_name writes types, a struct's, an enum's and a union's
-// by its flat name.
-@(private="file")
+// by its flat name. (The LLVM backend's types' identifiers too.)
 cv_unique :: proc(t: Type) -> string {
     #partial switch v in unwrap_alias(resolve_infer(t)) {
     case ^Type_Scope:          return v.name
@@ -561,7 +560,12 @@ cv_union :: proc(cv: ^Cv_Module, ut: ^Type_Union, key: [2]u64) -> u32 {
 // A raddbg type view: values of the type named `type` shown as `expr` says.
 @(private="file")
 cv_view :: proc(cv: ^Cv_Module, type, expr: string) {
-    cv.views[fmt.aprintf("type_view: {{type: ```%s```, expr: ```%s```}}", type, expr, allocator = cv.keep)] = true
+    cv.views[raddbg_view(type, expr, cv.keep)] = true
+}
+
+// A raddbg type view's text (both backends').
+raddbg_view :: proc(type, expr: string, allocator: runtime.Allocator) -> string {
+    return fmt.aprintf("type_view: {{type: ```%s```, expr: ```%s```}}", type, expr, allocator = allocator)
 }
 
 // --- bytes -------------------------------------------------------------------

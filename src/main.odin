@@ -2205,8 +2205,9 @@ main :: proc() {
     // -release (it optimizes) and with -llvm (or MARA_LLVM set: the IR
     // differential's builds).
     x86 := ODIN_OS == .Windows && !args.web && !args.release && !args.llvm && os.get_env("MARA_LLVM", context.temp_allocator) == ""
-    // Its debug info (codeview.odin): the x86 backend's, linked into a PDB.
-    debug := x86
+    // Its debug info, linked into a PDB: the x86 backend's (codeview.odin),
+    // LLVM's (llvm_dbg.odin) but for the web and -release.
+    debug := !args.web && !args.release
     ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, profile = profile, profile_memory = profile_memory, x86 = x86, debug = debug)
     if !ok {
         fmt.printf("Code generation failed for '%s'.\n", args.pkg_name)

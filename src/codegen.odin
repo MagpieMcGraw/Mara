@@ -112,6 +112,8 @@ Codegen :: struct {
     // The x86 backend's object for the module (nil: LLVM's — its text): each
     // function made goes into it (codegen_function).
     x86:         ^X86_Module,
+    // The LLVM text's debug info (llvm_dbg.odin; nil: none).
+    dbg:         ^Llvm_Dbg,
     // Aggregate constants live in read-only tables (codegen_const.odin): the
     // tables this Codegen's functions referenced (symbol -> table).
     const_tables: map[string]Const_Table,
@@ -501,9 +503,13 @@ codegen_function :: proc(g: ^Codegen, head: Ir_Head, code: [][]Ir, entry := true
     }
     codegen_note(g, head, code)
     b := &g.out
-    ir_print_head(b, head)
-    strings.write_string(b, "\nentry:\n" if entry else "\n")
-    for part in code { ir_print_all(b, part) }
+    if g.dbg != nil && dbg != nil && dbg.name != "" && dbg.line > 0 {
+        llvm_dbg_function(g.dbg, b, head, code, entry, dbg)
+    } else {
+        ir_print_head(b, head)
+        strings.write_string(b, "\nentry:\n" if entry else "\n")
+        for part in code { ir_print_all(b, part) }
+    }
     strings.write_string(b, "}\n")
     if gap { strings.write_string(b, "\n") }
 }
