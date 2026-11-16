@@ -1,12 +1,12 @@
 module llvm_crash_trace
 //@ build-flags: -llvm
-//@ expect-output: llvm_crash_trace.mara:28:11 runtime error: index 6 out of bounds [0, 4) for 'xs'
-//@ expect-output: at pick (llvm_crash_trace.mara:28)
-//@ expect-output: at ping (llvm_crash_trace.mara:19)
-//@ expect-output: at pong (llvm_crash_trace.mara:24)
+//@ expect-output: llvm_crash_trace.mara:29:11 runtime error: index 6 out of bounds [0, 4) for 'xs'
+//@ expect-output: at pick (llvm_crash_trace.mara:29)
 //@ expect-output: at ping (llvm_crash_trace.mara:20)
+//@ expect-output: at pong (llvm_crash_trace.mara:25)
+//@ expect-output: at ping (llvm_crash_trace.mara:21)
 //@ expect-output: ... the 2 calls above, 2 more times
-//@ expect-output: at main (llvm_crash_trace.mara:33)
+//@ expect-output: at main (llvm_crash_trace.mara:34)
 //@ expect-exit: 1
 
 // A failure's report in an LLVM build: the calls that were running, named
