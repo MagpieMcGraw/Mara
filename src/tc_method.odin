@@ -126,6 +126,7 @@ tc_method_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
         tc_struct_of(k, qt)
         if st := resolve_to_struct_type(k.c, qt); st != nil {
             if fn, has := st.functions[name]; has && fn != nil {
+                tc_shape_use(k, st, name)
                 qual, resolved = fn, true
                 k.annot.call_names[tc_sid(k, n)] = fn.name
                 args, failed = tc_self_args(k, n, fn, st, qt, arg, args)

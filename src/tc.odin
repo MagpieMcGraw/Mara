@@ -61,6 +61,8 @@ TC :: struct {
     consts:        map[string]^TC_Const,     // the constants, by their symbols (a module's flat name, a body's owner-named)
     const_at:      map[Token_Id]^TC_Const,   // each constant, by the token that declares it (a body's: its latest instance's)
     instances:     map[string]^Type_Scope,   // each generic fun's instances, by mangled name
+    shape_uses:    map[string]^TC_Shape_Uses,   // ... what each fun with `~S` params uses of S, by its shape instance's name
+    shape_now:     ^TC_Shape_Uses,           // ... the one whose body is being checked (nil: none)
     instance_order: [dynamic]string,
     recv:          TC_Recv,           // the call being checked's receiver, checked
     body:          ^Type_Scope,       // the fun or struct whose body is being checked: what its bindings are variables of

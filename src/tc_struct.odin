@@ -140,9 +140,15 @@ tc_field_type :: proc(k: ^TC, n, base: Tree_Id, bt: Type, field: string, span: S
     if sd := tc_struct_of(k, bt); sd != nil && len(sd.fields) > 0 {
         // (Its own field, else one a `using` field's struct has, or its
         // array's swizzle.)
-        if ft := resolve_struct_field(sd, field); ft != nil { return ft, true, 0, false }
+        if ft := resolve_struct_field(sd, field); ft != nil {
+            tc_shape_use(k, sd, field)
+            return ft, true, 0, false
+        }
         // (Its function: a value of its own, tc_field's to build.)
-        if fun, has := sd.functions[field]; has { return fun, false, 0, false }
+        if fun, has := sd.functions[field]; has {
+            tc_shape_use(k, sd, field)
+            return fun, false, 0, false
+        }
         tc_error(k, span, TYPE_CLASS_FIELD, scope_display_name(sd), field)
         return Type_Error{}, false, 0, false
     }
@@ -235,6 +241,7 @@ tc_field_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     }
     ft := resolve_struct_field(sd, field)
     if ft != nil {
+        tc_shape_use(k, sd, field)
         k.hint = ft
         tc_set_type(k, target, ft)
         // (A field, its own or a using field's struct's; else a using array's swizzle.)

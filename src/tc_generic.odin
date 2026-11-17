@@ -226,23 +226,113 @@ tc_infer :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, actual_raw: Type) {
     }
 }
 
-// Each `~S` in a fun param's type as written, checked against what the call
-// bound it to: the type has S's fields and methods (check_shape_constraint).
-tc_shapes_hold :: proc(k: ^TC, n: Tree_Id, subst: TC_Bindings, param: string, span: Span) {
-    if n == 0 { return }
+// What a fun with shaped params (`~S`) uses of each S: the fields and methods
+// its body names of a value of S's type — its own, and what the shaped funs
+// it hands one to use. Found by checking the fun once with each `~S` bound to
+// S itself, its shape instance (`fun`): what's wrong in its body is said
+// there, once, whatever it's later called with. A type given for S needs
+// these, and no more of S.
+TC_Shape_Uses :: struct {
+    fun:    ^Type_Scope,
+    broken: bool,                       // its body didn't check: said there; no other instance is made to say it again
+    shapes: [dynamic]^Type_Scope,       // each `~S`'s S, once
+    names:  [dynamic][dynamic]string,   // ... what's used of it
+}
+
+// A fun's `~S`s as written, in its params' order: each one's `~` (the token
+// that declares its type param), its S, and the param it's in.
+TC_Tilde :: struct {
+    decl:  Token_Id,
+    shape: ^Type_Scope,   // nil: its name is no struct's
+    name:  Token_Id,
+    param: string,
+}
+
+tc_tildes :: proc(k: ^TC, node: Tree_Id) -> []TC_Tilde {
     t := k.t
-    #partial switch t.tag[n] {
-    case .Type_Tilde:
-        bound := subst[t.main[n]] or_else nil
-        if bound == nil { return }
-        shape_tok := Token_Id(t.a[n])
-        shape, _ := tc_ref_type(k, k.names.token_refs[shape_tok] or_else {}, tc_text(shape_tok))
-        check_shape_constraint(k.c, param, tc_text(shape_tok), shape.(^Type_Scope) or_else nil, bound, span, fields = true)
-    case .Type_Pointer, .Type_Paren:
-        tc_shapes_hold(k, Tree_Id(t.a[n]), subst, param, span)
-    case .Type_Slice, .Type_Partial, .Type_Array:
-        tc_shapes_hold(k, Tree_Id(t.b[n]), subst, param, span)
+    out := make([dynamic]TC_Tilde, context.temp_allocator)
+    walk :: proc(k: ^TC, n: Tree_Id, param: string, out: ^[dynamic]TC_Tilde) {
+        if n == 0 { return }
+        t := k.t
+        #partial switch t.tag[n] {
+        case .Type_Tilde:
+            name := Token_Id(t.a[n])
+            shape, _ := tc_ref_type(k, k.names.token_refs[name] or_else {}, tc_text(name))
+            st, _ := shape.(^Type_Scope)
+            if st != nil && st.kind != .Struct { st = nil }
+            if st != nil { tc_struct_ensure(k, st) }
+            append(out, TC_Tilde{t.main[n], st, name, param})
+        case .Type_Pointer, .Type_Paren:
+            walk(k, Tree_Id(t.a[n]), param, out)
+        case .Type_Slice, .Type_Partial, .Type_Array:
+            walk(k, Tree_Id(t.b[n]), param, out)
+        }
     }
+    for g in scope_view(t, node).params {
+        pv := params_view(t, g)
+        if len(pv.names) > 0 { walk(k, pv.type_, tc_text(pv.names[0]), &out) }
+    }
+    return out[:]
+}
+
+// A field or a method named of a struct's value, in a body: one more thing
+// the fun uses of that shape, when the body is a shape instance's (or a fun's
+// defined in it) and the struct one of its shapes.
+tc_shape_use :: proc(k: ^TC, sd: ^Scope_Body, name: string) {
+    u := k.shape_now
+    if u == nil || k.body == nil || (k.body != u.fun && k.body.parent_scope != u.fun) { return }
+    st := sd_type_scope(sd)
+    for s, i in u.shapes {
+        if s != st { continue }
+        for have in u.names[i] { if have == name { return } }
+        append(&u.names[i], name)
+        return
+    }
+}
+
+// A call of a fun with shaped params: each type it bound a `~S` to has what
+// the fun uses of S (check_shape_uses). The fun's shape instance is made
+// first, when this is its first call. A type that is itself a shape of the
+// body this call is in: what this fun uses of it, that body uses too.
+// False: one hasn't, said.
+tc_shapes_hold :: proc(k: ^TC, name: string, tmpl: TC_Template, subst: TC_Bindings, span: Span) -> bool {
+    tildes := tc_tildes(k, tmpl.node)
+    if len(tildes) == 0 { return true }
+    errors := k.c.errors
+    whole := true
+    for td in tildes {
+        if td.shape == nil {
+            check_error(k.c, span, TYPE_SHAPE_CONSTRAINT_GENERIC_PARAMETER_COULD, tc_text(td.name), td.param)
+            whole = false
+        }
+    }
+    if !whole { return false }
+    of_shapes: TC_Bindings
+    for decl, bound in subst { of_shapes[decl] = bound }
+    for td in tildes { of_shapes[td.decl] = td.shape }
+    type_args := make([dynamic]Type, context.temp_allocator)
+    for p in tc_generic_params(k, tmpl.node) { append(&type_args, of_shapes[p]) }
+    mangled := tc_instance_name(k, tmpl, name, type_args[:])
+    if mangled not_in k.instances { tc_instantiate_fun(k, tmpl, of_shapes, mangled) }
+    uses := k.shape_uses[mangled] or_else nil
+    if uses == nil { return true }
+    if uses.broken { return false }
+    errors = k.c.errors
+    now := k.shape_now
+    for td in tildes {
+        bound := subst[td.decl] or_else nil
+        if bound == nil { continue }
+        used: []string
+        for s, i in uses.shapes { if s == td.shape { used = uses.names[i][:] } }
+        if st, is_struct := distinct_base(bound).(^Type_Scope); is_struct {
+            tc_struct_ensure(k, st)
+            if now != nil && k.body != nil && (k.body == now.fun || k.body.parent_scope == now.fun) {
+                for name in used { tc_shape_use(k, &st.sd, name) }
+            }
+        }
+        check_shape_uses(k.c, td.param, tc_text(td.name), td.shape, bound, used, span)
+    }
+    return k.c.errors == errors
 }
 
 // An array's size written `$N`, given the size of the array passed: N bound
@@ -333,16 +423,9 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
             return Type_Error{}
         }
     }
-    // (A shape's argument has what the shape has — `things: []~Entity`: said
-    // at the call, no instance made of one that hasn't.)
-    {
-        errors := k.c.errors
-        for g in v.params {
-            pv := params_view(tr, g)
-            if len(pv.names) > 0 { tc_shapes_hold(k, pv.type_, subst, tc_text(pv.names[0]), span) }
-        }
-        if k.c.errors != errors { return Type_Error{} }
-    }
+    // (A shape's argument has what the fun uses of the shape — `things:
+    // []~Entity`: said at the call, no instance made of one that hasn't.)
+    if !tc_shapes_hold(k, name, tmpl, subst, span) { return Type_Error{} }
     type_args := make([dynamic]Type, context.temp_allocator)
     for p in params { append(&type_args, subst[p]) }
     mangled := tc_instance_name(k, tmpl, name, type_args[:])
@@ -459,7 +542,29 @@ tc_instantiate_fun :: proc(k: ^TC, tmpl: TC_Template, subst: TC_Bindings, mangle
     k.scope_of[ft] = len(k.scopes)
     sc := new_clone(TC_Scope{ts = ft, def = tmpl.def, node = tmpl.node, subst = subst, synthetic = true})
     append(&k.scopes, sc)
+    // (Its shape instance — each `~S` bound to S itself: what its body uses
+    // of each S noted as it's checked, tc_shape_use.)
+    outer_uses := k.shape_now
+    k.shape_now = nil
+    defer k.shape_now = outer_uses
+    if tildes := tc_tildes(k, tmpl.node); len(tildes) > 0 {
+        of_shapes := true
+        for td in tildes { of_shapes &&= td.shape != nil && subst[td.decl] == Type(td.shape) }
+        if of_shapes {
+            u := new(TC_Shape_Uses)
+            u.fun = ft
+            for td in tildes {
+                seen := false
+                for s in u.shapes { seen ||= s == td.shape }
+                if !seen { append(&u.shapes, td.shape); append(&u.names, make([dynamic]string)) }
+            }
+            k.shape_uses[mangled] = u
+            k.shape_now = u
+        }
+    }
+    errors := k.c.errors
     tc_scope_body(k, sc)
+    if k.shape_now != nil { k.shape_now.broken = k.c.errors != errors }
     // (Its own funs, for codegen: extracted as a fun's are.)
     tc_extract(k, sc.nested[:], tmpl.pkg, false, nested = true)
     return ft

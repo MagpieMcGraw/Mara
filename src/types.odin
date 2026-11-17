@@ -1807,11 +1807,11 @@ self_equivalent :: proc(ct_type, arg_type: Type, ct_self, arg_self: ^Type_Scope)
 //   - each shared method's signature is equivalent under Self substitution
 //     (param count + param types + return type, treating the receiver and
 //     any other Self occurrences as positionally compatible).
-// Its size is its own: what's made is the concrete type. So are its fields —
-// but `fields` (a fun param's `~S`): then it has each of the constraint's
-// too, by name, of the same type; where in it, and what else it has, its own.
+// Its fields and its size are its own: what's made is the concrete type.
 // Each shortcoming surfaces as its own diagnostic at `span`.
-check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string, ct: ^Type_Scope, arg: Type, span: Span, fields := false) {
+// (A struct param's shape, and #allocator's. A fun param's `~S` asks for what
+// the fun uses: check_shape_uses.)
+check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string, ct: ^Type_Scope, arg: Type, span: Span) {
     // `void` is the universal subtype for shape constraints — used as the
     // default type-arg when the user writes `p : Program` (no arena).
     // Trivially satisfies any `~T` requirement (no API to miss, zero size
@@ -1835,77 +1835,102 @@ check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string,
         return
     }
     shown := arg_scope.source_name if arg_scope.source_name != "" else arg_scope.name   // (as written, not its flat name)
-    if arg_scope == ct { return }   // (the shape itself)
-    if fields {
-        for f in ct.fields {
-            found := false
-            for af in arg_scope.fields {
-                if af.name != f.name { continue }
-                found = true
-                if !self_equivalent(f.type_, af.type_, ct, arg_scope) {
-                    check_error(c, span, TYPE_TYPE_SATISFY_FIELD_TYPE, shown, constraint_name, f.name, type_name(f.type_), type_name(af.type_))
-                }
-                break
-            }
-            if !found { check_error(c, span, TYPE_TYPE_SATISFY_MISSING_FIELD, shown, constraint_name, f.name, type_name(f.type_)) }
+    for fn_name in ct.functions { check_shape_method(c, shown, constraint_name, ct, arg_scope, fn_name, span) }
+}
+
+// One of a shape's methods, had by the type given for it: by name, its
+// signature the shape's under Self substitution — more params only with
+// defaults.
+check_shape_method :: proc(c: ^Checker, shown, constraint_name: string, ct, arg_scope: ^Type_Scope, fn_name: string, span: Span) {
+    ct_fn := ct.functions[fn_name]
+    arg_fn, arg_has := arg_scope.functions[fn_name]
+    if !arg_has || arg_fn == nil {
+        check_error(c, span,
+            TYPE_TYPE_SATISFY_MISSING_METHOD,
+            shown, constraint_name, fn_name)
+        return
+    }
+    // Extra trailing params on the concrete are fine — provided they
+    // all have defaults. A caller using the constraint's signature
+    // omits them, and Mara's default-arg lowering fills them in.
+    // Fewer params, or extras without defaults, breaks the API.
+    if len(arg_fn.params) < len(ct_fn.params) {
+        check_error(c, span,
+            TYPE_TYPE_SATISFY_METHOD_EXPECTS_LEAST,
+            shown, constraint_name, fn_name, len(ct_fn.params), len(arg_fn.params))
+        return
+    }
+    extras_ok := true
+    for i in len(ct_fn.params)..<len(arg_fn.params) {
+        if !field_has_default(arg_fn.params[i]) {
+            check_error(c, span,
+                TYPE_TYPE_SATISFY_METHOD_EXTRA_PARAM,
+                shown, constraint_name, fn_name, arg_fn.params[i].name)
+            extras_ok = false
         }
     }
-    for fn_name, ct_fn in ct.functions {
-        arg_fn, arg_has := arg_scope.functions[fn_name]
-        if !arg_has || arg_fn == nil {
+    if !extras_ok { return }
+    for i in 0..<len(ct_fn.params) {
+        ct_p  := ct_fn.params[i].type_
+        arg_p := arg_fn.params[i].type_
+        if !self_equivalent(ct_p, arg_p, ct, arg_scope) {
             check_error(c, span,
-                TYPE_TYPE_SATISFY_MISSING_METHOD,
-                shown, constraint_name, fn_name)
+                TYPE_TYPE_SATISFY_METHOD_PARAM_EXPECTED,
+                shown, constraint_name, fn_name,
+                ct_fn.params[i].name, type_name(ct_p), type_name(arg_p))
+        }
+    }
+    // Return-type compatibility. Same arity, each Self-equivalent.
+    // Void (empty list) matches void.
+    ret_mismatch := len(ct_fn.return_types) != len(arg_fn.return_types)
+    if !ret_mismatch {
+        for ct_ret, i in ct_fn.return_types {
+            arg_ret := arg_fn.return_types[i]
+            if !self_equivalent(ct_ret, arg_ret, ct, arg_scope) {
+                ret_mismatch = true
+                break
+            }
+        }
+    }
+    if ret_mismatch {
+        ct_ret  := fn_primary_return(ct_fn)
+        arg_ret := fn_primary_return(arg_fn)
+        check_error(c, span,
+            TYPE_TYPE_SATISFY_METHOD_EXPECTED_RETURN,
+            shown, constraint_name, fn_name, type_name(ct_ret), type_name(arg_ret))
+    }
+}
+
+// A fun param's `~S`, at a call: the type given for it has what the fun's
+// body uses of S (`names`: tc_shape_use) — each field by name, of the same
+// type; each method, as check_shape_method has it. Where a field is in it,
+// and what else it has, its own; what of S's the body doesn't name, it
+// needn't have.
+check_shape_uses :: proc(c: ^Checker, param_name, constraint_name: string, ct: ^Type_Scope, arg: Type, names: []string, span: Span) {
+    if ct == nil {
+        check_error(c, span, TYPE_SHAPE_CONSTRAINT_GENERIC_PARAMETER_COULD, constraint_name, param_name)
+        return
+    }
+    arg_scope, arg_ok := distinct_base(arg).(^Type_Scope)
+    if !arg_ok || arg_scope.kind != .Struct {
+        check_error(c, span, TYPE_GENERIC_ARGUMENT_CONCRETE_STRUCT_CLASS, param_name, constraint_name, type_name(arg))
+        return
+    }
+    if arg_scope == ct { return }   // (the shape itself)
+    shown := arg_scope.source_name if arg_scope.source_name != "" else arg_scope.name
+    for name in names {
+        if fn, is_method := ct.functions[name]; is_method && fn != nil {
+            check_shape_method(c, shown, constraint_name, ct, arg_scope, name, span)
             continue
         }
-        // Extra trailing params on the concrete are fine — provided they
-        // all have defaults. A caller using the constraint's signature
-        // omits them, and Mara's default-arg lowering fills them in.
-        // Fewer params, or extras without defaults, breaks the API.
-        if len(arg_fn.params) < len(ct_fn.params) {
-            check_error(c, span,
-                TYPE_TYPE_SATISFY_METHOD_EXPECTS_LEAST,
-                shown, constraint_name, fn_name, len(ct_fn.params), len(arg_fn.params))
-            continue
-        }
-        extras_ok := true
-        for i in len(ct_fn.params)..<len(arg_fn.params) {
-            if !field_has_default(arg_fn.params[i]) {
-                check_error(c, span,
-                    TYPE_TYPE_SATISFY_METHOD_EXTRA_PARAM,
-                    shown, constraint_name, fn_name, arg_fn.params[i].name)
-                extras_ok = false
-            }
-        }
-        if !extras_ok { continue }
-        for i in 0..<len(ct_fn.params) {
-            ct_p  := ct_fn.params[i].type_
-            arg_p := arg_fn.params[i].type_
-            if !self_equivalent(ct_p, arg_p, ct, arg_scope) {
-                check_error(c, span,
-                    TYPE_TYPE_SATISFY_METHOD_PARAM_EXPECTED,
-                    shown, constraint_name, fn_name,
-                    ct_fn.params[i].name, type_name(ct_p), type_name(arg_p))
-            }
-        }
-        // Return-type compatibility. Same arity, each Self-equivalent.
-        // Void (empty list) matches void.
-        ret_mismatch := len(ct_fn.return_types) != len(arg_fn.return_types)
-        if !ret_mismatch {
-            for ct_ret, i in ct_fn.return_types {
-                arg_ret := arg_fn.return_types[i]
-                if !self_equivalent(ct_ret, arg_ret, ct, arg_scope) {
-                    ret_mismatch = true
-                    break
-                }
-            }
-        }
-        if ret_mismatch {
-            ct_ret  := fn_primary_return(ct_fn)
-            arg_ret := fn_primary_return(arg_fn)
-            check_error(c, span,
-                TYPE_TYPE_SATISFY_METHOD_EXPECTED_RETURN,
-                shown, constraint_name, fn_name, type_name(ct_ret), type_name(arg_ret))
+        want := resolve_struct_field(&ct.sd, name)
+        if want == nil { continue }
+        got := resolve_struct_field(&arg_scope.sd, name)
+        switch {
+        case got == nil:
+            check_error(c, span, TYPE_TYPE_SATISFY_MISSING_FIELD, shown, constraint_name, name, type_name(want), param_name)
+        case !self_equivalent(want, got, ct, arg_scope):
+            check_error(c, span, TYPE_TYPE_SATISFY_FIELD_TYPE, shown, constraint_name, name, type_name(want), type_name(got), param_name)
         }
     }
 }
