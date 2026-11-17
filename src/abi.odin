@@ -8,7 +8,8 @@ import "core:strings"
 // Win64. (A Mara function takes its aggregates by address and returns them
 // through a hidden slot on every platform: the emitter's own rule.)
 //
-// classify is the entry point: pure, over `Type`.
+// classify lowers one type on its own; classify_args a function's arguments
+// together, as C counts them. Both pure, over `Type`.
 // =============================================================================
 
 // A function's convention: Mara's, or C's (a foreign one's).
@@ -33,7 +34,12 @@ Lowering_Direct :: struct {
     // small aggregates) but can be 2 for SysV when an aggregate spans
     // two eightbytes.
     parts: [dynamic]Ir_Type,
+    // An argument narrower than 32 bits, widened to them by its sign before
+    // the call (classify_args): its one part is i32.
+    widen: Abi_Widen,
 }
+
+Abi_Widen :: enum u8 { None, Sign, Zero }
 
 Lowering_Indirect :: struct {
     // Carries no extra data; the IR shape is always `ptr` to the
@@ -54,6 +60,53 @@ classify :: proc(t: Type, os: Target_OS) -> Lowering {
     case .Windows: return classify_win64(t)
     }
     return Lowering_Direct{}
+}
+
+// A foreign function's arguments, each one's lowering, as C counts them;
+// `result` what C returns (nil: nothing). On Windows each is classify's. On
+// System V two things depend on more than the argument's own type:
+//   - The registers run out: six for integers and pointers (one fewer when
+//     the result comes back through a hidden pointer, which takes the first),
+//     eight for floats, counted left to right. A struct goes in registers
+//     whole or not at all: one that doesn't fit in what's left goes in memory
+//     — a copy on the stack (byval) — and takes none, so a later argument
+//     still may.
+//   - An integer narrower than 32 bits (a bool too) is widened to 32 by its
+//     sign: C code built by clang reads it as widened already.
+classify_args :: proc(cs: ^Type_Scope, result: Type, os: Target_OS) -> []Lowering {
+    out := make([]Lowering, len(cs.params), context.temp_allocator)
+    ints, floats := 0, 0
+    if result != nil {
+        if _, hidden := classify(result, os).(Lowering_Indirect); hidden { ints = 1 }
+    }
+    for _, i in cs.params {
+        t := fn_param(cs, i).type_
+        out[i] = classify(t, os)
+        d, direct := out[i].(Lowering_Direct)
+        if os == .Windows || !direct || len(d.parts) == 0 { continue }
+        ni, nf := 0, 0
+        for part in d.parts {
+            #partial switch ir_type_info(part).kind {
+            case .Half, .Float, .Double, .Vector: nf += 1
+            case:                                 ni += 1
+            }
+        }
+        if llvm_aggregate(t) {
+            if ints + ni > 6 || floats + nf > 8 {
+                out[i] = Lowering_Indirect{}
+            } else {
+                ints, floats = ints + ni, floats + nf
+            }
+            continue
+        }
+        ints, floats = min(6, ints + ni), min(8, floats + nf)
+        if info := ir_type_info(d.parts[0]); info.kind == .Int && info.n < 32 {
+            d.widen = .Zero if info.n == 1 || llvm_unsigned(t) else .Sign
+            d.parts[0] = IR_I32
+            out[i] = d
+        }
+    }
+    return out
 }
 
 // -----------------------------------------------------------------------------
@@ -315,6 +368,7 @@ direct_single :: proc(ir: Ir_Type) -> Lowering {
 //   - Arg Direct[1 part]      → `<part>` (one positional arg)
 //   - Arg Direct[2 parts]     → `<p0>, <p1>` (two positional args)
 //   - Arg Indirect            → `ptr byval(<argty>)` (caller-allocated copy)
+// (The arguments together, as C counts them: classify_args.)
 build_c_declare :: proc(cs: ^Type_Scope, link_name: string, os: Target_OS) -> string {
     parts: [dynamic]string
     defer delete(parts)
@@ -337,10 +391,10 @@ build_c_declare :: proc(cs: ^Type_Scope, link_name: string, os: Target_OS) -> st
     }
 
     // Argument lowering.
+    lows := classify_args(cs, nil if has_void_return else ret_single, os)
     for _, pi in cs.params {
         p := fn_param(cs, pi)
-        plow := classify(p.type_, os)
-        switch pp in plow {
+        switch pp in lows[pi] {
         case Lowering_Direct:
             for part in pp.parts {
                 append(&parts, ir_type_text(part))

@@ -28,17 +28,44 @@ tc_register_foreign :: proc(k: ^TC, s: Tree_Id, owner: string) {
             for pn in pv.names {
                 pt := tc_type(k, pv.type_, span)
                 if foreign_header_type(pt) { tc_error(k, token_span(build_tokens[pn]), TYPE_FOREIGN_HEADER_TYPE, name, fmt.tprintf("param '%s'", tc_text(pn)), type_name(pt)) }
+                if what := foreign_fun_by_value(pt); what != "" { tc_error(k, token_span(build_tokens[pn]), TYPE_FOREIGN_FUN_BY_VALUE, name, fmt.tprintf("param '%s'", tc_text(pn)), what) }
                 append(&ft.params, Struct_Type_Field{name = tc_text(pn), decl = pn, type_ = pt})
             }
         }
         for r in v.returns {
             rt := tc_type(k, r, span)
             if foreign_header_type(rt) { tc_error(k, span, TYPE_FOREIGN_HEADER_TYPE, name, "result", type_name(rt)) }
+            if what := foreign_fun_by_value(rt); what != "" { tc_error(k, span, TYPE_FOREIGN_FUN_BY_VALUE, name, "result", what) }
             append(&ft.return_types, rt)
         }
         ft.decl = v.name
         tc_bound_set(k, ft.decl, ft)
     }
+}
+
+// A fun C calls — a fun type among a foreign fun's params, or its result —
+// that Mara's own convention doesn't make C's: what it has that the two pass
+// differently, "" when nothing. Mara takes a struct, an array or a union by
+// its address and gives one back, or several results, through hidden
+// pointers; C takes and gives small ones in registers.
+foreign_fun_by_value :: proc(t: Type) -> string {
+    f, is_scope := distinct_base(t).(^Type_Scope)
+    if !is_scope || f.kind != .Fun { return "" }
+    by_value :: proc(t: Type) -> bool {
+        #partial switch v in distinct_base(t) {
+        case ^Type_Scope:       return v.kind != .Fun
+        case ^Type_Fixed_Array, ^Type_Union, ^Type_Slice, ^Type_Partial_Array: return true
+        }
+        return false
+    }
+    for _, i in f.params {
+        if p := fn_param(f, i).type_; by_value(p) { return fmt.tprintf("a param of type %s, by value", type_name(p)) }
+    }
+    if fn_result_count(f) > 1 { return "more than one result" }
+    if fn_result_count(f) == 1 {
+        if r := fn_result(f, 0); by_value(r) { return fmt.tprintf("a result of type %s, by value", type_name(r)) }
+    }
+    return ""
 }
 
 // A type C can't be handed as it is: Mara's own record of items — a list (its

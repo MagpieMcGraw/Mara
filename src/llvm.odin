@@ -3062,8 +3062,9 @@ llvm_err_runtime :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Sc
 
 // A call to a foreign (C) function, by the platform's C ABI (abi.odin): each
 // argument by its lowering — a register value as itself (text for a cstring
-// its bytes' address), an aggregate in registers loaded in 8-byte parts from
-// where it is, or by address (byval) — and the result returned (an aggregate
+// its bytes' address; a narrow integer widened, on System V), an aggregate in
+// registers loaded in 8-byte parts from where it is, or by address (byval) —
+// and the result returned (an aggregate
 // in parts put back together in a temporary) or written to a hidden slot.
 @(private="file")
 llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, name: string) -> bool {
@@ -3094,6 +3095,7 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
             append(&args, Ir_Arg{ty = ir_ptr_attr("sret", llvm_type_from_checker(result)), v = slot})
         }
     }
+    lows := classify_args(callee, result, os)
     for _, i in callee.params {
         p := fn_param(callee, i)
         pt := p.type_
@@ -3110,7 +3112,7 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
             }
             if !ok { e.note = fmt.tprintf("argument '%s'", p.name); return false }
         }
-        switch pl in classify(pt, os) {
+        switch pl in lows[i] {
         case Lowering_Direct:
             if llvm_aggregate(pt) {
                 for part, k in pl.parts {
@@ -3126,6 +3128,11 @@ llvm_c_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Scope, 
                 continue
             }
             if pl.parts[0] == IR_PTR && v.kind == .Int && v.n == 0 { v = IR_NULL }
+            if pl.widen != .None {
+                wide := fresh_tmp(g)
+                ir_cast(g, wide, Ir_Inst.Zext if pl.widen == .Zero else .Sext, llvm_type_from_checker(pt), v, pl.parts[0])
+                v = wide
+            }
             append(&args, Ir_Arg{ty = pl.parts[0], v = v})
         case Lowering_Indirect:
             append(&args, Ir_Arg{ty = ir_ptr_attr("byval", llvm_type_from_checker(pt)), v = v})
