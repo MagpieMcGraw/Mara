@@ -1518,14 +1518,15 @@ DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
 
   -reload — what the window's Docs panel shows, looked up again: the files
   read again, its scroll kept (its reload button, F5).`
-EDITOR_USAGE :: `Usage: mara editor <program>
+EDITOR_USAGE :: `Usage: mara editor <program> [<word> ...]
 
   Tells the windows this compiler opens (mara view) the editor to open a
-  file in: '<program> <file>:<line>' opens the file at the line, as
-  Sublime Text's subl does. A window's Crash panel opens the calls it
-  shows so, clicked. The window that answers docs keeps it beside its
-  program, for every window after. Sublime's Mara Ask plugin tells them
-  its subl. Fails when no window is open.`
+  file in: '<program> <word>... <file>:<line>' opens the file at the line —
+  Sublime Text's subl takes no words, VS Code's Code.exe -g. A window's
+  Crash, Ask and Docs panels open what they show so, clicked. The window
+  that answers docs keeps it beside its program, for every window after.
+  The Sublime and VS Code plugins tell them their editor. Fails when no
+  window is open.`
 COLORS_USAGE :: `Usage: mara colors <name>=#rrggbb ...
 
   Tells the windows this compiler opens (mara view) an editor's colors, for
@@ -1842,11 +1843,12 @@ parse_args :: proc() -> CLI_Args {
 
     // `mara editor <program>` — the windows told the editor (EDITOR_USAGE).
     if subcmd == "editor" {
-        if len(positional) != 3 || is_help_flag(positional[2]) {
+        if len(positional) < 3 || is_help_flag(positional[2]) {
             fmt.println(EDITOR_USAGE)
             os.exit(0 if len(positional) >= 3 else 1)
         }
-        args.editor = positional[2]
+        // (The program and the words it takes before the place, tab apart.)
+        args.editor = strings.join(positional[2:], "\t")
         args.ok = true
         return args
     }

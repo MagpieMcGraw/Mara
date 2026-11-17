@@ -104,7 +104,7 @@ crash_status :: fun(ui: ^Ui) {
 		ui.crash.status.len = 0
 		return
 	}
-	lines_status(&ui.crash, "Calls open in the editor once it's named: Sublime's Mara Ask plugin names its own (mara editor).", STYLE_DIM)
+	lines_status(&ui.crash, "Calls open in the editor once it's named: the Sublime and VS Code plugins name theirs (mara editor).", STYLE_DIM)
 }
 
 // Line k's call, as its file and its line — `  at <name> (<file>:<line>)` —
@@ -166,19 +166,27 @@ crash_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 	editor_open(ui, &ui.crash, full, line)
 }
 
-// A file opened in the editor at a line — `"<editor>" "<file>:<line>"`,
-// waited for (it hands the file to the editor and ends). No editor named
-// yet, or one that didn't start: said on l's status line.
+// A file opened in the editor at a line — `"<editor>" "<word>"… "<file>:<line>"`,
+// the program and its words as `mara editor` named them (tab apart) — waited
+// for (it hands the file to the editor and ends). No editor named yet, or one
+// that didn't start: said on l's status line.
 editor_open :: fun(ui: ^Ui, l: ^Lines, file: []utf8, line: i64) {
 	editor_load(ui)
 	if ui.editor.len == 0 {
-		lines_status(l, "Files open in the editor once it's named: Sublime's Mara Ask plugin names its own (mara editor).", STYLE_DIM)
+		lines_status(l, "Files open in the editor once it's named: the Sublime and VS Code plugins name theirs (mara editor).", STYLE_DIM)
 		return
 	}
 	command : [3000]utf8
+	rest : []utf8 = ui.editor
+	for rest.len > 0 {
+		word, after, more := cut(rest, '\t')
+		&command ++ "\""
+		&command ++ word
+		&command ++ "\" "
+		if not more do break
+		rest = after
+	}
 	&command ++ "\""
-	&command ++ ui.editor
-	&command ++ "\" \""
 	&command ++ file
 	&command ++ ":"
 	&command ++ int_text(line)

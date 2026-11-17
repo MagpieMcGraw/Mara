@@ -103,7 +103,7 @@ Ui :: struct {
 	sel_to:     Spot
 	sel_scrolled: u32        // when it last scrolled the lines (GetTicks)
 	clip:       [2 * MB]utf8
-	editor:      [1000]utf8    // the editor a call opens in: `"<editor>" "<file>:<line>"`
+	editor:      [1000]utf8    // the editor a call opens in, and its words: `"<editor>" "<word>"… "<file>:<line>"`
 
 	// The theme's colors (theme.mara: theme_set).
 	theme:      i64     // THEME_DARK, _LIGHT, _SUBLIME
