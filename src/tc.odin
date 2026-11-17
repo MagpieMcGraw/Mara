@@ -978,7 +978,19 @@ tc_open_binding :: proc(t: Type) -> bool {
 tc_pin_default :: proc(k: ^TC, t: Type, span: Span) -> Type {
     w := solidify_type(t)
     if tc_open_binding(t) { unify_infer_concrete(k.c, infer_cell_of(t), w, span) }
+    if cell := infer_array_open(t); cell != nil { unify_infer_array(k.c, cell, w, span) }
+    tc_pin_elems(k, t, w, span)
     return w
+}
+
+// An array of an array binding's elements, `[v[0], v[1]]` (vt), stored at
+// `final`'s width: a use of theirs, the binding's elements that width too.
+tc_pin_elems :: proc(k: ^TC, vt, final: Type, span: Span) {
+    fa, is_fixed := vt.(^Type_Fixed_Array)
+    if !is_fixed { return }
+    cell := infer_cell_of(fa.elem)
+    if cell == nil || cell.whole == nil { return }
+    if ff, ok := distinct_base(final).(^Type_Fixed_Array); ok { unify_infer_concrete(k.c, cell, ff.elem, span) }
 }
 
 // A param's type: as written; else its default's — a whole number's width

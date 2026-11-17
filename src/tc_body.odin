@@ -351,7 +351,7 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id) {
         case:
             if tc_is_distinct(ann) { to_array = false }
         }
-        if to_array && flow == .None {
+        if to_array && flow == .None && !coerce_deferred(k.c, vt, ann, span) {
             // (A fixed array: its elements', and room for them.)
             tc_array_assign(k, span, name, fa, vt, value)
         } else if flow == .None && !coerce_deferred(k.c, vt, ann, span) && types_incompatible(ann, vt) {
@@ -373,8 +373,14 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id) {
         } else {
             final = Type_Infer_Int{cell = cell}
         }
+    } else if infer_array_open(vt) != nil {
+        final = vt   // (`d := v`, v an array binding of no type yet: one type, both)
+    } else if size, float, numbers := tc_literal_numbers(k, ref.decl, value, vt); numbers {
+        // (`v := [0, -1, 0]`: the fixed array its uses give it, a type of its own too.)
+        final = infer_array_new(name, span, size, float)
     } else {
         final = solidify_type(vt)
+        tc_pin_elems(k, vt, final, span)
         // (`x := [a, b, c]` whose len its fun sets: a list, as `x : [3]T = …` is.)
         if fa, is_fixed := final.(^Type_Fixed_Array); is_fixed && fa.index_type == nil && tc_literal_grows(k, ref.decl, value) {
             final = type_partial_array(fa.size, fa.elem)
@@ -389,6 +395,17 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id) {
     tc_set_type(k, target, final)   // (the name declared: its type)
     tc_settle(k, value, final)
     tc_note_decl(k, name, final, span, k.t.tag[tc_unparen(k, value)] == .Take)
+}
+
+// Whether `v := [a, b, …]` (decl: v; value: the literal, vt its type) in a
+// fun's body is numbers no use has given a width, and no list
+// (tc_literal_grows): its length, whether a fraction's among them.
+tc_literal_numbers :: proc(k: ^TC, decl: Token_Id, value: Tree_Id, vt: Type) -> (size: int, float: bool, ok: bool) {
+    if k.t.tag[tc_unparen(k, value)] != .Array || k.body == nil || k.body.kind != .Fun { return }
+    fa, is_fixed := vt.(^Type_Fixed_Array)
+    if !is_fixed || fa.size == 0 || fa.index_type != nil || !tc_open(fa.elem) || tc_literal_grows(k, decl, value) { return }
+    _, float = fa.elem.(Type_Infer_Float)
+    return fa.size, float, true
 }
 
 // Whether `x := [a, b, …]` (decl: x; value: the literal) is a list: its fun

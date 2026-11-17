@@ -335,6 +335,7 @@ tc_unary :: proc(k: ^TC, n: Tree_Id, of := Tree_Id(0)) -> Type {
             if callee := tc_unary_overload(k, ot, tr.main[n]); callee != nil {
                 tc_set_callee(k, n, callee)
                 tc_set_args(k, n, {{operand, .Written, -1}})
+                tc_flow_use(k, ot, callee.params[0].type_, span)
                 tc_settle(k, operand, callee.params[0].type_)
                 return fn_primary_return(callee)
             }
@@ -578,6 +579,9 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         if callee, found := tc_operator_overload(k, op, lt, rt, span); found {
             tc_set_callee(k, at, callee)
             tc_set_args(k, at, {{left, .Written, -1}, {right, .Written, -1}})
+            // (Each operand a use of a binding's width, its type: the param's.)
+            tc_flow_use(k, lt, callee.params[0].type_, span)
+            tc_flow_use(k, rt, callee.params[1].type_, span)
             tc_settle(k, left, callee.params[0].type_)
             tc_settle(k, right, callee.params[1].type_)
             return fn_primary_return(callee)
@@ -1041,9 +1045,9 @@ tc_value_at :: proc(k: ^TC, n: Tree_Id, vt, t: Type, span: Span) {
 // already (an array literal's element, say).
 tc_flow_use :: proc(k: ^TC, vt, t: Type, span: Span) {
     if coerce_deferred_pointee(k.c, vt, t, span) { return }
-    if infer_cell_of(vt) != nil {
+    if infer_cell_of(vt) != nil || infer_array_cell(vt) != nil {
         _ = coerce_deferred(k.c, vt, t, span)
-    } else if infer_cell_of(t) != nil && !is_infer(resolve_infer(vt)) {
+    } else if (infer_cell_of(t) != nil || infer_array_cell(t) != nil) && !is_infer(resolve_infer(vt)) {
         _ = coerce_deferred(k.c, t, vt, span)
     }
 }

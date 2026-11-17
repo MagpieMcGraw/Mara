@@ -78,7 +78,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member,
                 if !field_has_default(ft.params[i]) { continue candidates }
                 continue
             }
-            if arg_incompatible(ft.params[i].type_, at) { continue candidates }
+            if !infer_array_fits(at, ft.params[i].type_) && arg_incompatible(ft.params[i].type_, at) { continue candidates }
             // (A binding of no width yet fits a param of its kind only: a whole
             // number's no float.)
             if tc_open_binding(at) && !tc_binding_kind_fits(at, ft.params[i].type_) { continue candidates }
@@ -126,6 +126,7 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member,
         if cell := infer_cell_of(at); cell != nil && tc_binding_kind_fits(at, ft.params[i].type_) {
             unify_infer_concrete(k.c, cell, ft.params[i].type_, span)
         }
+        if cell := infer_array_open(at); cell != nil { unify_infer_array(k.c, cell, ft.params[i].type_, span) }
     }
     tc_set_callee(k, n, ft)
     tc_set_ref(k, n, {ft.decl, .Fun})
@@ -169,7 +170,7 @@ tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, span: Span) -
             if found, ok := tc_ref_type(k, m.ref, f); ok {
                 ft, is_scope := found.(^Type_Scope)
                 if !is_scope || len(ft.params) != 2 { continue }
-                if arg_incompatible(ft.params[0].type_, lt) || arg_incompatible(ft.params[1].type_, rt) { continue }
+                if !tc_operand_fits(ft.params[0].type_, lt) || !tc_operand_fits(ft.params[1].type_, rt) { continue }
                 score := 3 if types_name_equal(ft.params[0].type_, lt) && types_name_equal(ft.params[1].type_, rt) else 2
                 if score > best_score {
                     actual := [2]Type{lt, rt}
@@ -182,10 +183,13 @@ tc_operator_overload :: proc(k: ^TC, op: Token_Kind, lt, rt: Type, span: Span) -
                 continue
             }
             // (A generic member is instantiated whether or not a better fit is
-            // found: its instance exists.)
+            // found: its instance exists. An array binding's operand: as it
+            // settles, no use given by trying one.)
             tmpl, is_template := tc_template(k, m.ref)
             if !is_template { continue }
-            if inst := tc_overload_instance(k, f, tmpl, lt, rt); inst != nil && best_score < 1 { best, best_score = inst, 1 }
+            ls := solidify_type(lt) if infer_array_cell(lt) != nil else lt
+            rs := solidify_type(rt) if infer_array_cell(rt) != nil else rt
+            if inst := tc_overload_instance(k, f, tmpl, ls, rs); inst != nil && best_score < 1 { best, best_score = inst, 1 }
         }
     }
     return best, best_score > 0
@@ -253,12 +257,18 @@ tc_unary_overload :: proc(k: ^TC, t: Type, at: Token_Id) -> ^Type_Scope {
             found, ok := tc_ref_type(k, m.ref, m.name)
             if !ok { continue }
             ft, is_scope := found.(^Type_Scope)
-            if !is_scope || len(ft.params) != 1 || arg_incompatible(ft.params[0].type_, t) { continue }
+            if !is_scope || len(ft.params) != 1 || !tc_operand_fits(ft.params[0].type_, t) { continue }
             score := 3 if types_name_equal(ft.params[0].type_, t) else 2
             if score > best_score { best, best_score = ft, score }
         }
     }
     return best
+}
+
+// Whether an operand can go to an operator's param: its type, or an array
+// binding's type not decided yet that can be the param's.
+tc_operand_fits :: proc(param, t: Type) -> bool {
+    return infer_array_fits(t, param) || !arg_incompatible(param, t)
 }
 
 // Whether a fun is called with another instance of a generic struct its

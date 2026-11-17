@@ -1188,7 +1188,14 @@ graph_settled :: proc(t: Type) -> Type {
         r := resolve_infer(t)
         return Type_F64{} if is_infer(r) else r
     case ^Type_Ptr:
-        if is_infer(v.elem) { return new_clone(Type_Ptr{elem = graph_settled(v.elem)}) }
+        if is_infer(v.elem) || graph_celled(v.elem) { return new_clone(Type_Ptr{elem = graph_settled(v.elem)}) }
+    case ^Type_Fixed_Array:
+        // (An array binding's, `v := [0, -1, 0]`: the type its uses gave
+        // it, infer_arrays_settle. Its elements viewed, `v[:]`: their width.)
+        if whole := infer_array_cell(t); whole != nil && infer_root(whole).resolved != nil { return infer_root(whole).resolved }
+        if graph_celled(v.elem) { return type_fixed_array(v.size, graph_settled(v.elem), v.index_type) }
+    case ^Type_Slice:
+        if graph_celled(v.elem) { return type_slice(graph_settled(v.elem)) }
     }
     return t
 }
@@ -1200,6 +1207,18 @@ graph_is_settled :: proc(t: Type) -> bool {
     case ^Type_Ptr:                        return !is_infer(v.elem)
     }
     return true
+}
+
+// Whether a type is a width of no type written, or an array (a slice) of
+// such at any depth: graph_settled's to settle.
+@(private="file")
+graph_celled :: proc(t: Type) -> bool {
+    #partial switch v in t {
+    case Type_Infer_Int, Type_Infer_Float: return true
+    case ^Type_Fixed_Array:                return graph_celled(v.elem)
+    case ^Type_Slice:                      return graph_celled(v.elem)
+    }
+    return false
 }
 
 // A new node. The columns grow in chunks and are written by index: ten

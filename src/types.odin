@@ -153,6 +153,8 @@ g_type_shapes: map[Type_Shape]rawptr
 
 // The shapes made forgotten: a check of serve's, after another.
 types_forget_shapes :: proc() {
+    delete(g_infer_arrays)
+    g_infer_arrays = make([dynamic]^Infer_Cell, runtime.heap_allocator())
     g_type_shapes = make(map[Type_Shape]rawptr, allocator = runtime.heap_allocator())
 }
 
@@ -1238,7 +1240,9 @@ type_name :: proc(t: Type) -> string {
         }
         return strings.to_string(b)
     case ^Type_Fixed_Array:
-        // (Exactly N, `[N!]T`; one for each value of an enum, `[K]T`.)
+        // (Exactly N, `[N!]T`; one for each value of an enum, `[K]T`. An
+        // array binding a use gave its type: that type.)
+        if whole := infer_array_cell(v); whole != nil && infer_root(whole).resolved != nil { return type_name(infer_root(whole).resolved) }
         if v.index_type != nil { return fmt.tprintf("[%s]%s", type_name(v.index_type), type_name(v.elem)) }
         return fmt.tprintf("[%d!]%s", v.size, type_name(v.elem))
     case ^Type_Slice:
@@ -1935,8 +1939,10 @@ solidify_type :: proc(t: Type) -> Type {
     // An array of untyped elements (`[1, 2, 3]` held as itself): its storage
     // needs a width — the elements' default; an array of such arrays
     // (`[[4, 4], [16, 16]]`) too, at every depth.
-    if fa, ok := rt.(^Type_Fixed_Array); ok && has_open_elems(fa.elem) {
-        return type_fixed_array(fa.size, solidify_type(fa.elem), fa.index_type)
+    if fa, ok := rt.(^Type_Fixed_Array); ok {
+        // (An array binding a use gave its type: that type.)
+        if whole := infer_array_cell(fa); whole != nil && infer_root(whole).resolved != nil { return infer_root(whole).resolved }
+        if has_open_elems(fa.elem) { return type_fixed_array(fa.size, solidify_type(fa.elem), fa.index_type) }
     }
     // Text bound as itself: a list of its room.
     if pa, ok := rt.(^Type_Partial_Array); ok && pa.text != 0 { return type_partial_array(pa.size, solidify_type(pa.elem)) }
@@ -1982,6 +1988,8 @@ Infer_Cell :: struct {
     link:          ^Infer_Cell, // union-find parent; nil at the root
     name:          string,      // binding name — for the conflict diagnostic
     span:          Span,        // binding decl site — for the conflict diagnostic
+    open:          ^Type_Fixed_Array, // an array binding's: its type until a use gives one, of its elements' cell
+    whole:         ^Infer_Cell, // an array binding's elements': that array's cell
 }
 
 infer_cell_of :: proc(t: Type) -> ^Infer_Cell {
@@ -2062,8 +2070,23 @@ unify_infer_cells :: proc(c: ^Checker, a: ^Infer_Cell, b: ^Infer_Cell, span: Spa
 // and cross-family (int↔float) return false so the normal check still runs.
 coerce_deferred :: proc(c: ^Checker, val: Type, target: Type, span: Span) -> bool {
     if _, is_ptr := val.(^Type_Ptr); is_ptr { return coerce_deferred_pointee(c, val, target, span) }
+    if whole := infer_array_cell(val); whole != nil { return unify_infer_array(c, whole, target, span) }
     cell := infer_cell_of(val)
-    if cell == nil { return false }
+    if cell == nil {
+        // (An array binding's elements viewed, `v[:]`, where numbers' go: a
+        // use of their width. Its shape the normal check's.)
+        elem: Type
+        #partial switch v in val {
+        case ^Type_Slice:         elem = v.elem
+        case ^Type_Fixed_Array:   elem = v.elem
+        case ^Type_Partial_Array: elem = v.elem
+        case:                     return false
+        }
+        if infer_cell_of(elem) != nil {
+            if te := view_elem(target); te != nil { unify_infer_elem(c, elem, te, span) }
+        }
+        return false
+    }
     tgt := resolve_infer(target)
     _, tkind, tok := numeric_info(tgt)
     if !tok { return false }
@@ -2080,6 +2103,7 @@ coerce_deferred_pointee :: proc(c: ^Checker, val: Type, target: Type, span: Span
     vp, is_ptr := val.(^Type_Ptr)
     tp, to_ptr := unwrap_alias(target).(^Type_Ptr)
     if !is_ptr || !to_ptr { return false }
+    if whole := infer_array_cell(vp.elem); whole != nil { return unify_infer_array(c, whole, tp.elem, span) }
     cell := infer_cell_of(vp.elem)
     if cell == nil { return false }
     tgt := resolve_infer(tp.elem)
@@ -2088,6 +2112,135 @@ coerce_deferred_pointee :: proc(c: ^Checker, val: Type, target: Type, span: Span
     _, is_float_infer := vp.elem.(Type_Infer_Float)
     if is_float_infer != (tkind == .Float) { return false }   // int↔float stays explicit
     unify_infer_concrete(c, cell, tgt, span)
+    return true
+}
+
+// `v := [0, -1, 0]` declared: an array binding whose type its uses give it,
+// a fixed array of `size` numbers (`float`: a fraction's among them). Its
+// type until then: that array, of a cell's width, the cell knowing its array's
+// — its own, made once (`[v[0], v[1]]` is another array of that cell).
+infer_array_new :: proc(name: string, span: Span, size: int, float: bool) -> Type {
+    elem := new(Infer_Cell)
+    cell := new(Infer_Cell)
+    elem.name, elem.span, elem.whole = name, span, cell
+    cell.name, cell.span = name, span
+    cell.open = new_clone(Type_Fixed_Array{size = size, elem = Type_Infer_Float{elem} if float else Type_Infer_Int{elem}})
+    append(&g_infer_arrays, cell)
+    return cell.open
+}
+
+// The check's array bindings (infer_array_new), each settled before the
+// middle end reads them: infer_arrays_settle.
+@(private="file")
+g_infer_arrays: [dynamic]^Infer_Cell
+
+// Each array binding no use gave a type: its default, `[N!]i64` (f64 with
+// a fraction among them; its elements' width, if a use gave that).
+infer_arrays_settle :: proc() {
+    for cell in g_infer_arrays {
+        if r := infer_root(cell); r.resolved == nil { unify_infer_array(nil, cell, solidify_type(r.open), {}) }
+    }
+}
+
+// The array binding a type is the type of (infer_array_new): its cell; nil
+// for any other type.
+infer_array_cell :: proc(t: Type) -> ^Infer_Cell {
+    fa, is_fixed := t.(^Type_Fixed_Array)
+    if !is_fixed { return nil }
+    elem := infer_cell_of(fa.elem)
+    if elem == nil || elem.whole == nil || elem.whole.open != fa { return nil }
+    return elem.whole
+}
+
+// An array binding no use has given its type yet: its cell.
+infer_array_open :: proc(t: Type) -> ^Infer_Cell {
+    cell := infer_array_cell(t)
+    if cell == nil || infer_root(cell).resolved != nil { return nil }
+    return cell
+}
+
+// Whether an array binding can be `target`: the type a use gave it; before
+// one, a fixed array of its length (a type of its own too), of numbers its
+// elements can be — whole numbers' floats too, a fraction's no whole number.
+infer_array_fits :: proc(t, target: Type) -> bool {
+    cell := infer_array_cell(t)
+    return cell != nil && infer_array_cell_fits(cell, target)
+}
+
+@(private="file")
+infer_array_cell_fits :: proc(cell: ^Infer_Cell, target: Type) -> bool {
+    r := infer_root(cell)
+    tgt := resolve_infer(target)
+    if r.resolved != nil { return infer_same(r.resolved, tgt) }
+    fa, is_fixed := distinct_base(tgt).(^Type_Fixed_Array)
+    if !is_fixed || fa.size != r.open.size || has_open_elems(fa.elem) { return false }
+    want := resolve_infer(fa.elem)
+    _, kind, num := numeric_info(want)
+    if !num { return false }
+    have := resolve_infer(r.open.elem)
+    if !is_infer(have) { return infer_same(have, want) }
+    _, is_float := have.(Type_Infer_Float)
+    return !is_float || kind == .Float
+}
+
+// What an array, a list or a slice holds; nil for anything else.
+view_elem :: proc(t: Type) -> Type {
+    #partial switch v in distinct_base(resolve_infer(t)) {
+    case ^Type_Fixed_Array:   return v.elem
+    case ^Type_Slice:         return v.elem
+    case ^Type_Partial_Array: if v.text == 0 { return v.elem }
+    }
+    return nil
+}
+
+// Elements of a width no use has given yet (`elem`, a cell's) where numbers
+// of `target` go: a use of it — a fraction's never a whole number, a whole
+// number's a float only for an array binding's literals.
+unify_infer_elem :: proc(c: ^Checker, elem, target: Type, span: Span) {
+    tgt := resolve_infer(target)
+    _, kind, num := numeric_info(tgt)
+    if !num || is_infer(tgt) { return }
+    cell := infer_cell_of(elem)
+    if have := resolve_infer(elem); is_infer(have) {
+        _, is_float := have.(Type_Infer_Float)
+        if is_float != (kind == .Float) && (is_float || cell.whole == nil) { return }
+    }
+    unify_infer_concrete(c, cell, tgt, span)
+}
+
+// A use of an array binding (its cell) where an array goes: the first fixed
+// array of its length it meets its type, its elements that one's; any other
+// must be that one (unify_infer_concrete). Another such binding: one type.
+// Whether it was such a use.
+unify_infer_array :: proc(c: ^Checker, cell: ^Infer_Cell, target: Type, span: Span) -> bool {
+    r := infer_root(cell)
+    if other := infer_array_cell(target); other != nil {
+        ro := infer_root(other)
+        if ro == r { return true }
+        if ro.resolved != nil { return unify_infer_array(c, cell, ro.resolved, span) }
+        if r.resolved != nil { return unify_infer_array(c, other, r.resolved, span) }
+        if ro.open.size != r.open.size { return false }
+        ea, eb := r.open.elem, ro.open.elem
+        _, fa := resolve_infer(ea).(Type_Infer_Float)
+        _, fb := resolve_infer(eb).(Type_Infer_Float)
+        if fa != fb && is_infer(resolve_infer(ea)) && is_infer(resolve_infer(eb)) {
+            // (Whole numbers and fractions: fractions, both.)
+            unify_infer_concrete(c, infer_cell_of(ea), Type_F64{}, span)
+            unify_infer_concrete(c, infer_cell_of(eb), Type_F64{}, span)
+        }
+        unify_infer_cells(c, infer_cell_of(ea), infer_cell_of(eb), span)
+        unify_infer_cells(c, cell, other, span)
+        return true
+    }
+    tgt := resolve_infer(target)
+    if r.resolved != nil {
+        if _, is_fixed := distinct_base(tgt).(^Type_Fixed_Array); !is_fixed || has_open_elems(tgt) { return false }
+        unify_infer_concrete(c, cell, tgt, span)
+        return true
+    }
+    if !infer_array_cell_fits(cell, tgt) { return false }
+    unify_infer_concrete(c, cell, tgt, span)
+    unify_infer_concrete(c, infer_cell_of(r.open.elem), distinct_base(tgt).(^Type_Fixed_Array).elem, span)
     return true
 }
 

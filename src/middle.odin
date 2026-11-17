@@ -56,6 +56,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     mid.prog = p
     pc := &p.pc
     pc.lock = &p.lock
+    infer_arrays_settle()
     g_infer_frozen = true
     defer g_infer_frozen = false
     // The workers: one — a build is sequential, its time the work's
