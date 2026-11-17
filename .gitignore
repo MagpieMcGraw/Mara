@@ -22,6 +22,8 @@
 # emcc web build output
 *.html
 *.js
+# ... but the VS Code extension's own
+!editor/vscode/*.js
 *.wasm
 
 # Crash journal written by asserts/crash() at runtime (runtime/mara_crash.c)
