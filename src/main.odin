@@ -982,6 +982,17 @@ link_no_crt :: proc(ll_paths: []string, exe_name: string, lf: Link_Flags, compil
     return true
 }
 
+// The system a build is for: the one the compiler runs on.
+// (MARA_TARGET=linux: the program checked and its objects made as on Linux,
+// from another system — with MARA_NO_LINK, to look at them; there is nothing
+// here to link them with.)
+build_target :: proc() -> Target_OS {
+    if os.get_env("MARA_TARGET", context.temp_allocator) == "linux" { return .Linux }
+    when ODIN_OS == .Linux  { return .Linux }
+    when ODIN_OS == .Darwin { return .Mac }
+    return .Windows
+}
+
 link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program, compiler_dir: string, shared: bool = false, release: bool = false, profile: bool = false, debug: bool = false, profile_memory := false, icon: []u8 = nil, no_console := false) -> bool {
     // (The build's folder: where its objects are.)
     build_dir := filepath.dir(ll_paths[0]) if len(ll_paths) > 0 else "."
@@ -1118,6 +1129,12 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     // Linux/macOS expect `ld.lld` on PATH via the system `lld` package
     // (`dnf install lld` / `apt install lld`).
     strings.write_string(&b, " -Wno-override-module -fuse-ld=lld -mf16c")
+    // (The x86 backend's Linux objects name their globals by address from
+    // the code, a library's functions and data among them: a program at a
+    // fixed address, no position-independent one.)
+    when ODIN_OS != .Windows {
+        if len(objects) > 0 && !shared { strings.write_string(&b, " -no-pie") }
+    }
     // Optimization level. Default debug build skips -O entirely (clang's
     // implicit -O0); `mara build … -release` flips on -O3 for benchmarking
     // and shippable binaries. -O3 turns on the full LLVM pipeline including
@@ -1343,9 +1360,7 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
     perf_timer_mark(perf, "parse")
     parse_errors := parse_target_files()
 
-    target_os: Target_OS = .Windows
-    when ODIN_OS == .Linux  { target_os = .Linux  }
-    when ODIN_OS == .Darwin { target_os = .Mac    }
+    target_os := build_target()
     // (mara.os's Linux structs, Stat, Mutex and Epoll_Event among them, are laid out as
     // x86_64's are. Elsewhere they'd be wrong without saying so.)
     when ODIN_OS == .Linux && ODIN_ARCH != .amd64 {
@@ -1420,7 +1435,7 @@ CLI_Args :: struct {
     web:          bool,
     shared:       bool,    // -shared — emit a .dll/.so instead of an executable
     release:      bool,    // -release — pass -O3 to clang for an optimized build
-    x86:          bool,    // -x86 — the x86 backend (x86.odin), not LLVM's: the fastest build, not optimized, Windows only
+    x86:          bool,    // -x86 — the x86 backend (x86.odin), not LLVM's: the fastest build, not optimized, Windows and Linux
     no_assert:    bool,    // -no assert — compile asserts out (they stay on in -release)
     no_console:   bool,    // -no console — a Windows program that opens no console window (build.mara's `console = false`)
     no_crt:       bool,    // a Windows program with no C library: its runtime runtime/runtime.mara's, linked by lld-link alone — the default where it can be had
@@ -2137,7 +2152,7 @@ main :: proc() {
     {
         cant := ""
         switch {
-        case ODIN_OS != .Windows:   cant = "is for Windows programs"
+        case build_target() != .Windows: cant = "is for Windows programs"
         case args.web:              cant = "can't build for the web"
         case args.profile, args.profile_memory: cant = "can't build with -profile yet"
         case args.shared:           cant = "can't build a library yet"
@@ -2223,12 +2238,18 @@ main :: proc() {
 
     perf_timer_mark(&perf, "codegen")
     ll_path := strings.concatenate({args.pkg_name, ".ll"})
-    // LLVM's backend; with -x86 the x86 one, a native Windows build's that
-    // isn't optimized (MARA_LLVM set: LLVM's anyway, the IR differential's
-    // builds).
-    if args.x86 && (ODIN_OS != .Windows || args.web || args.release) {
-        fmt.printf("-x86 builds a native Windows program, not optimized; '%s' is built %s\n", args.pkg_name,
-                   "for the web" if args.web else "with -release" if args.release else "here, not on Windows")
+    // LLVM's backend; with -x86 the x86 one, a native Windows or Linux
+    // build's that isn't optimized (MARA_LLVM set: LLVM's anyway, the IR
+    // differential's builds).
+    if args.x86 && (checked.target_os == .Mac || ODIN_ARCH != .amd64 || args.web || args.release) {
+        fmt.printf("-x86 builds a native Windows or Linux program for x86-64, not optimized; '%s' is built %s\n", args.pkg_name,
+                   "for the web" if args.web else "with -release" if args.release else "here, on another system")
+        os.exit(1)
+    }
+    // (Its Linux code names its globals by address: a program's, at a fixed
+    // place — a library's would have to run wherever it's loaded.)
+    if args.x86 && checked.target_os == .Linux && pkg_shared {
+        fmt.printf("-x86 can't build a library on Linux yet; '%s' is one. Build it without -x86.\n", args.pkg_name)
         os.exit(1)
     }
     x86 := args.x86 && os.get_env("MARA_LLVM", context.temp_allocator) == ""

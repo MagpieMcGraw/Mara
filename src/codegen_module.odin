@@ -112,7 +112,7 @@ module_codegen_worker :: proc(t: thread.Task) {
 
     local: Codegen
     init_worker_codegen(&local, task)
-    if task.use_x86 { local.x86 = x86_begin(x86_program(), task.checked if task.debug else nil, task.module_name, task.checked.threads) }
+    if task.use_x86 { local.x86 = x86_begin(x86_program(task.checked.target_os == .Linux), task.checked if task.debug else nil, task.module_name, task.checked.threads) }
     if task.debug && !task.use_x86 { local.dbg = llvm_dbg_begin(context.allocator, task.checked) }
 
     // Emit this module's functions. switch_to_module + flush handle the
@@ -336,6 +336,9 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     g.profile_memory = profile_memory != ""
     g.mem_build = profile_memory
     g.mem_sites = make(map[string]string)
+    // (The x86 backend's debug info is CodeView, a PDB's: Windows's. Its
+    // Linux objects have none yet.)
+    debug := debug && !(x86 && checked.target_os == .Linux)
     if debug && !x86 { g.dbg = llvm_dbg_begin(context.allocator, checked, LLVM_DBG_MAIN) }
     checked.threads = program_starts_threads(checked)
     if checked.threads && (profile != "" || profile_memory != "") {
@@ -401,7 +404,7 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // The x86 backend's layouts of the types, for what isn't a worker's (each
     // worker lays out the types it meets itself).
     x86_types: ^X86_Program
-    if x86 { x86_types = x86_program() }
+    if x86 { x86_types = x86_program(checked.target_os == .Linux) }
 
     // Build set of explicitly declared function names (in written order)
     declared_fns: map[string]bool

@@ -39,7 +39,7 @@ Build :: struct {
 	// Built optimized by LLVM, as `-release` does.
 	release: bool = false
 	// Built by the x86 backend, not LLVM, as `-x86` does: the fastest build,
-	// not optimized, Windows only.
+	// not optimized, Windows and Linux (x86-64).
 	x86: bool = false
 	// false: a Windows program that opens no console window with it, as
 	// `-no console` builds one — a program with a window of its own. What

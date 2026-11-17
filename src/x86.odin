@@ -6,11 +6,12 @@ import "core:os"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
-// The x86-64 backend (Windows). Each function's low-level instructions — what
-// llvm.odin and the emit helpers make of it (ir.odin: the LLVM subset, no
-// phi, its values and labels data) — encoded as x86-64 machine code as the
-// function is made, and the module's globals as their bytes, into its COFF
-// object, which lld links. It reads no text: types are laid out from their
+// The x86-64 backend (Windows and Linux). Each function's low-level
+// instructions — what llvm.odin and the emit helpers make of it (ir.odin: the
+// LLVM subset, no phi, its values and labels data) — encoded as x86-64
+// machine code as the function is made, and the module's globals as their
+// bytes, into its object — COFF on Windows, ELF on Linux — which lld links.
+// It reads no text: types are laid out from their
 // structure (ir.odin's table). It decides
 // nothing about the program: every check, layout and conversion is in the
 // instructions already; what's here is how each one is done on the machine.
@@ -18,9 +19,10 @@ import "core:strings"
 // Every value has a slot in its function's frame; an instruction loads what
 // it uses into registers, does its work and stores its result. An address in
 // a local's memory at a constant offset is no value at all, but the memory
-// its loads and stores name. Calls follow the Win64 convention, Mara's and
-// C's alike; each function has unwind info (.pdata, .xdata) and one epilogue
-// its returns jump to.
+// its loads and stores name. Calls follow the platform's C convention, Mara's
+// and C's alike (x86_places): Win64 on Windows, System V on Linux. Each
+// function has one epilogue its returns jump to — and, on Windows, unwind
+// info (.pdata, .xdata).
 // ---------------------------------------------------------------------------
 
 // A type's layout, as the IR's types lay out on x86-64 (x86_layout).
@@ -35,6 +37,7 @@ X86_Type :: struct {
     count:   int,
     fields:  []^X86_Type,   // a struct's, at its offsets
     offsets: []int,
+    byval:   int,           // a `ptr byval(T)` argument's: T's size — a struct C takes in memory
 }
 
 // The object's sections, in its section table's order: the thread-local
@@ -66,6 +69,9 @@ X86_Sec :: enum u8 { Text, Data, Bss, Rdata, Pdata, Xdata, Drectve, Tls, Debug_S
 // ... an offset from the start of its section: a thread-local's, in a
 // thread's block.
 @(private="file") X86_SECREL   :: 0xB
+// The backend's own: a call's target (REL32 in a COFF; an ELF's linker may
+// route it through a library's stub).
+@(private="file") X86_CALL32   :: 0x100
 
 @(private="file")
 X86_Reloc :: struct {
@@ -88,6 +94,7 @@ X86_Sym :: struct {
 // program's; each worker lays out the ones it meets, itself).
 X86_Program :: struct {
     keep:    runtime.Allocator,
+    linux:   bool,                  // a Linux program's: System V calls, an ELF object
     layouts: [dynamic]^X86_Type,    // by type id; nil until asked for
     i1, i8, i16, i32, i64, ptr, f32, f64, void: ^X86_Type,   // (the common ones, at hand)
 }
@@ -163,8 +170,62 @@ X86_Fn :: struct {
 @(private="file")
 X86_Reg :: enum u8 { AX = 0, CX = 1, DX = 2, SI = 6, DI = 7, R8 = 8, R9 = 9, R10 = 10, R11 = 11 }
 
-// The Win64 argument registers.
+// The argument registers: Win64's, System V's.
 @(private="file") X86_ARGS := [4]X86_Reg{.CX, .DX, .R8, .R9}
+@(private="file") X86_ARGS_SYSV := [6]X86_Reg{.DI, .SI, .DX, .CX, .R8, .R9}
+
+// Where an argument goes: an integer register, a float register, or the
+// outgoing area at `off` — its value, or (Copy) the bytes of a struct C takes
+// in memory.
+@(private="file")
+X86_Place_Kind :: enum u8 { Reg, Xmm, Stack, Copy }
+
+@(private="file")
+X86_Place :: struct {
+    kind: X86_Place_Kind,
+    reg:  X86_Reg,
+    xmm:  u8,
+    off:  int,
+}
+
+// A call's arguments' places, by the platform's convention; and the outgoing
+// area they need, and how many float registers they use. Windows: the first
+// four by position — rcx, rdx, r8, r9, a float in xmm0–3 — the rest on the
+// stack past the 32-byte home area. Linux: the first six integers in rdi,
+// rsi, rdx, rcx, r8, r9 and the first eight floats in xmm0–7, each counted on
+// its own; the rest on the stack from its top, a struct passed in memory
+// (byval) its bytes there.
+@(private="file")
+x86_places :: proc(p: ^X86_Program, args: []X86_Arg, out: []X86_Place) -> (area: int, floats: int) {
+    if !p.linux {
+        for a, i in args {
+            switch {
+            case i >= 4:         out[i] = {kind = .Stack, off = 32 + 8 * (i - 4)}
+            case x86_float(a.t): out[i] = {kind = .Xmm, xmm = u8(i), reg = X86_ARGS[i]}
+            case:                out[i] = {kind = .Reg, reg = X86_ARGS[i]}
+            }
+        }
+        return max(32, 8 * len(args)), min(len(args), 4)
+    }
+    ints := 0
+    for a, i in args {
+        switch {
+        case a.t.byval > 0:
+            out[i] = {kind = .Copy, off = area}
+            area += x86_align(a.t.byval, 8)
+        case x86_float(a.t) && floats < 8:
+            out[i] = {kind = .Xmm, xmm = u8(floats)}
+            floats += 1
+        case !x86_float(a.t) && ints < 6:
+            out[i] = {kind = .Reg, reg = X86_ARGS_SYSV[ints]}
+            ints += 1
+        case:
+            out[i] = {kind = .Stack, off = area}
+            area += 8
+        }
+    }
+    return
+}
 
 // Conditions by their encoding (jcc, setcc, cmovcc).
 @(private="file")
@@ -201,9 +262,9 @@ x86_fail :: proc(what, part: string) -> ! {
 // --- a module ----------------------------------------------------------------------
 
 // A worker's layouts of the program's types.
-x86_program :: proc() -> ^X86_Program {
+x86_program :: proc(linux := false) -> ^X86_Program {
     p := new(X86_Program)
-    p.keep = context.allocator
+    p.keep, p.linux = context.allocator, linux
     p.layouts = make([dynamic]^X86_Type)
     p.i1, p.i8, p.i16, p.i32, p.i64 = x86_layout(p, IR_I1), x86_layout(p, IR_I8), x86_layout(p, IR_I16), x86_layout(p, IR_I32), x86_layout(p, IR_I64)
     p.ptr, p.f32, p.f64, p.void = x86_layout(p, IR_PTR), x86_layout(p, IR_FLOAT), x86_layout(p, IR_DOUBLE), x86_layout(p, IR_VOID)
@@ -227,9 +288,13 @@ x86_begin :: proc(p: ^X86_Program, debug: ^Checked_Program = nil, name := "", th
     return m
 }
 
-// The module's object, written into `out`: its exports' directives, then
-// the COFF.
+// The module's object, written into `out`: an ELF on Linux; on Windows its
+// exports' directives, then the COFF.
 x86_finish :: proc(m: ^X86_Module, out: ^[dynamic]u8) {
+    if m.p.linux {
+        x86_elf(m, out)
+        return
+    }
     for name in m.exports {
         append(&m.sec[.Drectve], " /EXPORT:")
         append(&m.sec[.Drectve], name)
@@ -456,9 +521,15 @@ x86_layout :: proc(p: ^X86_Program, t: Ir_Type) -> ^X86_Type {
     l := new(X86_Type, p.keep)
     switch info.kind {
     case .None, .Sig: x86_fail("a type", info.text)
-    case .Vector:     x86_fail("a vector type", info.text)
+    case .Vector:
+        // (A struct of two floats, as C on Linux takes one: 8 bytes in a
+        // float register — a double's place, never computed with.)
+        if info.n != 2 || info.elem != IR_FLOAT { x86_fail("a vector type", info.text) }
+        l^ = {kind = .F64, size = 8, align = 4}
     case .Void:   l^ = {kind = .Void, align = 1}
-    case .Ptr:    l^ = {kind = .Ptr, size = 8, align = 8}
+    case .Ptr:
+        l^ = {kind = .Ptr, size = 8, align = 8}
+        if strings.has_prefix(info.text, "ptr byval(") { l.byval = x86_layout(p, info.elem).size }
     case .Half:   l^ = {kind = .F16, size = 2, align = 2}
     case .Float:  l^ = {kind = .F32, size = 4, align = 4}
     case .Double: l^ = {kind = .F64, size = 8, align = 8}
@@ -738,7 +809,7 @@ x86_label :: proc(f: ^X86_Fn) -> i32 {
 @(private="file")
 x86_call_sym :: proc(f: ^X86_Fn, name: string) {
     append(&f.code, 0xE8)
-    append(&f.relocs, X86_Reloc{u32(len(f.code)), x86_symbol(f.m, name), X86_REL32})
+    append(&f.relocs, X86_Reloc{u32(len(f.code)), x86_symbol(f.m, name), X86_CALL32})
     x86_u32(&f.code, 0)
 }
 
@@ -750,7 +821,8 @@ x86_function :: proc(m: ^X86_Module, head: Ir_Head, code: [][]Ir, dbg: ^Dbg_Fun 
     x86_line, x86_ins = head.name, nil
     sym := x86_sym(head.name)
     f := X86_Fn{m = m}
-    f.out = x86_out_area(code)
+    linux := m.p.linux
+    f.out = x86_out_area(m.p, code)
     f.slots = make(map[string]X86_Slot)
     f.temps = make([dynamic]X86_Slot)
     f.labels = make([dynamic]int)
@@ -767,12 +839,14 @@ x86_function :: proc(m: ^X86_Module, head: Ir_Head, code: [][]Ir, dbg: ^Dbg_Fun 
     x86_ins = nil
 
     // Its frame: the outgoing arguments, then the slots — rsp 16-aligned
-    // after the two pushes and the allocation. Its one epilogue.
+    // after the allocation (and, on Windows, the two pushes). Its one
+    // epilogue.
     frame := x86_align(f.out + f.top, 16) + 8
     x86_place(&f, X86_EXIT)
     append(&f.code, 0x48, 0x81, 0xC4)   // add rsp, frame
     x86_u32(&f.code, u32(frame))
-    append(&f.code, 0x5F, 0x5E, 0xC3)   // pop rdi; pop rsi; ret
+    if !linux { append(&f.code, 0x5F, 0x5E) }   // pop rdi; pop rsi
+    append(&f.code, 0xC3)                       // ret
     for fx in f.fixups {
         at, k := f.labels[:], int(fx.label)
         if fx.label < 0 { at, k = f.own[:], int(-fx.label) }
@@ -780,14 +854,16 @@ x86_function :: proc(m: ^X86_Module, head: Ir_Head, code: [][]Ir, dbg: ^Dbg_Fun 
         x86_put32(f.code[:], fx.at, u32(i32(at[k] - (fx.at + 4))))
     }
 
-    // Its prologue: rsi and rdi pushed (rep movs/stos use them), the frame
-    // allocated — past a page, each one touched in order (__chkstk).
+    // Its prologue: on Windows rsi and rdi pushed (rep movs/stos use them;
+    // on Linux they're the caller's to keep), the frame allocated — past a
+    // page, each one touched in order (__chkstk; Linux's stacks grow, or are
+    // whole, without it).
     text := &m.sec[.Text]
     x86_pad(text, 16, 0xCC)
     start := len(text)
     x86_define(m, sym, .Text, start, true, true)
-    append(text, 0x56, 0x57)   // push rsi; push rdi
-    if frame >= 4096 {
+    if !linux { append(text, 0x56, 0x57) }   // push rsi; push rdi
+    if frame >= 4096 && !linux {
         append(text, 0xB8)   // mov eax, frame
         x86_u32(text, u32(frame))
         append(text, 0xE8)   // call __chkstk
@@ -799,20 +875,25 @@ x86_function :: proc(m: ^X86_Module, head: Ir_Head, code: [][]Ir, dbg: ^Dbg_Fun 
         x86_u32(text, u32(frame))
     }
     prolog := len(text) - start
-    // Its params into their slots: the first four from their registers, the
-    // rest from the caller's frame (past its return address and home area).
+    // Its params into their slots: from their registers, the rest from the
+    // caller's outgoing area (past this frame, the pushes and the return
+    // address).
     {
         g := X86_Fn{m = m, out = f.out}
+        places := make([]X86_Place, len(params), context.temp_allocator)
+        x86_places(m.p, params[:], places)
         for p, i in params {
             at := x86_mem(&f, x86_find(&f, p.v)^, 0)
-            switch {
-            case i < 4 && x86_float(p.t):
-                x86_enc_rm(&g, 0x66, false, {0x0F, 0xD6}, u8(i), at)   // movq [slot], xmm<i>
-            case i < 4:
-                x86_store(&g, at, X86_ARGS[i], 8)
-            case:
-                x86_load(&g, .AX, {base = X86_SP, disp = i32(frame + 16 + 40 + 8 * (i - 4))}, 8)
+            switch places[i].kind {
+            case .Xmm:
+                x86_enc_rm(&g, 0x66, false, {0x0F, 0xD6}, places[i].xmm, at)   // movq [slot], xmm<k>
+            case .Reg:
+                x86_store(&g, at, places[i].reg, 8)
+            case .Stack:
+                x86_load(&g, .AX, {base = X86_SP, disp = i32(frame + (8 if linux else 24) + places[i].off)}, 8)
                 x86_store(&g, at, .AX, 8)
+            case .Copy:
+                x86_fail("a struct parameter C passes in memory", head.name)
             }
         }
         append(text, ..g.code[:])
@@ -821,6 +902,7 @@ x86_function :: proc(m: ^X86_Module, head: Ir_Head, code: [][]Ir, dbg: ^Dbg_Fun 
     append(text, ..f.code[:])
     for r in f.relocs { append(&m.relocs[.Text], X86_Reloc{r.at + u32(base), r.sym, r.kind}) }
     end := len(text)
+    if linux { return }
 
     // Its unwind info: the frame's allocation, then the pushes (rdi's,
     // rsi's), each at its instruction's end in the prologue.
@@ -879,15 +961,23 @@ x86_debug :: proc(f: ^X86_Fn, sym: string, dbg: ^Dbg_Fun, start, base, end, fram
 
 // The outgoing arguments' area: the most any call passes, 8 bytes each, and
 // at least the 32 the callee may keep its register arguments in; none for a
-// function that calls nothing.
+// function that calls nothing. (Linux: room for every argument, as if none
+// went in a register — a struct passed in memory its size; no home area.)
 @(private="file")
-x86_out_area :: proc(code: [][]Ir) -> int {
+x86_out_area :: proc(p: ^X86_Program, code: [][]Ir) -> int {
     most := -1
     for part in code {
-        for ins in part { if ins.op == .Call { most = max(most, len(ins.args)) } }
+        for ins in part {
+            if ins.op != .Call { continue }
+            n := 8 * len(ins.args)
+            if p.linux {
+                for x in ins.args { if ir_type_info(x.ty).kind == .Ptr && x.ty != IR_PTR { n += x86_align(x86_layout(p, x.ty).byval, 8) } }
+            }
+            most = max(most, n)
+        }
     }
     if most < 0 { return 0 }
-    return x86_align(max(32, 8 * most), 16)
+    return x86_align(most if p.linux else max(32, most), 16)
 }
 
 // A local's slot, made when it's first named: memory (an alloca's), or 8
@@ -978,16 +1068,24 @@ x86_thread_local :: proc(f: ^X86_Fn, v: X86_Val) -> bool {
 // A thread-local's address, this thread's, into r: the thread's TLS array
 // (gs:[0x58]), this image's block in it (by _tls_index, the CRT's), the
 // variable's offset in the block. (r10: scratch, no value's register.)
+// (Linux: the thread's own block ends at its thread pointer, fs:[0]; the
+// variable is at a fixed offset below it, which the linker fills in.)
 @(private="file")
 x86_thread_address :: proc(f: ^X86_Fn, v: X86_Val, r: X86_Reg) {
     reg := u8(r)
-    // mov r, gs:[0x58]
-    append(&f.code, 0x65, 0x48 | (0x04 if reg >= 8 else 0), 0x8B, (reg & 7) << 3 | 4, 0x25)
-    x86_u32(&f.code, 0x58)
-    // mov r10d, [rip + _tls_index]
-    x86_load(f, .R10, {base = X86_RIP, sym = x86_symbol(f.m, "_tls_index")}, 4)
-    // mov r, [r + r10*8]   (r is never rbp or r13: no displacement needed)
-    append(&f.code, 0x4A | (0x04 if reg >= 8 else 0) | (0x01 if reg >= 8 else 0), 0x8B, (reg & 7) << 3 | 4, 0xC0 | 2 << 3 | (reg & 7))
+    if f.m.p.linux {
+        // mov r, fs:[0]
+        append(&f.code, 0x64, 0x48 | (0x04 if reg >= 8 else 0), 0x8B, (reg & 7) << 3 | 4, 0x25)
+        x86_u32(&f.code, 0)
+    } else {
+        // mov r, gs:[0x58]
+        append(&f.code, 0x65, 0x48 | (0x04 if reg >= 8 else 0), 0x8B, (reg & 7) << 3 | 4, 0x25)
+        x86_u32(&f.code, 0x58)
+        // mov r10d, [rip + _tls_index]
+        x86_load(f, .R10, {base = X86_RIP, sym = x86_symbol(f.m, "_tls_index")}, 4)
+        // mov r, [r + r10*8]   (r is never rbp or r13: no displacement needed)
+        append(&f.code, 0x4A | (0x04 if reg >= 8 else 0) | (0x01 if reg >= 8 else 0), 0x8B, (reg & 7) << 3 | 4, 0xC0 | 2 << 3 | (reg & 7))
+    }
     // lea r, [r + offset]   (the offset: a section-relative relocation)
     x86_enc_rr(f, 0, true, {0x8D}, reg, reg)
     f.code[len(f.code) - 1] = 0x80 | (reg & 7) << 3 | (reg & 7)   // (mod 10: [r + disp32])
@@ -1406,22 +1504,40 @@ x86_convert :: proc(f: ^X86_Fn, op: Ir_Inst, ft, tt: ^X86_Type) {
     }
 }
 
-// A call, by the Win64 convention: the first four arguments in rcx, rdx, r8,
-// r9 — a float in xmm0–3, and its bits in the integer register too, for a
-// variadic callee — the rest on the stack past the 32-byte home area; the
-// result in rax or xmm0.
+// A call, by the platform's convention (x86_places): the arguments for the
+// stack first, then the registers' — on Windows a float's bits in its integer
+// register too, for a variadic callee; on Linux the count of float registers
+// in al, which one reads. The result in rax or xmm0 — or, a small struct C
+// returns in two registers (Linux), its parts from rax then rdx, xmm0 then
+// xmm1, each kind in its order.
 @(private="file")
 x86_call :: proc(f: ^X86_Fn, callee: X86_Val, rt: ^X86_Type, args: []X86_Arg, dest: Val) {
+    linux := f.m.p.linux
+    few: [16]X86_Place
+    places := few[:len(args)] if len(args) <= len(few) else make([]X86_Place, len(args), context.temp_allocator)
+    _, floats := x86_places(f.m.p, args, places)
     for a, i in args {
-        if i < 4 { continue }
-        x86_get(f, a.v, .AX)
-        x86_store(f, {base = X86_SP, disp = i32(32 + 8 * (i - 4))}, .AX, 8)
+        #partial switch places[i].kind {
+        case .Stack:
+            x86_get(f, a.v, .AX)
+            x86_store(f, {base = X86_SP, disp = i32(places[i].off)}, .AX, 8)
+        case .Copy:
+            x86_get(f, a.v, .SI)
+            x86_lea(f, .DI, {base = X86_SP, disp = i32(places[i].off)})
+            x86_copy(f, a.t.byval)
+        }
     }
     for a, i in args {
-        if i >= 4 { break }
-        x86_get(f, a.v, X86_ARGS[i])
-        if x86_float(a.t) { x86_to_xmm(f, u8(i), X86_ARGS[i]) }
+        #partial switch places[i].kind {
+        case .Reg:
+            x86_get(f, a.v, places[i].reg)
+        case .Xmm:
+            r := X86_Reg.AX if linux else places[i].reg
+            x86_get(f, a.v, r)
+            x86_to_xmm(f, places[i].xmm, r)
+        }
     }
+    if linux { append(&f.code, 0xB0, u8(floats)) }   // mov al, floats
     if callee.kind == .Global {
         x86_call_sym(f, x86_sym(callee.name))
     } else {   // a function value
@@ -1429,6 +1545,28 @@ x86_call :: proc(f: ^X86_Fn, callee: X86_Val, rt: ^X86_Type, args: []X86_Arg, de
         append(&f.code, 0x41, 0xFF, 0xD3)   // call r11
     }
     if rt.kind == .Void || dest.kind == .None { return }
+    if linux && rt.kind == .Struct {
+        if len(rt.fields) > 2 { x86_fail("a call's result", "a struct in more than two registers") }
+        at := x86_slot(f, x86_val(dest, nil), rt.size, rt.align)
+        ints, xmms := [2]X86_Reg{.AX, .DX}, 0
+        int_at := 0
+        for ft, k in rt.fields {
+            r: X86_Reg
+            switch {
+            case x86_float(ft):
+                r = .CX
+                x86_from_xmm(f, r, u8(xmms))
+                xmms += 1
+            case ft.kind == .Int && ft.bits <= 64, ft.kind == .Ptr:
+                r = ints[int_at]
+                int_at += 1
+            case:
+                x86_fail("a call's result", "a struct's part that is no register's")
+            }
+            x86_store(f, x86_mem(f, at, rt.offsets[k]), r, ft.size)
+        }
+        return
+    }
     if x86_float(rt) { x86_from_xmm(f, .AX, 0) }
     x86_put(f, dest)
 }
@@ -1808,7 +1946,7 @@ x86_coff :: proc(m: ^X86_Module, out: ^[dynamic]u8) {
         for r in m.relocs[s] {
             x86_u32(b, r.at)
             x86_u32(b, index[r.sym])
-            x86_u16(b, r.kind)
+            x86_u16(b, X86_REL32 if r.kind == X86_CALL32 else r.kind)
         }
     }
     for s in m.syms {
@@ -1834,4 +1972,170 @@ x86_coff :: proc(m: ^X86_Module, out: ^[dynamic]u8) {
     }
     x86_put32(strtab[:], 0, u32(len(strtab)))
     append(b, ..strtab[:])
+}
+
+// The module as an ELF object (Linux's): its header, its sections' bytes —
+// the code, the data, the constants, the thread-local data when there's
+// some — each one's relocations (with their addends: what the code holds
+// where a COFF's linker would read it), its symbols (the module's own first)
+// and their names, then the section table.
+@(private="file")
+x86_elf :: proc(m: ^X86_Module, out: ^[dynamic]u8) {
+    PROGBITS, SYMTAB, STRTAB, RELA, NOBITS :: 1, 2, 3, 4, 8
+    WRITE, ALLOC, EXEC, INFO_LINK, TLS :: 1, 2, 4, 0x40, 0x400
+    Sec :: struct {
+        name:    string,
+        kind:    u32,
+        flags:   u64,
+        bytes:   []u8,
+        size:    int,     // (.bss's: no bytes)
+        link:    u32,
+        info:    u32,
+        align:   int,
+        entsize: int,
+    }
+    secs := make([dynamic]Sec, context.temp_allocator)
+    append(&secs, Sec{})
+    number: [X86_Sec]u32
+    for s in ([?]X86_Sec{.Text, .Data, .Bss, .Rdata, .Tls}) {
+        if s == .Tls && len(m.sec[s]) == 0 { continue }
+        number[s] = u32(len(secs))
+        sec := Sec{kind = PROGBITS, bytes = m.sec[s][:], size = len(m.sec[s]), align = 16}
+        #partial switch s {
+        case .Text:  sec.name, sec.flags = ".text", ALLOC | EXEC
+        case .Data:  sec.name, sec.flags = ".data", ALLOC | WRITE
+        case .Bss:   sec.name, sec.flags, sec.kind, sec.bytes, sec.size = ".bss", ALLOC | WRITE, NOBITS, nil, m.bss
+        case .Rdata: sec.name, sec.flags = ".rodata", ALLOC
+        case .Tls:   sec.name, sec.flags = ".tdata", ALLOC | WRITE | TLS
+        }
+        append(&secs, sec)
+    }
+    // (The stack isn't the program's to run code from: an object that
+    // doesn't say so makes it so.)
+    append(&secs, Sec{name = ".note.GNU-stack", kind = PROGBITS, align = 1})
+
+    // Its symbols: none first, then the module's own, then the ones other
+    // objects see or have. (A section's own: COFF's.)
+    u64le :: proc(b: ^[dynamic]u8, v: u64) { x86_u64(b, v) }
+    strtab := make([dynamic]u8, context.temp_allocator)
+    append(&strtab, 0)
+    symtab := make([dynamic]u8, context.temp_allocator)
+    for _ in 0 ..< 24 { append(&symtab, 0) }
+    index := make([]u32, len(m.syms), context.temp_allocator)
+    count, locals := u32(1), u32(1)
+    for pass in 0 ..< 2 {
+        for s, i in m.syms {
+            if s.section { continue }
+            global := s.global || s.sec == 0
+            if global != (pass == 1) { continue }
+            index[i] = count
+            count += 1
+            x86_u32(&symtab, u32(len(strtab)))
+            append(&strtab, s.name)
+            append(&strtab, 0)
+            type: u8 = 1   // an object
+            switch {
+            case s.sec == 0:                       type = 0
+            case s.fn:                             type = 2
+            case X86_Sec(s.sec - 1) == .Tls:       type = 6
+            }
+            bind: u8 = 1 if global else 0
+            append(&symtab, bind << 4 | type, 0)
+            x86_u16(&symtab, u16(number[X86_Sec(s.sec - 1)]) if s.sec != 0 else 0)
+            u64le(&symtab, u64(s.value))
+            u64le(&symtab, 0)
+        }
+        if pass == 0 { locals = count }
+    }
+
+    // Each section's relocations: where, the symbol and the kind, the addend.
+    for s in ([?]X86_Sec{.Text, .Data, .Rdata, .Tls}) {
+        if len(m.relocs[s]) == 0 { continue }
+        b := m.sec[s][:]
+        rela := make([dynamic]u8, 0, 24 * len(m.relocs[s]), context.temp_allocator)
+        for r in m.relocs[s] {
+            at := int(r.at)
+            word := i64(i32(u32(b[at]) | u32(b[at + 1]) << 8 | u32(b[at + 2]) << 16 | u32(b[at + 3]) << 24))
+            kind: u64
+            addend: i64
+            switch r.kind {
+            case X86_ADDR64:   // R_X86_64_64
+                kind = 1
+                addend = i64(u64(u32(word)) | u64(u32(b[at + 4]) | u32(b[at + 5]) << 8 | u32(b[at + 6]) << 16 | u32(b[at + 7]) << 24) << 32)
+            case X86_REL32:    // R_X86_64_PC32: from the 4 bytes' start
+                kind, addend = 2, word - 4
+            case X86_CALL32:   // R_X86_64_PLT32
+                kind, addend = 4, word - 4
+            case X86_SECREL:   // R_X86_64_TPOFF32: from the thread pointer
+                kind, addend = 23, word
+            case:
+                x86_fail("a relocation", fmt.tprint(r.kind))
+            }
+            u64le(&rela, u64(r.at))
+            u64le(&rela, u64(index[r.sym]) << 32 | kind)
+            u64le(&rela, u64(addend))
+        }
+        name := strings.concatenate({".rela", secs[number[s]].name}, context.temp_allocator)
+        append(&secs, Sec{name = name, kind = RELA, flags = INFO_LINK, bytes = rela[:], size = len(rela), info = number[s], align = 8, entsize = 24})
+    }
+    // (The relocations' sections name the symbols' by its number: fixed now
+    // that their count is known.)
+    symtab_number := u32(len(secs))
+    for &sec in secs { if sec.kind == RELA { sec.link = symtab_number } }
+    append(&secs, Sec{name = ".symtab", kind = SYMTAB, bytes = symtab[:], size = len(symtab), link = symtab_number + 1, info = locals, align = 8, entsize = 24})
+    append(&secs, Sec{name = ".strtab", kind = STRTAB, bytes = strtab[:], size = len(strtab), align = 1})
+    names := make([dynamic]u8, context.temp_allocator)
+    append(&names, 0)
+    name_at := make([]u32, len(secs) + 1, context.temp_allocator)
+    append(&secs, Sec{name = ".shstrtab", kind = STRTAB, align = 1})
+    for sec, i in secs {
+        if sec.name == "" { continue }
+        name_at[i] = u32(len(names))
+        append(&names, sec.name)
+        append(&names, 0)
+    }
+    last := &secs[len(secs) - 1]
+    last.bytes, last.size = names[:], len(names)
+
+    // The header (its section table's place set once that's known), the
+    // sections' bytes, the section table.
+    b := out
+    start := len(b)
+    append(b, 0x7F, 'E', 'L', 'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)   // 64-bit, little-endian
+    x86_u16(b, 1)    // an object to link
+    x86_u16(b, 62)   // x86-64
+    x86_u32(b, 1)
+    u64le(b, 0)      // (no entry, no program headers)
+    u64le(b, 0)
+    table_at := len(b)
+    u64le(b, 0)
+    x86_u32(b, 0)
+    x86_u16(b, 64)
+    x86_u16(b, 0)
+    x86_u16(b, 0)
+    x86_u16(b, 64)
+    x86_u16(b, u16(len(secs)))
+    x86_u16(b, u16(len(secs) - 1))
+    offsets := make([]int, len(secs), context.temp_allocator)
+    for sec, i in secs {
+        if i == 0 { continue }
+        for (len(b) - start) % max(sec.align, 1) != 0 { append(b, 0) }
+        offsets[i] = len(b) - start
+        append(b, ..sec.bytes)
+    }
+    for (len(b) - start) % 8 != 0 { append(b, 0) }
+    table := len(b) - start
+    for k in 0 ..< 8 { b[start + table_at + k] = u8(u64(table) >> uint(8 * k)) }
+    for sec, i in secs {
+        x86_u32(b, name_at[i])
+        x86_u32(b, sec.kind)
+        u64le(b, sec.flags)
+        u64le(b, 0)
+        u64le(b, u64(offsets[i]))
+        u64le(b, u64(sec.size))
+        x86_u32(b, sec.link)
+        x86_u32(b, sec.info)
+        u64le(b, u64(sec.align))
+        u64le(b, u64(sec.entsize))
+    }
 }
