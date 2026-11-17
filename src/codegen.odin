@@ -771,7 +771,9 @@ llvm_escape_string :: proc(s: string) -> string {
 
 // The runtime checks' failures, each a function of its own the checks call
 // (the main TU defines them, the others declare them): its name, its params
-// — where it failed first, a string global's address — and its message.
+// — where it failed first: its file's name, a string global's address the
+// file's checks share, then its line and column, numbers in the call (a
+// check has no text of its own) — and its message.
 // Each reports as any runtime failure does (emit_fail). (An assert's message
 // is its own, built where it is: emit_assert_fail.)
 __MARA_BOUNDS_FAIL    :: "__mara_bounds_fail"
@@ -789,18 +791,36 @@ __MARA_ENUM_FAIL      :: "__mara_enum_fail"
 Runtime_Fail :: struct { name: string, params: []Runtime_Param, message: string }
 Runtime_Param :: struct { ty: Ir_Type, name: string }
 
+AT_FILE :: Runtime_Param{IR_PTR, "file"}
+AT_LINE :: Runtime_Param{IR_I32, "line"}
+AT_COL  :: Runtime_Param{IR_I32, "col"}
+AT      :: "%s:%d:%d"
+
 RUNTIME_FAILS := [?]Runtime_Fail{
-    {__MARA_BOUNDS_FAIL,    {{IR_PTR, "loc"}, {IR_I64, "idx"}, {IR_I64, "len"}, {IR_PTR, "name"}},     "%s runtime error: index %lld out of bounds [0, %lld) for '%s'\n"},
-    {__MARA_OVERFLOW_FAIL,  {{IR_PTR, "loc"}},                                                    "%s runtime error: integer overflow\n"},
-    {__MARA_DIVZ_FAIL,      {{IR_PTR, "loc"}},                                                    "%s runtime error: division by zero\n"},
-    {__MARA_VOID_FAIL,      {{IR_PTR, "loc"}},                                                    "%s runtime error: a read through void\n"},
-    {__MARA_SLICE_LEN_FAIL, {{IR_PTR, "loc"}, {IR_I64, "new_len"}, {IR_I64, "cap"}, {IR_PTR, "name"}}, "%s runtime error: slice len %lld not in [0, %lld] (cap) for '%s'\n"},
-    {__MARA_MATCH_FAIL,     {{IR_PTR, "loc"}, {IR_I64, "tag"}},                                    "%s runtime error: match on an invalid tag %lld\n"},
-    {__MARA_FTOI_FAIL,      {{IR_PTR, "loc"}, {IR_DOUBLE, "value"}, {IR_PTR, "type"}},              "%s runtime error: %.15g doesn't fit in %s\n"},
-    {__MARA_SHIFT_FAIL,     {{IR_PTR, "loc"}, {IR_I64, "count"}, {IR_I64, "last"}, {IR_PTR, "type"}}, "%s runtime error: shift by %lld, outside 0..%lld for %s\n"},
-    {__MARA_LEN_FAIL,       {{IR_PTR, "loc"}, {IR_I64, "len"}, {IR_I64, "cap"}},                   "%s runtime error: a len of %lld, past its room of %lld: what holds it was written over\n"},
-    {__MARA_ATOM_FAIL,      {{IR_PTR, "loc"}, {IR_I64, "id"}, {IR_I64, "count"}},                   "%s runtime error: atom %lld is none of the program's %lld: what holds it was written over\n"},
-    {__MARA_ENUM_FAIL,      {{IR_PTR, "loc"}, {IR_I64, "value"}, {IR_PTR, "type"}},                "%s runtime error: %lld is no %s variant's value\n"},
+    {__MARA_BOUNDS_FAIL,    {AT_FILE, AT_LINE, AT_COL, {IR_I64, "idx"}, {IR_I64, "len"}, {IR_PTR, "name"}},     AT + " runtime error: index %lld out of bounds [0, %lld) for '%s'\n"},
+    {__MARA_OVERFLOW_FAIL,  {AT_FILE, AT_LINE, AT_COL},                                                    AT + " runtime error: integer overflow\n"},
+    {__MARA_DIVZ_FAIL,      {AT_FILE, AT_LINE, AT_COL},                                                    AT + " runtime error: division by zero\n"},
+    {__MARA_VOID_FAIL,      {AT_FILE, AT_LINE, AT_COL},                                                    AT + " runtime error: a read through void\n"},
+    {__MARA_SLICE_LEN_FAIL, {AT_FILE, AT_LINE, AT_COL, {IR_I64, "new_len"}, {IR_I64, "cap"}, {IR_PTR, "name"}}, AT + " runtime error: slice len %lld not in [0, %lld] (cap) for '%s'\n"},
+    {__MARA_MATCH_FAIL,     {AT_FILE, AT_LINE, AT_COL, {IR_I64, "tag"}},                                    AT + " runtime error: match on an invalid tag %lld\n"},
+    {__MARA_FTOI_FAIL,      {AT_FILE, AT_LINE, AT_COL, {IR_DOUBLE, "value"}, {IR_PTR, "type"}},              AT + " runtime error: %.15g doesn't fit in %s\n"},
+    {__MARA_SHIFT_FAIL,     {AT_FILE, AT_LINE, AT_COL, {IR_I64, "count"}, {IR_I64, "last"}, {IR_PTR, "type"}}, AT + " runtime error: shift by %lld, outside 0..%lld for %s\n"},
+    {__MARA_LEN_FAIL,       {AT_FILE, AT_LINE, AT_COL, {IR_I64, "len"}, {IR_I64, "cap"}},                   AT + " runtime error: a len of %lld, past its room of %lld: what holds it was written over\n"},
+    {__MARA_ATOM_FAIL,      {AT_FILE, AT_LINE, AT_COL, {IR_I64, "id"}, {IR_I64, "count"}},                   AT + " runtime error: atom %lld is none of the program's %lld: what holds it was written over\n"},
+    {__MARA_ENUM_FAIL,      {AT_FILE, AT_LINE, AT_COL, {IR_I64, "value"}, {IR_PTR, "type"}},                AT + " runtime error: %lld is no %s variant's value\n"},
+}
+
+// A check's failure: its helper called with where it failed (`span`), then
+// `args`. Nothing runs after it.
+emit_check_fail :: proc(g: ^Codegen, fail: string, span: Span, args: ..Ir_Arg) {
+    all := make([]Ir_Arg, len(args) + 3, context.temp_allocator)
+    file := span_file(span)
+    all[0] = {IR_PTR, get_string_literal(g, file if file != "" else "?"), {}}
+    all[1] = {IR_I32, ir_int(span_line(span)), {}}
+    all[2] = {IR_I32, ir_int(span_col(span)), {}}
+    copy(all[3:], args)
+    ir_call(g, {}, IR_VOID, ir_global(fail), ..all)
+    ir_unreachable(g)
 }
 
 // The runtime's helpers, made as functions are (codegen_function): into the
@@ -988,11 +1008,7 @@ emit_bounds_check :: proc(g: ^Codegen, idx, len_val: Val, name: string, span: Sp
     emit_cond_br(g, combined, fail_label, ok_label)
 
     emit_label(g, fail_label)
-    loc := span_location(span)
-    loc_global := get_string_literal(g, loc)
-    name_global := get_string_literal(g, name)
-    ir_call(g, {}, IR_VOID, ir_global(__MARA_BOUNDS_FAIL), {IR_PTR, loc_global, {}}, {w, idx, {}}, {w, len_val, {}}, {IR_PTR, name_global, {}})
-    ir_unreachable(g)
+    emit_check_fail(g, __MARA_BOUNDS_FAIL, span, {w, idx, {}}, {w, len_val, {}}, {IR_PTR, get_string_literal(g, name), {}})
 
     emit_label(g, ok_label)
 }
@@ -1051,10 +1067,7 @@ emit_div_zero_check :: proc(g: ^Codegen, divisor: Val, ir_type: Ir_Type, span: S
     emit_cond_br(g, cmp, fail_label, ok_label)
 
     emit_label(g, fail_label)
-    loc := span_location(span)
-    loc_global := get_string_literal(g, loc)
-    ir_call(g, {}, IR_VOID, ir_global(__MARA_DIVZ_FAIL), {IR_PTR, loc_global, {}})
-    ir_unreachable(g)
+    emit_check_fail(g, __MARA_DIVZ_FAIL, span)
 
     emit_label(g, ok_label)
 }
@@ -1072,8 +1085,7 @@ emit_void_check :: proc(g: ^Codegen, ptr: Val, span: Span) {
     ir_icmp(g, cmp, .Eq, IR_PTR, ptr, IR_NULL)
     emit_cond_br(g, cmp, fail_label, ok_label)
     emit_label(g, fail_label)
-    ir_call(g, {}, IR_VOID, ir_global(__MARA_VOID_FAIL), {IR_PTR, get_string_literal(g, span_location(span)), {}})
-    ir_unreachable(g)
+    emit_check_fail(g, __MARA_VOID_FAIL, span)
     emit_label(g, ok_label)
 }
 
@@ -1093,14 +1105,12 @@ emit_atom_text :: proc(g: ^Codegen, id: Val, span: Span = {}) -> (data, n: Val) 
     emit_load_into(g, count, IR_I64, ir_global("__mara_atom_count"))
     wide := fresh_tmp(g)
     ir_cast(g, wide, .Zext, IR_I32, id, IR_I64)
-    loc := get_string_literal(g, span_location(span))
     past := fresh_tmp(g)
     ir_icmp(g, past, .Uge, IR_I64, wide, count)
     ok_label, fail_label := fresh_label(g, "atom.ok"), fresh_label(g, "atom.fail")
     emit_cond_br(g, past, fail_label, ok_label)
     emit_label(g, fail_label)
-    ir_call(g, {}, IR_VOID, ir_global(__MARA_ATOM_FAIL), {IR_PTR, loc, {}}, fail_i64(wide), fail_i64(count))
-    ir_unreachable(g)
+    emit_check_fail(g, __MARA_ATOM_FAIL, span, fail_i64(wide), fail_i64(count))
     emit_label(g, ok_label)
     entry_t := atom_entry_ir_type()
     entry := fresh_tmp(g)
@@ -1124,8 +1134,7 @@ emit_len_check :: proc(g: ^Codegen, n, cap: Val, span: Span = {}) {
     ok_label, fail_label := fresh_label(g, "len.ok"), fresh_label(g, "len.fail")
     emit_cond_br(g, past, fail_label, ok_label)
     emit_label(g, fail_label)
-    ir_call(g, {}, IR_VOID, ir_global(__MARA_LEN_FAIL), {IR_PTR, get_string_literal(g, span_location(span)), {}}, fail_i64(n), fail_i64(cap))
-    ir_unreachable(g)
+    emit_check_fail(g, __MARA_LEN_FAIL, span, fail_i64(n), fail_i64(cap))
     emit_label(g, ok_label)
 }
 
@@ -1146,9 +1155,7 @@ emit_shift_check :: proc(g: ^Codegen, count: Val, ir_type: Ir_Type, unsigned: bo
         wide = fresh_tmp(g)
         ir_cast(g, wide, .Zext if unsigned else .Sext, ir_type, count, IR_I64)
     }
-    ir_call(g, {}, IR_VOID, ir_global(__MARA_SHIFT_FAIL), {IR_PTR, get_string_literal(g, span_location(span)), {}}, fail_i64(wide),
-            fail_i64(ir_int(bits - 1)), {IR_PTR, get_string_literal(g, type_text), {}})
-    ir_unreachable(g)
+    emit_check_fail(g, __MARA_SHIFT_FAIL, span, fail_i64(wide), fail_i64(ir_int(bits - 1)), {IR_PTR, get_string_literal(g, type_text), {}})
     emit_label(g, ok_label)
 }
 
@@ -1183,9 +1190,7 @@ emit_float_to_int_check :: proc(g: ^Codegen, v: Val, from: Ir_Type, bits: int, u
     ok_label, fail_label := fresh_label(g, "ftoi.ok"), fresh_label(g, "ftoi.fail")
     emit_cond_br(g, fits, ok_label, fail_label)
     emit_label(g, fail_label)
-    ir_call(g, {}, IR_VOID, ir_global(__MARA_FTOI_FAIL), {IR_PTR, get_string_literal(g, span_location(span)), {}}, {IR_DOUBLE, x, {}},
-            {IR_PTR, get_string_literal(g, type_text), {}})
-    ir_unreachable(g)
+    emit_check_fail(g, __MARA_FTOI_FAIL, span, {IR_DOUBLE, x, {}}, {IR_PTR, get_string_literal(g, type_text), {}})
     emit_label(g, ok_label)
 }
 
@@ -1220,8 +1225,7 @@ emit_div_min_check :: proc(g: ^Codegen, rem: bool, ir_type: Ir_Type, left, right
     ok_label, fail_label := fresh_label(g, "divmin.ok"), fresh_label(g, "divmin.fail")
     emit_cond_br(g, bad, fail_label, ok_label)
     emit_label(g, fail_label)
-    ir_call(g, {}, IR_VOID, ir_global(__MARA_OVERFLOW_FAIL), {IR_PTR, get_string_literal(g, span_location(span)), {}})
-    ir_unreachable(g)
+    emit_check_fail(g, __MARA_OVERFLOW_FAIL, span)
     emit_label(g, ok_label)
     return right
 }
@@ -1267,10 +1271,7 @@ emit_checked_arith :: proc(g: ^Codegen, op: string, ir_type: Ir_Type, left, righ
     emit_cond_br(g, overflow, fail_label, ok_label)
 
     emit_label(g, fail_label)
-    loc := span_location(span)
-    loc_global := get_string_literal(g, loc)
-    ir_call(g, {}, IR_VOID, ir_global(__MARA_OVERFLOW_FAIL), {IR_PTR, loc_global, {}})
-    ir_unreachable(g)
+    emit_check_fail(g, __MARA_OVERFLOW_FAIL, span)
 
     emit_label(g, ok_label)
     return result
@@ -1446,9 +1447,7 @@ emit_match_fail :: proc(g: ^Codegen, span: Span, tag: Val, tag_ir: Ir_Type, unsi
         wide = fresh_tmp(g)
         ir_cast(g, wide, Ir_Inst.Zext if unsigned else .Sext, tag_ir, tag, IR_I64)
     }
-    loc_global := get_string_literal(g, span_location(span))
-    ir_call(g, {}, IR_VOID, ir_global(__MARA_MATCH_FAIL), {IR_PTR, loc_global, {}}, {IR_I64, wide, {}})
-    ir_unreachable(g)
+    emit_check_fail(g, __MARA_MATCH_FAIL, span, {IR_I64, wide, {}})
 }
 
 // Whether a union's tag is unsigned (`union(tag u32)`); the default i64 isn't.

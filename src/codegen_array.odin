@@ -713,11 +713,7 @@ emit_slice_len_check :: proc(g: ^Codegen, cap_val, val: Val, name: string, span:
     emit_cond_br(g, combined, fail_label, ok_label)
 
     emit_label(g, fail_label)
-    loc := span_location(span)
-    loc_global := get_string_literal(g, loc)
-    name_global := get_string_literal(g, name)
-    ir_call(g, {}, IR_VOID, ir_global(__MARA_SLICE_LEN_FAIL), {IR_PTR, loc_global, {}}, {w, val, {}}, {w, cap_val, {}}, {IR_PTR, name_global, {}})
-    ir_unreachable(g)
+    emit_check_fail(g, __MARA_SLICE_LEN_FAIL, span, {w, val, {}}, {w, cap_val, {}}, {IR_PTR, get_string_literal(g, name), {}})
 
     emit_label(g, ok_label)
 }

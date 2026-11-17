@@ -2807,10 +2807,8 @@ llvm_from_number :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, callee: ^Type_Sc
     for value, i in values { arms[i] = {IR_I64, ir_int(value), ok} }
     ir_switch(g, IR_I64, wide, miss, arms)
     emit_label(g, miss)
-    loc := get_string_literal(g, span_location(graph_origin(e.pg, op)))
     name := get_string_literal(g, et.source_name if et.source_name != "" else et.name)
-    ir_call(g, {}, IR_VOID, ir_global(__MARA_ENUM_FAIL), {IR_PTR, loc, {}}, {IR_I64, wide, {}}, {IR_PTR, name, {}})
-    ir_unreachable(g)
+    emit_check_fail(g, __MARA_ENUM_FAIL, graph_origin(e.pg, op), {IR_I64, wide, {}}, {IR_PTR, name, {}})
     emit_label(g, ok)
     if tag == IR_I64 {
         e.value[op] = wide
