@@ -609,6 +609,44 @@ import_lib_made :: proc(checked: ^Checked_Program, lib, build_dir, compiler_dir:
     return lib_path, true
 }
 
+// The foreign libraries the program's code uses: each one a call names a
+// function of, or a function of whose is taken as a value. A library that is
+// only declared isn't linked — a block whose every use is in an `#if` arm
+// this build leaves out (a Windows DLL's, built on Linux).
+foreign_libs_used :: proc(checked: ^Checked_Program) -> map[string]bool {
+    used := make(map[string]bool)
+    for g in checked.code.codes {
+        for id := Node_Id(1); id <= g.end; id += 1 {
+            if g.kind[id] != .Op { continue }
+            f: ^Type_Scope
+            #partial switch g.op[id] {
+            case .Call:   f = graph_called(g, id)
+            case .Global: f, _ = graph_type(g, id).(^Type_Scope)
+            }
+            if f == nil { continue }
+            if fo, is_foreign := f.origin.(Origin_Foreign); is_foreign && fo.library in checked.foreign_libs { used[fo.library] = true }
+        }
+    }
+    return used
+}
+
+// The libraries bound C code may call: those its module's other foreign
+// blocks name (open_gl.c calls opengl32, which open_gl.mara binds beside it),
+// whether or not the build's Mara code calls them. `c_code`: the used
+// libraries that are C code; `used`: left out, linked already.
+foreign_lib_mates :: proc(checked: ^Checked_Program, c_code: []string, used: map[string]bool) -> map[string]bool {
+    mates := make(map[string]bool)
+    for lib in c_code {
+        homes := checked.foreign_homes[lib]
+        for home in homes {
+            for other, at in checked.foreign_homes {
+                if other not_in used && slice.contains(at[:], home) { mates[other] = true }
+            }
+        }
+    }
+    return mates
+}
+
 build_link_flags :: proc(checked: ^Checked_Program, web: bool = false, build_dir := "") -> Link_Flags {
     lib_flags_b:    strings.Builder
     extra_inputs_b: strings.Builder
@@ -713,13 +751,10 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false, build_dir
     }
 
     if web {
-        all_libs: map[string]bool
-        for _, cs in checked.functions {
-            if fo, is_foreign := cs.origin.(Origin_Foreign); is_foreign {
-                all_libs[fo.library] = true
-            }
-        }
-        for lib in checked.foreign_libs { all_libs[lib] = true }
+        all_libs := foreign_libs_used(checked)
+        c_code := make([dynamic]string, context.temp_allocator)
+        for lib in all_libs { if is_foreign_file(lib) { append(&c_code, lib) } }
+        for lib in foreign_lib_mates(checked, c_code[:], all_libs) { all_libs[lib] = true }
         ok := true
         for lib in all_libs {
             if is_foreign_file(lib) {
@@ -751,10 +786,12 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false, build_dir
     native_libs:   [dynamic]string
     native_search: [dynamic]string
 
-    collect :: proc(checked: ^Checked_Program, libs: map[string]bool, seen: ^map[string]bool, src_b: ^strings.Builder, native_libs: ^[dynamic]string, compiler_dir, build_dir: string) -> bool {
+    collect :: proc(checked: ^Checked_Program, libs: map[string]bool, seen: ^map[string]bool, src_b: ^strings.Builder, native_libs: ^[dynamic]string, compiler_dir, build_dir: string, c_code: ^[dynamic]string) -> bool {
         for lib in libs {
             if lib in seen^ { continue }
             seen^[lib] = true
+            system := false
+            defer if !system { append(c_code, lib) }   // (C source, or a library file beside it)
             // `.c` suffix = explicit "force recompile" form. Always rebuild
             // the static lib from source, then hand the .lib to the linker.
             // Same artifact the bare-name path would produce — so a user can
@@ -786,6 +823,7 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false, build_dir
                 // the linker finds it in system paths via `-l<name>`, a
                 // well-known one whose name differs per OS translated
                 // (Windows "opengl32" -> Linux "GL").
+                system = true
                 when ODIN_OS == .Windows {
                     made, ok := import_lib_made(checked, lib, build_dir, compiler_dir)
                     if !ok { return false }
@@ -800,8 +838,13 @@ build_link_flags :: proc(checked: ^Checked_Program, web: bool = false, build_dir
         return true
     }
 
-    // Every foreign lib is static_lib now — hand them all to the linker.
-    if !collect(checked, checked.foreign_libs, &seen_libs, &extra_inputs_b, &native_libs, compiler_dir, build_dir) { return Link_Flags{} }
+    // The libraries the program's code uses, handed to the linker — and
+    // those the C code among them may call (foreign_lib_mates).
+    used := foreign_libs_used(checked)
+    c_code := make([dynamic]string, context.temp_allocator)
+    if !collect(checked, used, &seen_libs, &extra_inputs_b, &native_libs, compiler_dir, build_dir, &c_code) { return Link_Flags{} }
+    mates := foreign_lib_mates(checked, c_code[:], used)
+    if !collect(checked, mates, &seen_libs, &extra_inputs_b, &native_libs, compiler_dir, build_dir, &c_code) { return Link_Flags{} }
 
     // -L every bundled binding dir so `-l<name>` can find libs we didn't
     // resolve to an explicit path. Skip element 0 (code/ itself): anything

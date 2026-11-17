@@ -1162,6 +1162,7 @@ Checked_Program :: struct {
     // origin variant when emitting bodies, declares, and the dynamic loader.
     functions:      map[string]^Type_Scope,
     foreign_libs:   map[string]bool,
+    foreign_homes:  map[string][dynamic]string,   // each foreign library's modules: those with a block of it (foreign_lib_mates)
     // Built with no C library (`-no crt`): the runtime is runtime/runtime.mara's,
     // handed the program's Runtime (codegen.odin: rt_call).
     no_crt:         bool,

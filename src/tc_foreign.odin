@@ -117,7 +117,14 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, owner: string) {
     if fv.fails != 0 { fail_kind, fails_known = tc_foreign_fails(k, fv.fails) }
     // ("mara_runtime": the compiler's own runtime, runtime/*.c — its objects
     // linked by the build itself, no library to look for.)
-    if library != "mara_runtime" { k.checked.foreign_libs[library] = true }
+    if library != "mara_runtime" {
+        k.checked.foreign_libs[library] = true
+        if library not_in k.checked.foreign_homes { k.checked.foreign_homes[library] = {} }
+        homes := &k.checked.foreign_homes[library]
+        known := false
+        for home in homes { known ||= home == k.pkg }
+        if !known { append(homes, k.pkg) }
+    }
     for ff in fv.funs {
         name := tc_text(foreign_fun_view(t, ff).name)
         found, _ := tc_bound(k, foreign_fun_view(t, ff).name)
