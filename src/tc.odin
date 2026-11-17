@@ -983,6 +983,20 @@ tc_pin_default :: proc(k: ^TC, t: Type, span: Span) -> Type {
     return w
 }
 
+// A use that takes whole numbers only — an index, a bound, a bitwise
+// operand: a binding of no width yet never a float from here.
+tc_whole_use :: proc(k: ^TC, t: Type, span: Span) {
+    if cell := infer_cell_of(t); cell != nil { infer_mark_integer(k.c, cell, span, span) }
+}
+
+// An index, a slice's bound, a count, at the slice header's width: checked,
+// a whole number's use (tc_whole_use).
+tc_check_count :: proc(k: ^TC, n: Tree_Id) -> Type {
+    t := tc_check_at(k, n, slice_header_width_type)
+    tc_whole_use(k, t, tree_span(k.t, n))
+    return t
+}
+
 // An array of an array binding's elements, `[v[0], v[1]]` (vt), stored at
 // `final`'s width: a use of theirs, the binding's elements that width too.
 tc_pin_elems :: proc(k: ^TC, vt, final: Type, span: Span) {

@@ -12,8 +12,7 @@ import "core:strings"
 tc_binding_kind_fits :: proc(t, param: Type) -> bool {
     _, pk, ok := numeric_info(resolve_infer(param))
     if !ok { return false }
-    _, is_float := t.(Type_Infer_Float)
-    return is_float == (pk == .Float)
+    return infer_is_fraction(t) == (pk == .Float)
 }
 
 // The modules types are defined in, each once (type_home): where a call's

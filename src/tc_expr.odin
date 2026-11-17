@@ -573,6 +573,10 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
         tc_error(k, span, TYPE_WRAPPING_REQUIRES_INTEGER, op_str(op), type_name(lt), type_name(rt))
         return Type_Error{}
     }
+    if wrapping {
+        tc_whole_use(k, lt, span)
+        tc_whole_use(k, rt, span)
+    }
     // (An operand no number: an `overload`'s function, when one fits. `++`
     // has no meaning but an overload's.)
     if !and_or && (op == .Plus_Plus || !is_numeric(lt) || !is_numeric(rt)) {
@@ -665,6 +669,8 @@ tc_binary_op :: proc(k: ^TC, at: Tree_Id, tok: Token_Kind, span: Span, left, rig
             tc_error(k, span, TYPE_BITWISE_OPERATORS_REQUIRE_INTEGER_OPERANDS, type_name(rt))
             return Type_Error{}
         }
+        tc_whole_use(k, lt, span)
+        tc_whole_use(k, rt, span)
         t = coerce_infer_to_hint(k.c, promote_numeric(k.c, lt, rt, span), hint, span)
         // (A known count past the value's bits, or negative: said so now.)
         if op == .Shift_Left || op == .Shift_Right {

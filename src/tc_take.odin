@@ -42,7 +42,7 @@ tc_take :: proc(k: ^TC, n: Tree_Id) -> Type {
     }
     tc_lists_raw(k, taken)   // (what's in the storage already may be its lists' lens)
     if count != 0 {
-        ct := tc_check_at(k, count, slice_header_width_type)
+        ct := tc_check_count(k, count)
         if !is_any(ct) && !is_numeric(ct) {
             tc_error(k, span, TYPE_TAKE_COUNT_INTEGER, type_name(ct))
         } else if !coerces_to_slice_width(ct) {

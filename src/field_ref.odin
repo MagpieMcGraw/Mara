@@ -224,7 +224,7 @@ tc_field_ref_index :: proc(k: ^TC, n, idx_n: Tree_Id, fr: ^Type_Field, span: Spa
         return Type_Error{}
     }
     if fa.index_type != nil { k.hint = fa.index_type }
-    it := tc_check_at(k, idx_n, slice_header_width_type)
+    it := tc_check_count(k, idx_n)
     if !is_numeric(it) {
         tc_error(k, span, TYPE_INDEX_NUMBER, type_name(it))
     } else if !coerces_to_index_width(it) {

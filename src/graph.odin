@@ -1183,7 +1183,8 @@ graph_settled :: proc(t: Type) -> Type {
     #partial switch v in t {
     case Type_Infer_Int:
         r := resolve_infer(t)
-        return Type_Numeric{.Signed, 64} if is_infer(r) else r
+        if !is_infer(r) { return r }
+        return Type_F64{} if infer_is_fraction(r) else Type_Numeric{.Signed, 64}
     case Type_Infer_Float:
         r := resolve_infer(t)
         return Type_F64{} if is_infer(r) else r

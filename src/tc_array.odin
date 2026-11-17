@@ -26,7 +26,7 @@ tc_index :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
     }
     if fa, ok := target.(^Type_Fixed_Array); ok && fa.index_type != nil { k.hint = fa.index_type }
-    it := tc_check_at(k, idx_n, slice_header_width_type)
+    it := tc_check_count(k, idx_n)
     if fa, ok := target.(^Type_Fixed_Array); ok { tc_index_kind(k, base_n, idx_n, fa, it, span) }
     if !is_numeric(it) {
         tc_error(k, span, TYPE_INDEX_NUMBER, type_name(it))
@@ -164,7 +164,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     elem := index_elem_type(tt)
     tc_set_type(k, target, elem)
     if fa, ok := tt.(^Type_Fixed_Array); ok && fa.index_type != nil { k.hint = fa.index_type }
-    it := tc_check_at(k, idx_n, slice_header_width_type)
+    it := tc_check_count(k, idx_n)
     if fa, ok := tt.(^Type_Fixed_Array); ok { tc_index_kind(k, base_n, idx_n, fa, it, span) }
     #partial switch v in tt {
     case ^Type_Fixed_Array:   k.hint = v.elem
@@ -338,7 +338,7 @@ tc_slice :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
     }
     if lo_n != 0 {
-        lt := tc_check_at(k, lo_n, slice_header_width_type)
+        lt := tc_check_count(k, lo_n)
         if !is_numeric(lt) && !is_any(lt) {
             tc_error(k, span, TYPE_SLICE_LOW_BOUND_NUMERIC, type_name(lt))
         } else if !coerces_to_slice_width(lt) {
@@ -346,7 +346,7 @@ tc_slice :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
     }
     if hi_n != 0 {
-        ht := tc_check_at(k, hi_n, slice_header_width_type)
+        ht := tc_check_count(k, hi_n)
         if !is_numeric(ht) && !is_any(ht) {
             tc_error(k, span, TYPE_SLICE_HIGH_BOUND_NUMERIC, type_name(ht))
         } else if !coerces_to_slice_width(ht) {
@@ -382,8 +382,8 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
         tc_set_type(k, target, type_slice(elem))
     }
     lt, ht: Type = Type_Any{}, Type_Any{}
-    if lo_n != 0 { lt = tc_check_at(k, lo_n, slice_header_width_type) }
-    if hi_n != 0 { ht = tc_check_at(k, hi_n, slice_header_width_type) }
+    if lo_n != 0 { lt = tc_check_count(k, lo_n) }
+    if hi_n != 0 { ht = tc_check_count(k, hi_n) }
     vt := tc_check(k, value)
     if !is_numeric(lt) && !is_any(lt) {
         tc_error(k, span, TYPE_SLICE_LOWER_BOUND_NUMBER, type_name(lt))

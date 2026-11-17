@@ -1346,7 +1346,7 @@ item_layout_mismatch :: proc(a, b: Type) -> bool {
 }
 
 is_integer :: proc(t: Type) -> bool {
-    if _, ok := t.(Type_Infer_Int); ok { return true }
+    if _, ok := t.(Type_Infer_Int); ok { return !infer_is_fraction(t) }
     if n, ok := t.(Type_Numeric); ok { return n.kind != .Float }
     if _, ok := t.(^Type_Enum); ok { return true }
     if _, ok := t.(Type_Error); ok { return true }
@@ -1360,7 +1360,7 @@ is_integer :: proc(t: Type) -> bool {
 // pass through so a wrapping op on already-errored operands doesn't double-report.
 is_wrap_operand :: proc(t: Type) -> bool {
     #partial switch v in distinct_base(resolve_infer(t)) {
-    case Type_Infer_Int:       return true
+    case Type_Infer_Int:       return !infer_is_fraction(v)
     case Type_Numeric:         return v.kind != .Float
     case Type_Byte, Type_Utf8: return true
     case ^Type_Enum:           return true
@@ -1934,7 +1934,7 @@ is_immutable_param_type :: proc(t: Type) -> bool {
 // Solidify inferred types to their defaults (for := variable declarations)
 solidify_type :: proc(t: Type) -> Type {
     rt := resolve_infer(t)
-    if _, ok := rt.(Type_Infer_Int); ok { return Type_Numeric{kind = .Signed, bits = 64} }
+    if _, ok := rt.(Type_Infer_Int); ok { return Type_F64{} if infer_is_fraction(rt) else Type_Numeric{kind = .Signed, bits = 64} }
     if _, ok := rt.(Type_Infer_Float); ok { return Type_F64{} }
     // An array of untyped elements (`[1, 2, 3]` held as itself): its storage
     // needs a width — the elements' default; an array of such arrays
@@ -1990,6 +1990,56 @@ Infer_Cell :: struct {
     span:          Span,        // binding decl site — for the conflict diagnostic
     open:          ^Type_Fixed_Array, // an array binding's: its type until a use gives one, of its elements' cell
     whole:         ^Infer_Cell, // an array binding's elements': that array's cell
+    fraction:      bool,        // a fraction its value or met in a use (`x * 9.81`): a float, f64 by default
+    fraction_span: Span,        // where — for the conflict diagnostic
+    integer:       bool,        // a use takes whole numbers only (an index, a bound): never a float
+    integer_span:  Span,        // where — for the conflict diagnostic
+}
+
+// Whether a width no use has given yet is a float's: a fraction's, or a
+// binding's a fraction met (`x := 2`, `x * 9.81`).
+infer_is_fraction :: proc(t: Type) -> bool {
+    #partial switch v in t {
+    case Type_Infer_Float: return true
+    case Type_Infer_Int:   return v.cell != nil && infer_root(v.cell).fraction
+    }
+    return false
+}
+
+// A binding of no width yet met a fraction (`x * 9.81`): a float from here,
+// its default f64 — a whole number's width, given it, a conflict.
+infer_mark_fraction :: proc(c: ^Checker, cell: ^Infer_Cell, at, span: Span) {
+    r := infer_root(cell)
+    if r.fraction { return }
+    if r.integer {
+        if c != nil { check_error(c, span, TYPE_INFER_CONFLICTING_WIDTHS, r.name, "a whole number", span_loc(r.integer_span), "a fraction", span_loc(span)) }
+        return
+    }
+    if r.resolved != nil {
+        if _, kind, num := numeric_info(r.resolved); num && kind != .Float && c != nil {
+            check_error(c, span, TYPE_INFER_CONFLICTING_WIDTHS, r.name, type_name(r.resolved), span_loc(r.resolved_span), "a fraction", span_loc(span))
+        }
+        return
+    }
+    r.fraction, r.fraction_span = true, at
+}
+
+// A binding of no width yet used where whole numbers only go (an index, a
+// bound, a bitwise operand): never a float from here.
+infer_mark_integer :: proc(c: ^Checker, cell: ^Infer_Cell, at, span: Span) {
+    r := infer_root(cell)
+    if r.integer { return }
+    if r.fraction {
+        if c != nil { check_error(c, span, TYPE_INFER_CONFLICTING_WIDTHS, r.name, "a fraction", span_loc(r.fraction_span), "a whole number", span_loc(span)) }
+        return
+    }
+    if r.resolved != nil {
+        if _, kind, num := numeric_info(r.resolved); num && kind == .Float && c != nil {
+            check_error(c, span, TYPE_INFER_CONFLICTING_WIDTHS, r.name, type_name(r.resolved), span_loc(r.resolved_span), "a whole number", span_loc(span))
+        }
+        return
+    }
+    r.integer, r.integer_span = true, at
 }
 
 infer_cell_of :: proc(t: Type) -> ^Infer_Cell {
@@ -2032,6 +2082,14 @@ unify_infer_concrete :: proc(c: ^Checker, cell: ^Infer_Cell, target: Type, span:
     if is_infer(tgt) { return }
     r := infer_root(cell)
     if r.resolved == nil {
+        if _, kind, num := numeric_info(tgt); num && (r.fraction && kind != .Float || r.integer && kind == .Float) {
+            if c != nil {
+                was := "a fraction" if r.fraction else "a whole number"
+                at := r.fraction_span if r.fraction else r.integer_span
+                check_error(c, span, TYPE_INFER_CONFLICTING_WIDTHS, r.name, was, span_loc(at), type_name(tgt), span_loc(span))
+            }
+            return
+        }
         r.resolved, r.resolved_span = tgt, span
         return
     }
@@ -2059,7 +2117,11 @@ unify_infer_cells :: proc(c: ^Checker, a: ^Infer_Cell, b: ^Infer_Cell, span: Spa
         }
         return
     }
+    frac, at := ra.fraction || rb.fraction, ra.fraction_span if ra.fraction else rb.fraction_span
+    whole, wat := ra.integer || rb.integer, ra.integer_span if ra.integer else rb.integer_span
     if rb.resolved != nil { ra.link = rb } else { rb.link = ra }
+    if frac { infer_mark_fraction(c, a, at, span) }
+    if whole { infer_mark_integer(c, a, wat, span) }
 }
 
 // At a site where `val` meets a concrete `target` (argument, assignment either
@@ -2090,8 +2152,9 @@ coerce_deferred :: proc(c: ^Checker, val: Type, target: Type, span: Span) -> boo
     tgt := resolve_infer(target)
     _, tkind, tok := numeric_info(tgt)
     if !tok { return false }
-    _, is_float_infer := val.(Type_Infer_Float)
-    if is_float_infer != (tkind == .Float) { return false }   // int↔float stays explicit
+    // (A whole number's binding a float there; a fraction's never a whole
+    // number: the normal check says so.)
+    if _, is_float_infer := val.(Type_Infer_Float); is_float_infer && tkind != .Float { return false }
     unify_infer_concrete(c, cell, tgt, span)
     return true
 }
@@ -2109,8 +2172,7 @@ coerce_deferred_pointee :: proc(c: ^Checker, val: Type, target: Type, span: Span
     tgt := resolve_infer(tp.elem)
     _, tkind, tok := numeric_info(tgt)
     if !tok { return false }
-    _, is_float_infer := vp.elem.(Type_Infer_Float)
-    if is_float_infer != (tkind == .Float) { return false }   // int↔float stays explicit
+    if _, is_float_infer := vp.elem.(Type_Infer_Float); is_float_infer && tkind != .Float { return false }
     unify_infer_concrete(c, cell, tgt, span)
     return true
 }
@@ -2123,6 +2185,7 @@ infer_array_new :: proc(name: string, span: Span, size: int, float: bool) -> Typ
     elem := new(Infer_Cell)
     cell := new(Infer_Cell)
     elem.name, elem.span, elem.whole = name, span, cell
+    elem.fraction, elem.fraction_span = float, span
     cell.name, cell.span = name, span
     cell.open = new_clone(Type_Fixed_Array{size = size, elem = Type_Infer_Float{elem} if float else Type_Infer_Int{elem}})
     append(&g_infer_arrays, cell)
@@ -2179,8 +2242,7 @@ infer_array_cell_fits :: proc(cell: ^Infer_Cell, target: Type) -> bool {
     if !num { return false }
     have := resolve_infer(r.open.elem)
     if !is_infer(have) { return infer_same(have, want) }
-    _, is_float := have.(Type_Infer_Float)
-    return !is_float || kind == .Float
+    return !infer_is_fraction(have) || kind == .Float
 }
 
 // What an array, a list or a slice holds; nil for anything else.
@@ -2200,12 +2262,8 @@ unify_infer_elem :: proc(c: ^Checker, elem, target: Type, span: Span) {
     tgt := resolve_infer(target)
     _, kind, num := numeric_info(tgt)
     if !num || is_infer(tgt) { return }
-    cell := infer_cell_of(elem)
-    if have := resolve_infer(elem); is_infer(have) {
-        _, is_float := have.(Type_Infer_Float)
-        if is_float != (kind == .Float) && (is_float || cell.whole == nil) { return }
-    }
-    unify_infer_concrete(c, cell, tgt, span)
+    if have := resolve_infer(elem); is_infer(have) && infer_is_fraction(have) && kind != .Float { return }
+    unify_infer_concrete(c, infer_cell_of(elem), tgt, span)
 }
 
 // A use of an array binding (its cell) where an array goes: the first fixed
@@ -2220,15 +2278,7 @@ unify_infer_array :: proc(c: ^Checker, cell: ^Infer_Cell, target: Type, span: Sp
         if ro.resolved != nil { return unify_infer_array(c, cell, ro.resolved, span) }
         if r.resolved != nil { return unify_infer_array(c, other, r.resolved, span) }
         if ro.open.size != r.open.size { return false }
-        ea, eb := r.open.elem, ro.open.elem
-        _, fa := resolve_infer(ea).(Type_Infer_Float)
-        _, fb := resolve_infer(eb).(Type_Infer_Float)
-        if fa != fb && is_infer(resolve_infer(ea)) && is_infer(resolve_infer(eb)) {
-            // (Whole numbers and fractions: fractions, both.)
-            unify_infer_concrete(c, infer_cell_of(ea), Type_F64{}, span)
-            unify_infer_concrete(c, infer_cell_of(eb), Type_F64{}, span)
-        }
-        unify_infer_cells(c, infer_cell_of(ea), infer_cell_of(eb), span)
+        unify_infer_cells(c, infer_cell_of(r.open.elem), infer_cell_of(ro.open.elem), span)
         unify_infer_cells(c, cell, other, span)
         return true
     }
@@ -2473,12 +2523,20 @@ promote_numeric :: proc(c: ^Checker, a: Type, b: Type, span: Span) -> Type {
     b_open := is_infer(rb)
     if a_open && b_open {
         if ca != nil && cb != nil { unify_infer_cells(c, ca, cb, span) }
+        // (A binding meeting a fraction, `x * 9.81`: a float, as `2 * 9.81` is.)
+        if ca != nil && cb == nil && infer_is_fraction(rb) { infer_mark_fraction(c, ca, span, span) }
+        if cb != nil && ca == nil && infer_is_fraction(ra) { infer_mark_fraction(c, cb, span, span) }
         if ca != nil { return a }   // carry a binding cell so the result still defers
         if cb != nil { return b }
         // (Two literals, an int and a float — `2 / 1.5` — a float, whichever
         // side it's on: the left's kind made `x := 2 / 1.5` the int 2.)
         if _, float := rb.(Type_Infer_Float); float { return rb }
         return ra
+    }
+    // (A fraction beside a whole number's type, `i * 9.81`: a cast says which.)
+    if a_open && ca == nil && infer_is_fraction(ra) && is_integer(rb) || b_open && cb == nil && infer_is_fraction(rb) && is_integer(ra) {
+        check_error(c, span, TYPE_MISMATCHED_TYPES_ARITHMETIC_USE_EXPLICIT, type_name(ra) if !a_open else "a fraction", type_name(rb) if !b_open else "a fraction")
+        return Type_Error{}
     }
     if a_open {
         if ca != nil { unify_infer_concrete(c, ca, rb, span) }

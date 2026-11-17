@@ -367,7 +367,8 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id) {
         // Its width is the one its uses give it (unify_infer_concrete): all the same.
         cell := new(Infer_Cell)
         cell.name, cell.span = name, span
-        if src := infer_cell_of(vt); src != nil { unify_infer_cells(k.c, cell, src, span) }
+        cell.fraction, cell.fraction_span = infer_is_fraction(vt), span
+        if src := infer_cell_of(vt); src != nil { unify_infer_cells(k.c, src, cell, span) }   // (its root the first's: named in conflicts)
         if _, is_float := vt.(Type_Infer_Float); is_float {
             final = Type_Infer_Float{cell = cell}
         } else {
@@ -986,6 +987,8 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
     case .For_Range:
         lt := tc_check(k, v.lo)
         ht := tc_check(k, v.hi)
+        tc_whole_use(k, lt, span)
+        tc_whole_use(k, ht, span)
         it := range_counter(lt, ht, tc_type(k, v.type_, span) if v.type_ != 0 else nil)
         tc_settle(k, v.lo, it)
         tc_settle(k, v.hi, it)
