@@ -211,7 +211,7 @@ can_do_generic :: proc(tn: Tree_Id) -> bool {
     t := &build_tree
     if tn == 0 { return false }
     #partial switch t.tag[tn] {
-    case .Type_Dollar:                return true
+    case .Type_Dollar, .Type_Tilde:   return true
     case .Type_Paren, .Type_Pointer:  return can_do_generic(Tree_Id(t.a[tn]))
     case .Type_Slice, .Type_Partial, .Type_Array: return can_do_generic(Tree_Id(t.b[tn]))
     case .Type_Generic:
@@ -280,7 +280,7 @@ can_do_shape :: proc(checked: ^Checked_Program, defs: map[string]Ref, tn: Tree_I
 can_do_elem :: proc(tn: Tree_Id, elem: Type) -> bool {
     t := &build_tree
     #partial switch t.tag[tn] {
-    case .Type_Dollar:  return true
+    case .Type_Dollar, .Type_Tilde: return true
     case .Type_Keyword: return tc_text(t.main[tn]) == type_name(elem)
     }
     return false

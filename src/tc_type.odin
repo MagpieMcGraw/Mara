@@ -91,9 +91,11 @@ tc_type_impl :: proc(k: ^TC, n: Tree_Id, span: Span) -> Type {
     case .Type_Generic:
         return tc_generic_type(k, n, span)
     case .Type_Tilde:
-        // (A shape is a struct param's: tc_struct_generics.)
+        // (A fun param's shape, in an instance: the type it was given. A
+        // struct param's is its param's name: tc_struct_generics.)
+        if bound, ok := tc_bound(k, t.main[n]); ok && bound != nil { return bound }
         name := tc_text(Token_Id(t.a[n]))
-        tc_error(k, span, TYPE_ONLY_VALID_TYPE_GENERIC_PARAMETER, name, name)
+        tc_error(k, span, TYPE_ONLY_VALID_TYPE_GENERIC_PARAMETER, name, name, name)
         return Type_Error{}
     case .Type_Of:
         return tc_fun_type_of(k, n, span)

@@ -1172,8 +1172,9 @@ record_scope_def :: proc(r: ^Name_Table, def, node: Tree_Id) {
     outer := r.generic
     r.generic = node
     for g in v.generics { record_type_param(r, t.main[g]) }   // (their kinds and defaults: tokens)
-    // (`$T` written in a param's type, a result's: a type param.)
-    for g in v.params { record_dollars(r, params_view(t, g).type_) }
+    // (`$T` written in a param's type, a result's: a type param. A fun
+    // param's `~S` too, one with no name.)
+    for g in v.params { record_dollars(r, params_view(t, g).type_, !is_struct) }
     for x in v.returns { record_dollars(r, params_view(t, x).type_ if t.tag[x] == .Param_Group else x) }
     if is_struct { for s in v.body { if t.tag[s] == .Decl { record_dollars(r, decl_view(t, s).type_) } } }   // (its fields' `$T`s)
     for g in v.params {
@@ -1240,25 +1241,32 @@ record_type_param :: proc(r: ^Name_Table, tok: Token_Id) {
     record_scope_here(r).params[tc_text(tok)] = {tok, .Type}
 }
 
-// The type params a type written declares (`$T`).
+// The type params a type written declares (`$T`). `shapes`: each `~S` in it
+// one too (a fun param's type) — with no name, declared by its `~`, its own
+// each time it's written.
 @(private="file")
-record_dollars :: proc(r: ^Name_Table, n: Tree_Id) {
+record_dollars :: proc(r: ^Name_Table, n: Tree_Id, shapes := false) {
     if n == 0 { return }
     t := r.t
     #partial switch t.tag[n] {
     case .Type_Dollar:
         tok := Token_Id(t.a[n])
         if !record_declared_here(r, tc_text(tok)) { record_type_param(r, tok) }
+    case .Type_Tilde:
+        if !shapes || r.generic == 0 { return }
+        r.type_params[t.main[n]] = true
+        if r.generic not_in r.type_params_of { r.type_params_of[r.generic] = {} }
+        append(&r.type_params_of[r.generic], t.main[n])
     case .Type_Pointer, .Type_Paren:
-        record_dollars(r, Tree_Id(t.a[n]))
+        record_dollars(r, Tree_Id(t.a[n]), shapes)
     case .Type_Slice:
-        record_dollars(r, Tree_Id(t.b[n]))
+        record_dollars(r, Tree_Id(t.b[n]), shapes)
     case .Type_Partial:
         record_dollars(r, Tree_Id(t.a[n]))   // (a size's `$N`)
-        record_dollars(r, Tree_Id(t.b[n]))
+        record_dollars(r, Tree_Id(t.b[n]), shapes)
     case .Type_Array:
         record_dollars(r, Tree_Id(tree_rec(t, t.a[n], 2)[0]))
-        record_dollars(r, Tree_Id(t.b[n]))
+        record_dollars(r, Tree_Id(t.b[n]), shapes)
     case .Type_Generic, .Type_Fun:
         for a in tree_list(t, t.a[n]) { record_dollars(r, a) }
         if t.tag[n] == .Type_Fun { for a in tree_list(t, t.b[n]) { record_dollars(r, a) } }

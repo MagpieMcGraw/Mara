@@ -89,12 +89,13 @@ tc_is_generic :: proc(k: ^TC, node: Tree_Id) -> bool {
     return false
 }
 
-// Whether a type as written names a type it is given: `$T`.
+// Whether a type as written names a type it is given: `$T`, or a shape's
+// (`~S`).
 tc_type_has_dollar :: proc(k: ^TC, n: Tree_Id) -> bool {
     if n == 0 { return false }
     t := k.t
     #partial switch t.tag[n] {
-    case .Type_Dollar: return true
+    case .Type_Dollar, .Type_Tilde: return true
     case .Type_Pointer, .Type_Paren: return tc_type_has_dollar(k, Tree_Id(t.a[n]))
     case .Type_Slice: return tc_type_has_dollar(k, Tree_Id(t.b[n]))
     case .Type_Partial: return tc_type_has_dollar(k, Tree_Id(t.a[n])) || tc_type_has_dollar(k, Tree_Id(t.b[n]))
@@ -148,10 +149,12 @@ tc_generic_params :: proc(k: ^TC, node: Tree_Id) -> []Token_Id {
 }
 
 // The type param a type as written names (`$T`, `T`): the token that
-// declares it (0: none).
+// declares it (0: none). A fun param's `~S` is one with no name: its `~`.
 tc_type_param_named :: proc(k: ^TC, n: Tree_Id) -> Token_Id {
     t := k.t
     #partial switch t.tag[n] {
+    case .Type_Tilde:
+        return t.main[n]
     case .Type_Dollar:
         if ref := k.names.refs[n]; ref.kind != .None { return ref.decl }
         return Token_Id(t.a[n])
@@ -220,6 +223,25 @@ tc_infer :: proc(k: ^TC, subst: ^TC_Bindings, n: Tree_Id, actual_raw: Type) {
     // binding no use has given a width yet, its default — from here on.)
     if decl != 0 && decl in subst^ && subst[decl] == nil {
         subst[decl] = tc_pin_default(k, actual, k.infer_at if k.infer_at != {} else tree_span(t, n))
+    }
+}
+
+// Each `~S` in a fun param's type as written, checked against what the call
+// bound it to: the type has S's fields and methods (check_shape_constraint).
+tc_shapes_hold :: proc(k: ^TC, n: Tree_Id, subst: TC_Bindings, param: string, span: Span) {
+    if n == 0 { return }
+    t := k.t
+    #partial switch t.tag[n] {
+    case .Type_Tilde:
+        bound := subst[t.main[n]] or_else nil
+        if bound == nil { return }
+        shape_tok := Token_Id(t.a[n])
+        shape, _ := tc_ref_type(k, k.names.token_refs[shape_tok] or_else {}, tc_text(shape_tok))
+        check_shape_constraint(k.c, param, tc_text(shape_tok), shape.(^Type_Scope) or_else nil, bound, span, fields = true)
+    case .Type_Pointer, .Type_Paren:
+        tc_shapes_hold(k, Tree_Id(t.a[n]), subst, param, span)
+    case .Type_Slice, .Type_Partial, .Type_Array:
+        tc_shapes_hold(k, Tree_Id(t.b[n]), subst, param, span)
     }
 }
 
@@ -310,6 +332,16 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
             tc_error(k, span, TYPE_COULD_INFER_TYPE_PARAMETER_CALL, tc_text(p), name)
             return Type_Error{}
         }
+    }
+    // (A shape's argument has what the shape has — `things: []~Entity`: said
+    // at the call, no instance made of one that hasn't.)
+    {
+        errors := k.c.errors
+        for g in v.params {
+            pv := params_view(tr, g)
+            if len(pv.names) > 0 { tc_shapes_hold(k, pv.type_, subst, tc_text(pv.names[0]), span) }
+        }
+        if k.c.errors != errors { return Type_Error{} }
     }
     type_args := make([dynamic]Type, context.temp_allocator)
     for p in params { append(&type_args, subst[p]) }

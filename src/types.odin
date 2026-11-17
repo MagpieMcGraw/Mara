@@ -1807,9 +1807,11 @@ self_equivalent :: proc(ct_type, arg_type: Type, ct_self, arg_self: ^Type_Scope)
 //   - each shared method's signature is equivalent under Self substitution
 //     (param count + param types + return type, treating the receiver and
 //     any other Self occurrences as positionally compatible).
-// Its fields and its size are its own: what's made is the concrete type.
+// Its size is its own: what's made is the concrete type. So are its fields —
+// but `fields` (a fun param's `~S`): then it has each of the constraint's
+// too, by name, of the same type; where in it, and what else it has, its own.
 // Each shortcoming surfaces as its own diagnostic at `span`.
-check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string, ct: ^Type_Scope, arg: Type, span: Span) {
+check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string, ct: ^Type_Scope, arg: Type, span: Span, fields := false) {
     // `void` is the universal subtype for shape constraints — used as the
     // default type-arg when the user writes `p : Program` (no arena).
     // Trivially satisfies any `~T` requirement (no API to miss, zero size
@@ -1833,6 +1835,21 @@ check_shape_constraint :: proc(c: ^Checker, param_name, constraint_name: string,
         return
     }
     shown := arg_scope.source_name if arg_scope.source_name != "" else arg_scope.name   // (as written, not its flat name)
+    if arg_scope == ct { return }   // (the shape itself)
+    if fields {
+        for f in ct.fields {
+            found := false
+            for af in arg_scope.fields {
+                if af.name != f.name { continue }
+                found = true
+                if !self_equivalent(f.type_, af.type_, ct, arg_scope) {
+                    check_error(c, span, TYPE_TYPE_SATISFY_FIELD_TYPE, shown, constraint_name, f.name, type_name(f.type_), type_name(af.type_))
+                }
+                break
+            }
+            if !found { check_error(c, span, TYPE_TYPE_SATISFY_MISSING_FIELD, shown, constraint_name, f.name, type_name(f.type_)) }
+        }
+    }
     for fn_name, ct_fn in ct.functions {
         arg_fn, arg_has := arg_scope.functions[fn_name]
         if !arg_has || arg_fn == nil {
