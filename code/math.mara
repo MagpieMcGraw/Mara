@@ -1284,3 +1284,29 @@ quat_slerp :: fun(a: Quat, b: Quat, t: f32) -> Quat {
 	q.w = s1 * a.w + s2 * b2.w
 	return q
 }
+
+// A seeded random number generator (splitmix64): the same seed gives the same
+// numbers every run. `r := Random(seed)`, then `&r.between(1, 6)`. For keys
+// and tokens, which nobody may guess, use os.random_bytes instead.
+Random :: struct(seed: u64) {
+	state := seed
+
+	// The next 64 random bits.
+	next :: fun(r: ^Self) -> u64 {
+		r.state +%= 0x9E3779B97F4A7C15
+		z := r.state
+		z = (z ~ (z >> 30)) *% 0xBF58476D1CE4E5B9
+		z = (z ~ (z >> 27)) *% 0x94D049BB133111EB
+		return z ~ (z >> 31)
+	}
+
+	// A random whole number from lo to hi, both included. lo can't be above hi.
+	between :: fun(r: ^Self, lo: i64, hi: i64) -> i64 {
+		return lo + i64(r.next() % u64(hi - lo + 1))
+	}
+
+	// A random number from 0 up to 1, 1 not included.
+	fraction :: fun(r: ^Self) -> f64 {
+		return f64(r.next() >> 11) / 9007199254740992.0
+	}
+}
