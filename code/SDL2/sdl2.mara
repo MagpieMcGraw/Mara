@@ -383,13 +383,13 @@ SetHint :: fun(name: []utf8, value: []utf8) -> i32 { return SDL_SetHint(cstring(
 // What failed last, as SDL says it.
 GetError :: fun() -> [256]utf8 {
     out : [256]utf8
-    &out + read_cstring(out.cap - 1, SDL_GetError())
+    &out ++ read_cstring(out.cap - 1, SDL_GetError())
     return out
 }
 // The SDL build's revision.
 GetRevision :: fun() -> [256]utf8 {
     out : [256]utf8
-    &out + read_cstring(out.cap - 1, SDL_GetRevision())
+    &out ++ read_cstring(out.cap - 1, SDL_GetRevision())
     return out
 }
 
@@ -450,7 +450,7 @@ GetBasePath :: fun() -> [512]utf8 {
     out : [512]utf8
     p := SDL_GetBasePath()
     if p != void {
-        &out + read_cstring(out.cap - 1, p)
+        &out ++ read_cstring(out.cap - 1, p)
         SDL_free(p)
     }
     return out
@@ -461,7 +461,7 @@ GetPrefPath :: fun(org: []utf8, app: []utf8) -> [512]utf8 {
     out : [512]utf8
     p := SDL_GetPrefPath(cstring(org), cstring(app))
     if p != void {
-        &out + read_cstring(out.cap - 1, p)
+        &out ++ read_cstring(out.cap - 1, p)
         SDL_free(p)
     }
     return out
