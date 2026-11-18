@@ -631,12 +631,16 @@ tc_assign :: proc(k: ^TC, s: Tree_Id) {
 tc_assign_one :: proc(k: ^TC, s, target, value: Tree_Id) {
     t := k.t
     span := tree_span(t, s)
+    was := k.write_at
+    k.write_at = tc_write_root(k, target)
     #partial switch t.tag[target] {
     case .Field: tc_field_assign(k, s, target, value)
     case .Index: tc_index_assign(k, s, target, value)
     case .Slice: tc_slice_assign(k, s, target, value)
     case .Deref: tc_deref_assign(k, s, target, value)
     }
+    k.write_at = was
+    tc_var_written(k, target)
     #partial switch t.tag[target] {
     case .Field, .Index, .Slice, .Deref:
         // (Into a constant: its storage is read-only.)
@@ -683,11 +687,14 @@ tc_name_write :: proc(k: ^TC, target: Tree_Id, name: string, span: Span) -> (exi
     ref = k.names.refs[target]
     if tc_hider_use(k, ref, name, span) { return nil, {}, false }
     found: bool
+    k.no_read = true
     existing, found = tc_ref_type(k, ref, name)
+    k.no_read = false
     if found {
         tc_set_ref(k, target, ref)
         tc_set_type(k, target, existing)   // (the name written: its type)
         tc_list_use(k, ref.decl, existing, false, false, span)
+        if ref.kind == .Local { k.lists[ref.decl] += {.Written} }
     }
     if ref.kind == .Const {
         tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, name)
@@ -983,6 +990,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         tc_loop_name(k, v.index)
         if v.elem != 0 && tc_text(v.elem) != "_" { tc_bind(k, tc_text(v.elem), elem, {v.elem, .Local}) }
         if v.index != 0 && tc_text(v.index) != "_" { tc_bind(k, tc_text(v.index), slice_header_width_type, {v.index, .Local}) }
+        if v.by_ref == 0 && v.elem != 0 { k.lists[v.elem] += {.Copy} }
         tc_scope(k, v.body)
     case .For_Range:
         lt := tc_check(k, v.lo)
@@ -1208,6 +1216,9 @@ tc_compound :: proc(k: ^TC, s: Tree_Id) {
     target := Tree_Id(t.a[s])
     r := tree_rec(t, t.b[s], 2)
     op_tok, value := Token_Id(r[0]), Tree_Id(r[1])
+    was := k.write_at
+    defer k.write_at = was
+    k.write_at = tc_write_root(k, target)
     #partial switch t.tag[target] {
     case .Field, .Index, .Deref:
         #partial switch t.tag[target] {
@@ -1215,6 +1226,7 @@ tc_compound :: proc(k: ^TC, s: Tree_Id) {
         case .Index: tc_index_assign(k, s, target, value, op_tok)
         case .Deref: tc_deref_assign(k, s, target, value, op_tok)
         }
+        tc_var_written(k, target)
         if cname, is_const := tc_write_root_const(k, target); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
         return
     case .Ident:
@@ -1503,6 +1515,10 @@ tc_match :: proc(k: ^TC, s: Tree_Id) {
                     was, had := tc_bound(k, a.bound_tok)
                     defer tc_bound_restore(k, a.bound_tok, was, had)
                     tc_bind(k, a.bound, vs, {a.bound_tok, .Local})
+                    // (The variant where it is, written through; the subject
+                    // by its own name isn't one more local.)
+                    k.lists[a.bound_tok] += {.View}
+                    if a.bound_tok == tr.main[tc_unparen(k, subj)] { k.lists[a.bound_tok] += {.Read} }
                     tc_scope(k, a.body)
                     if name != "" { covered[name] = true }
                     continue

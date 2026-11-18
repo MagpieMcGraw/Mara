@@ -84,6 +84,11 @@ emit_diagnostic_at :: proc(kind: Diagnostic_Kind, span: Span, msg: string, args:
     append(&g_diagnostics, Diagnostic{kind = kind, location = strings.clone(span_location(span)), message = body, at = span.at})
 }
 
+// One with no place of its own, sorted after what's at token `at`.
+emit_diagnostic_after :: proc(kind: Diagnostic_Kind, at: Token_Id, msg: string, args: ..any) {
+    append(&g_diagnostics, Diagnostic{kind = kind, message = fmt.aprintf(msg, ..args), at = at})
+}
+
 // How many diagnostics are queued: where a phase's begin (diagnostics_sort).
 diagnostics_count :: proc() -> int {
     return len(g_diagnostics)
@@ -608,6 +613,10 @@ TYPE_SLICE_HIGH_BOUND_NUMERIC :: "slice high bound must be numeric, got %s"
 TYPE_IN_NEEDS_ITEMS :: "`in` takes a range, `x in lo .. hi`, or something with items to look among — a list, an array, a view: `x in xs` — and %s has none"
 TYPE_IN_ITEM_TYPE :: "can't look for a %s among %s items: `==` doesn't compare them"
 WARN_LIST_STAYS_EMPTY :: "'%s' is %s, but nothing gives it a len: it stays an empty list, and %s runs no times. Append to it with `++`, or declare it a fixed array, `[n!]T`"
+WARN_VAR_NEVER_USED :: "'%s' is never used (name it `_` if that's meant)"
+WARN_VAR_NEVER_READ :: "'%s' is written, but nothing reads it"
+WARN_LOOP_COPY_WRITTEN :: "'%s' is a copy of each item: what's written to it is lost when the loop moves on. To change the items, loop with `for &%s in ...`"
+WARN_VARS_MORE :: "%d more locals are never read (the first %d are listed)"
 WARN_LOOP_NEVER_LOOPS :: "this loop never runs a second time: every run ends in a `break` or `return` — was a statement meant inside a block? (code that runs once reads better as an `if`)"
 WARN_CHAIN_MISALIGNED :: "this `%s` belongs to the `if` on line %d, but is indented differently. Was it meant for another `if`?"
 WARN_LOOP_ON_IN_TEST :: "this `for` runs while `%s` is true: `%s` isn't a name for each item, so it's a test. To loop over the items, name them (`for x in …`); to loop on the test, put it in parentheses"

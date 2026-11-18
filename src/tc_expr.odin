@@ -251,7 +251,9 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
     // (What it refers to — the name table's — and what that means now: a
     // constant not checked yet is checked here, by its use.)
     ref := k.names.refs[n]
+    k.no_read = n == k.write_at
     t, ok := tc_ref_type(k, ref, name)
+    k.no_read = false
     kc := k.const_at[ref.decl] if ref.kind == .Const else nil
     // (Two things in sight of this name: ambiguous, said so.)
     if ref.kind == .None && tc_ambiguous(k, k.names.misses[n] or_else {}, span, name) { return Type_Error{} }

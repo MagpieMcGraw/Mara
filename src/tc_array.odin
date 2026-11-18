@@ -82,7 +82,13 @@ tc_index_kind :: proc(k: ^TC, base_n, idx_n: Tree_Id, fa: ^Type_Fixed_Array, it:
 // any use that could give it one: all but an index's base, a `.len` or
 // `.cap` read, a loop over it and an argument that is the list itself, by
 // value (k.list_at, k.list_ok: the node about to be checked as one of those).
-List_Flag    :: enum u8 { Fresh, Changed, Indexed }
+//
+// A local nothing reads (the same flags): one never named again, or only
+// written — `en.pos = v` in a `for en in xs`, lost with the copy. Var: a
+// local's declaration; Read: any naming of it but a write's root (k.write_at);
+// Written; Copy: a loop's item, by value; View: a `let`, written through to
+// the memory it's of. Warned with the lists.
+List_Flag    :: enum u8 { Fresh, Changed, Indexed, Var, Read, Written, Copy, View }
 List_Flags   :: bit_set[List_Flag; u8]
 List_Indexed :: struct { decl: Token_Id, span: Span, loop: bool }
 
@@ -126,7 +132,74 @@ tc_lists_raw :: proc(k: ^TC, t: Type) {
     }
 }
 
+VARS_SHOWN :: 20   // locals nothing reads, said one by one
+
+// The name a write's target is rooted at, as written: x of `x.f[i] = v` (0: none).
+tc_write_root :: proc(k: ^TC, target: Tree_Id) -> Tree_Id {
+    tr := k.t
+    cur := target
+    for {
+        #partial switch tr.tag[cur] {
+        case .Paren, .Field, .Index, .Slice: cur = Tree_Id(tr.a[cur])
+        case .Ident: return cur
+        case: return 0
+        }
+    }
+}
+
+// A write to `target`, checked: the local it's rooted at is written — or
+// read, when the write goes through a pointer, a view, or to a slice's items.
+tc_var_written :: proc(k: ^TC, target: Tree_Id) {
+    tr := k.t
+    cur := target
+    through := false
+    for {
+        #partial switch tr.tag[cur] {
+        case .Paren:
+            cur = Tree_Id(tr.a[cur])
+            continue
+        case .Field, .Index, .Slice:
+            inner := Tree_Id(tr.a[cur])
+            #partial switch _ in distinct_base(tc_node_type(k, inner)) {
+            case ^Type_Ptr:   through = true
+            case ^Type_Slice: through ||= tr.tag[cur] != .Field
+            }
+            cur = inner
+            continue
+        case .Ident:
+            if ref := k.names.refs[cur]; ref.kind == .Local { k.lists[ref.decl] += {.Read} if through || .View in k.lists[ref.decl] else {.Written} }
+        }
+        return
+    }
+}
+
 tc_lists_report :: proc(k: ^TC) {
+    if k.c.errors == 0 {
+        // (The first VARS_SHOWN said, the project's own before the standard
+        // library's; the rest counted, in one line after the last said.)
+        shown, more := 0, 0
+        last: Token_Id
+        for lib in ([]bool{false, true}) {
+            for decl in k.var_decls {
+                f := k.lists[decl]
+                if .Read in f || build_files[build_tokens[decl].file].stdlib != lib { continue }
+                if shown == VARS_SHOWN {
+                    more += 1
+                    continue
+                }
+                shown += 1
+                last = max(last, decl)
+                span := Span{at = decl, tok = decl, end = decl + 1}
+                name := tc_text(decl)
+                switch {
+                case .Written not_in f: check_warning(k.c, span, WARN_VAR_NEVER_USED, name)
+                case .Copy in f:        check_warning(k.c, span, WARN_LOOP_COPY_WRITTEN, name, name)
+                case:                   check_warning(k.c, span, WARN_VAR_NEVER_READ, name)
+                }
+            }
+        }
+        if more > 0 { emit_diagnostic_after(.Warning, last, WARN_VARS_MORE, more, VARS_SHOWN) }
+    }
     for u in k.list_indexed {
         if f := k.lists[u.decl]; .Fresh in f && .Changed not_in f {
             check_warning(k.c, u.span, WARN_LIST_STAYS_EMPTY, tc_text(u.decl), "looped over" if u.loop else "indexed", "the loop" if u.loop else "a loop over it")

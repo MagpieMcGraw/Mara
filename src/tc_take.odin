@@ -90,6 +90,7 @@ tc_decl_take :: proc(k: ^TC, s, target, value: Tree_Id, name: string, ann: Type)
     }
     final := vt if is_any(ann) else ann
     tc_bind(k, name, final, ref)
+    k.lists[ref.decl] += {.View}
     tc_set_type(k, target, final)
     tc_note_decl(k, name, final, span, true)
 }

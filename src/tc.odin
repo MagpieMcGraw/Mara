@@ -80,6 +80,9 @@ TC :: struct {
     list_ok:       Tree_Id,
     list_at:       Tree_Id,
     list_indexed:  [dynamic]List_Indexed,
+    var_decls:     [dynamic]Token_Id,   // each local's declaration (List_Flag.Var)
+    write_at:      Tree_Id,             // the name about to be checked as a write's root: no read of it
+    no_read:       bool,                // tc_ref_type asked what a written name is
     lists_raw:     map[^Type_Scope]bool,   // structs read out of raw memory, seen (tc_lists_raw)
     hiders: map[Token_Id]Hider,   // each variable named as a definition in sight: said where it's used bare (tc_hider_use)
     field_ref_types: [dynamic]Field_Ref_Use,   // each field reference type spelled or made, checked once all structs are (tc_validate_field_refs)
@@ -156,6 +159,8 @@ tc_ref_type :: proc(k: ^TC, ref: Ref, name: string) -> (Type, bool) {
         return t, ok
     }
     if ref.decl == 0 { return nil, false }
+    // (A local asked for, but as what a write lands in: read.)
+    if ref.kind == .Local && !k.no_read { k.lists[ref.decl] += {.Read} }
     if t, ok := tc_bound(k, ref.decl); ok { return t, true }
     if ref.kind != .Type && ref.kind != .Fun && ref.kind != .Const { return nil, false }
     if !tc_owner_registered(k, ref.decl) { return nil, false }
@@ -287,6 +292,11 @@ tc_bind :: proc(k: ^TC, name: string, t: Type, ref: Ref) {
     #partial switch ref.kind {
     case .Local, .Param, .Result:
         if k.body != nil && ref.decl != 0 && name != "_" { append(&k.vars, Var_Decl{ref.decl, ref.kind, t}) }
+    }
+    // (A struct body's are its fields.)
+    if ref.kind == .Local && ref.decl != 0 && name != "_" && k.body != nil && k.body.kind == .Fun && .Var not_in k.lists[ref.decl] {
+        k.lists[ref.decl] += {.Var}
+        append(&k.var_decls, ref.decl)
     }
 }
 

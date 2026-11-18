@@ -86,7 +86,11 @@ tc_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
             if pname, immutable := tc_write_root_param(k, tg); immutable {
                 tc_error(k, span, TYPE_CANNOT_ASSIGN_IMMUTABLE_PARAMETER, pname)
             }
+            was := k.write_at
+            k.write_at = tc_write_root(k, tg)
             tt := tc_check(k, tg)
+            k.write_at = was
+            tc_var_written(k, tg)
             if cname, is_const := tc_write_root_const(k, tg); is_const { tc_error(k, span, TYPE_CANNOT_WRITE_CONSTANT, cname) }
             if !is_any(tt) && !is_any(rt) && !types_equal(tt, rt) {
                 tc_error(k, span, TYPE_CANNOT_ASSIGN_MULTI_RETURN, type_name(rt), type_name(tt))
