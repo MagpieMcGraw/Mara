@@ -195,7 +195,7 @@ date_http_text :: fun(d: Date) -> str64 {
 // A whole number as at least `count` digits, with zeros in front.
 date_digits :: fun(out: ^[]utf8, n: i64, count: i64) {
 	text := int_text(n)
-	for k in text.len:count do out ++ '0'
+	for text.len:count do out ++ '0'
 	out ++ text
 }
 

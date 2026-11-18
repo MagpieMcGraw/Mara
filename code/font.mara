@@ -1215,7 +1215,7 @@ parse_simple_glyph_body :: fun(outline: ^Outline, glyph_bytes: []byte) -> err {
 			cursor += 1
 		}
 		if p + count > n_points do return Bad_Glyph
-		for r in 0:count {
+		for 0:count {
 			flags[p] = f
 			p += 1
 		}

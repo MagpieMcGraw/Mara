@@ -169,7 +169,7 @@ write_entire_file :: fun(path: []utf8, data: []byte) -> err {
 		return we
 	}
 	re := file_rename(tmp, path)
-	for tries in 0:20 {
+	for 0:20 {
 		if not re do return
 		os.sleep_ms(10)
 		re = file_rename(tmp, path)

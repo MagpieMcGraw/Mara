@@ -449,7 +449,7 @@ pbkdf2_sha256 :: fun(password: []byte, salt: []byte, iterations: i64, out: ^[]by
 		sha256_add(&first.inner, number)
 		u := hmac_sha256_finish(&first)
 		total := u
-		for k in 1:iterations {
+		for 1:iterations {
 			next_hmac := keyed
 			sha256_add(&next_hmac.inner, u)
 			u = hmac_sha256_finish(&next_hmac)

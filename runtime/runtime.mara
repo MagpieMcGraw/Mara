@@ -334,7 +334,7 @@ args_read :: fun(rt: ^Runtime) {
 				i += 1
 			}
 			if line[i] == '"' {
-				for k in 0:slashes / 2 do arg_byte(rt, 92)
+				for 0:slashes / 2 do arg_byte(rt, 92)
 				if slashes % 2 == 1 {
 					arg_byte(rt, 34)
 				elif quoted and line[i + 1] == '"'
@@ -345,7 +345,7 @@ args_read :: fun(rt: ^Runtime) {
 				}
 				i += 1
 			else
-				for k in 0:slashes do arg_byte(rt, 92)
+				for 0:slashes do arg_byte(rt, 92)
 				if line[i] != 0 and (quoted or (line[i] != ' ' and line[i] != 9)) {
 					b : u8 = line[i]
 					arg_byte(rt, b)
@@ -374,7 +374,7 @@ arg_at :: fun(rt: ^Runtime, i: i64) -> ^byte {
 // A number's last n digits added to `out`.
 digits_add :: fun(out: ^[]byte, v: i64, n: i64) {
 	scale : i64 = 1
-	for k in 1:n do scale *= 10
+	for 1:n do scale *= 10
 	for scale > 0 {
 		out ++ u8(i64('0') + v / scale % 10)
 		scale /= 10
@@ -520,7 +520,7 @@ stack_walk :: fun(rt: ^Runtime) -> i64 {
 	if rt.walk_mem == void do return 0
 	mem := slice_from_ptr(rt.walk_mem, WALK_ROOM)
 	n : i64 = 0
-	for k in 0:FRAMES {
+	for 0:FRAMES {
 		rip : u64 = mem[CONTEXT_RIP]
 		again := false
 		if n > 0 {

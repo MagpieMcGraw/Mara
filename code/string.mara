@@ -276,7 +276,7 @@ parse_number :: fun(s: []utf8) -> f64, bool {
 		ten : f64 = 1
 		steps := power
 		if steps < 0 do steps = -steps
-		for k in 0:steps {
+		for 0:steps {
 			ten *= 10.0
 		}
 		v = f64(whole)
@@ -366,7 +366,7 @@ parse_number_exact :: fun(digits: []utf8, exponent: i64) -> f64 {
 			step : i64 = 9
 			if left < step do step = left
 			by : u64 = 1
-			for k in 0:step do by *= 10
+			for 0:step do by *= 10
 			times(&big, &used, by, 0)
 			left -= step
 		}
@@ -394,7 +394,7 @@ parse_number_exact :: fun(digits: []utf8, exponent: i64) -> f64 {
 			step : i64 = 9
 			if left < step do step = left
 			by : u64 = 1
-			for k in 0:step do by *= 10
+			for 0:step do by *= 10
 			remainder : u64 = 0
 			k := used - 1
 			for k >= 0 {
@@ -495,7 +495,7 @@ float_text_f64 :: fun(x: f64, decimals: i64 = -1, significant: i64 = 6) -> str64
 	digit :: fun(limbs: []u32, k: i64) -> i64 {
 		if k < 0 or k >= limbs.len * 9 do return 0
 		v := i64(limbs[k / 9])
-		for i in k % 9:8 {
+		for k % 9:8 {
 			v /= 10
 		}
 		return v % 10
@@ -660,7 +660,7 @@ float_text_f64 :: fun(x: f64, decimals: i64 = -1, significant: i64 = 6) -> str64
 		}
 	else
 		&out ++ "0."
-		for k in 0:-exponent - 1 {
+		for 0:-exponent - 1 {
 			&out ++ '0'
 		}
 		&out ++ shown[0:n]
