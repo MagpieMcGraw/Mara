@@ -6,70 +6,76 @@
 # Each build: Odin builds the compiler, the docs' programs are built and run
 # with it, the package is made, and a program is built with the packaged
 # compiler alone. The test suite lives outside the repo: run it before tagging.
+# A failing step's last lines show on the run's page (.github/report.sh).
 name: Release
 
 on:
   push:
     tags: ['v*']
     branches: [main]
-    paths: ['.github/workflows/release.yml']
+    paths: ['.github/workflows/release.yml', '.github/report.sh']
   workflow_dispatch:
 
 env:
   ODIN_RELEASE: dev-2026-05
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Odin
-        shell: pwsh
         run: |
-          curl.exe -sSfL -o odin.zip "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_RELEASE/odin-windows-amd64-$env:ODIN_RELEASE.zip"
-          7z x odin.zip -o"$env:RUNNER_TEMP\odin" | Out-Null
-          $odin = Get-ChildItem "$env:RUNNER_TEMP\odin" -Recurse -Filter odin.exe | Select-Object -First 1
-          Add-Content $env:GITHUB_PATH $odin.DirectoryName
-          Remove-Item odin.zip
+          source .github/report.sh
+          curl -sSfL -o "$RUNNER_TEMP/odin.zip" "https://github.com/odin-lang/Odin/releases/download/$ODIN_RELEASE/odin-windows-amd64-$ODIN_RELEASE.zip"
+          7z x "$RUNNER_TEMP/odin.zip" -o"$RUNNER_TEMP/odin" > /dev/null
+          odin=$(find "$RUNNER_TEMP/odin" -name odin.exe | head -1)
+          cygpath -w "$(dirname "$odin")" >> "$GITHUB_PATH"
 
       - name: Build the compiler
-        run: odin build src -o:speed -out:Mara.exe
+        run: |
+          source .github/report.sh
+          odin build src -o:speed -out:Mara.exe
 
       - name: Build the view window
-        working-directory: view
-        run: ..\Mara.exe build view -release
+        run: |
+          source .github/report.sh
+          cd view && ../Mara.exe build view -release
 
       - name: Build and run the docs' programs
-        shell: bash
         run: |
+          source .github/report.sh
           mara="$PWD/Mara.exe"
           cp -r doc "$RUNNER_TEMP/doc" && cd "$RUNNER_TEMP/doc"
           for f in *.mara; do
             n=${f%.mara}
-            "$mara" build "$n" > build.txt 2>&1 || { cat build.txt; echo "doc/$f doesn't build"; exit 1; }
-            timeout 60 "./$n.exe" > run.txt 2>&1 || { cat run.txt; echo "doc/$f doesn't run"; exit 1; }
+            "$mara" build "$n" || { echo "doc/$f doesn't build"; exit 1; }
+            timeout 60 "./$n.exe" > /dev/null || { echo "doc/$f doesn't run"; exit 1; }
           done
 
       - name: Package
-        shell: bash
         run: |
+          source .github/report.sh
           pkg=mara-windows-x64
-          mkdir -p "$RUNNER_TEMP/$pkg"
-          git archive HEAD code runtime tools view doc editor readme README.md LICENSE | tar -x -C "$RUNNER_TEMP/$pkg"
+          git archive --format=zip -o "$RUNNER_TEMP/files.zip" HEAD code runtime tools view doc editor readme README.md LICENSE
+          7z x "$RUNNER_TEMP/files.zip" -o"$RUNNER_TEMP/$pkg" > /dev/null
           cp Mara.exe "$RUNNER_TEMP/$pkg/"
           cp view/view.exe "$RUNNER_TEMP/$pkg/view/"
-          (cd "$RUNNER_TEMP" && 7z a -tzip -mx=9 "$GITHUB_WORKSPACE/$pkg.zip" "$pkg" > /dev/null)
+          cd "$RUNNER_TEMP" && 7z a -tzip -mx=9 "$GITHUB_WORKSPACE/$pkg.zip" "$pkg" > /dev/null
 
       - name: Build a program with the package alone
-        shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/unpacked" "$RUNNER_TEMP/hello" && cd "$RUNNER_TEMP/unpacked"
-          7z x "$GITHUB_WORKSPACE/mara-windows-x64.zip" > /dev/null
-          cd "$RUNNER_TEMP/hello"
+          source .github/report.sh
+          7z x mara-windows-x64.zip -o"$RUNNER_TEMP/unpacked" > /dev/null
+          mkdir -p "$RUNNER_TEMP/hello" && cd "$RUNNER_TEMP/hello"
           printf 'module hello\n\nmain :: () {\n\tprint("Hello there!")\n}\n' > hello.mara
           "$RUNNER_TEMP/unpacked/mara-windows-x64/Mara.exe" build hello
-          ./hello.exe | grep -q "Hello there!"
+          ./hello.exe | grep "Hello there!"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -79,30 +85,35 @@ jobs:
   linux:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: clang, lld and Odin
         run: |
+          source .github/report.sh
           sudo apt-get update -q && sudo apt-get install -y -q clang lld
-          curl -sSfL -o odin.tar.gz "https://github.com/odin-lang/Odin/releases/download/$ODIN_RELEASE/odin-linux-amd64-$ODIN_RELEASE.tar.gz"
-          mkdir -p "$RUNNER_TEMP/odin" && tar -xzf odin.tar.gz -C "$RUNNER_TEMP/odin" && rm odin.tar.gz
+          curl -sSfL -o "$RUNNER_TEMP/odin.tar.gz" "https://github.com/odin-lang/Odin/releases/download/$ODIN_RELEASE/odin-linux-amd64-$ODIN_RELEASE.tar.gz"
+          mkdir -p "$RUNNER_TEMP/odin" && tar -xzf "$RUNNER_TEMP/odin.tar.gz" -C "$RUNNER_TEMP/odin"
           dirname "$(find "$RUNNER_TEMP/odin" -name odin -type f | head -1)" >> "$GITHUB_PATH"
 
       - name: Build the compiler
-        run: odin build src -o:speed -out:mara
+        run: |
+          source .github/report.sh
+          odin build src -o:speed -out:mara
 
       - name: Build and run the docs' programs
         run: |
+          source .github/report.sh
           mara="$PWD/mara"
           cp -r doc "$RUNNER_TEMP/doc" && cd "$RUNNER_TEMP/doc"
           for f in *.mara; do
             n=${f%.mara}
-            "$mara" build "$n" > build.txt 2>&1 || { cat build.txt; echo "doc/$f doesn't build"; exit 1; }
-            timeout 60 "./$n" > run.txt 2>&1 || { cat run.txt; echo "doc/$f doesn't run"; exit 1; }
+            "$mara" build "$n" || { echo "doc/$f doesn't build"; exit 1; }
+            timeout 60 "./$n" > /dev/null || { echo "doc/$f doesn't run"; exit 1; }
           done
 
       - name: Package
         run: |
+          source .github/report.sh
           pkg=mara-linux-x64
           mkdir -p "$RUNNER_TEMP/$pkg"
           git archive HEAD code runtime doc editor readme README.md LICENSE | tar -x -C "$RUNNER_TEMP/$pkg"
@@ -111,12 +122,13 @@ jobs:
 
       - name: Build a program with the package alone
         run: |
+          source .github/report.sh
           mkdir -p "$RUNNER_TEMP/unpacked" "$RUNNER_TEMP/hello"
           tar -xzf mara-linux-x64.tar.gz -C "$RUNNER_TEMP/unpacked"
           cd "$RUNNER_TEMP/hello"
           printf 'module hello\n\nmain :: () {\n\tprint("Hello there!")\n}\n' > hello.mara
           "$RUNNER_TEMP/unpacked/mara-linux-x64/mara" build hello
-          ./hello | grep -q "Hello there!"
+          ./hello | grep "Hello there!"
 
       - uses: actions/upload-artifact@v4
         with:
