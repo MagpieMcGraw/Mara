@@ -1,0 +1,140 @@
+# Mara's releases. A version tag (git tag v0.1.0, pushed) builds Mara on
+# Windows and Linux and publishes both as a GitHub release: mara-windows-x64.zip
+# and mara-linux-x64.tar.gz. A push to main that changes this file, or a run
+# started by hand from the Actions tab, builds them as artifacts only.
+#
+# Each build: Odin builds the compiler, the docs' programs are built and run
+# with it, the package is made, and a program is built with the packaged
+# compiler alone. The test suite lives outside the repo: run it before tagging.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+    paths: ['.github/workflows/release.yml']
+  workflow_dispatch:
+
+env:
+  ODIN_RELEASE: dev-2026-05
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Odin
+        shell: pwsh
+        run: |
+          curl.exe -sSfL -o odin.zip "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_RELEASE/odin-windows-amd64-$env:ODIN_RELEASE.zip"
+          7z x odin.zip -o"$env:RUNNER_TEMP\odin" | Out-Null
+          $odin = Get-ChildItem "$env:RUNNER_TEMP\odin" -Recurse -Filter odin.exe | Select-Object -First 1
+          Add-Content $env:GITHUB_PATH $odin.DirectoryName
+          Remove-Item odin.zip
+
+      - name: Build the compiler
+        run: odin build src -o:speed -out:Mara.exe
+
+      - name: Build the view window
+        working-directory: view
+        run: ..\Mara.exe build view -release
+
+      - name: Build and run the docs' programs
+        shell: bash
+        run: |
+          mara="$PWD/Mara.exe"
+          cp -r doc "$RUNNER_TEMP/doc" && cd "$RUNNER_TEMP/doc"
+          for f in *.mara; do
+            n=${f%.mara}
+            "$mara" build "$n" > build.txt 2>&1 || { cat build.txt; echo "doc/$f doesn't build"; exit 1; }
+            timeout 60 "./$n.exe" > run.txt 2>&1 || { cat run.txt; echo "doc/$f doesn't run"; exit 1; }
+          done
+
+      - name: Package
+        shell: bash
+        run: |
+          pkg=mara-windows-x64
+          mkdir -p "$RUNNER_TEMP/$pkg"
+          git archive HEAD code runtime tools view doc editor readme README.md LICENSE | tar -x -C "$RUNNER_TEMP/$pkg"
+          cp Mara.exe "$RUNNER_TEMP/$pkg/"
+          cp view/view.exe "$RUNNER_TEMP/$pkg/view/"
+          (cd "$RUNNER_TEMP" && 7z a -tzip -mx=9 "$GITHUB_WORKSPACE/$pkg.zip" "$pkg" > /dev/null)
+
+      - name: Build a program with the package alone
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/unpacked" "$RUNNER_TEMP/hello" && cd "$RUNNER_TEMP/unpacked"
+          7z x "$GITHUB_WORKSPACE/mara-windows-x64.zip" > /dev/null
+          cd "$RUNNER_TEMP/hello"
+          printf 'module hello\n\nmain :: () {\n\tprint("Hello there!")\n}\n' > hello.mara
+          "$RUNNER_TEMP/unpacked/mara-windows-x64/Mara.exe" build hello
+          ./hello.exe | grep -q "Hello there!"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mara-windows-x64
+          path: mara-windows-x64.zip
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: clang, lld and Odin
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q clang lld
+          curl -sSfL -o odin.tar.gz "https://github.com/odin-lang/Odin/releases/download/$ODIN_RELEASE/odin-linux-amd64-$ODIN_RELEASE.tar.gz"
+          mkdir -p "$RUNNER_TEMP/odin" && tar -xzf odin.tar.gz -C "$RUNNER_TEMP/odin" && rm odin.tar.gz
+          dirname "$(find "$RUNNER_TEMP/odin" -name odin -type f | head -1)" >> "$GITHUB_PATH"
+
+      - name: Build the compiler
+        run: odin build src -o:speed -out:mara
+
+      - name: Build and run the docs' programs
+        run: |
+          mara="$PWD/mara"
+          cp -r doc "$RUNNER_TEMP/doc" && cd "$RUNNER_TEMP/doc"
+          for f in *.mara; do
+            n=${f%.mara}
+            "$mara" build "$n" > build.txt 2>&1 || { cat build.txt; echo "doc/$f doesn't build"; exit 1; }
+            timeout 60 "./$n" > run.txt 2>&1 || { cat run.txt; echo "doc/$f doesn't run"; exit 1; }
+          done
+
+      - name: Package
+        run: |
+          pkg=mara-linux-x64
+          mkdir -p "$RUNNER_TEMP/$pkg"
+          git archive HEAD code runtime doc editor readme README.md LICENSE | tar -x -C "$RUNNER_TEMP/$pkg"
+          cp mara "$RUNNER_TEMP/$pkg/"
+          tar -czf "$pkg.tar.gz" -C "$RUNNER_TEMP" "$pkg"
+
+      - name: Build a program with the package alone
+        run: |
+          mkdir -p "$RUNNER_TEMP/unpacked" "$RUNNER_TEMP/hello"
+          tar -xzf mara-linux-x64.tar.gz -C "$RUNNER_TEMP/unpacked"
+          cd "$RUNNER_TEMP/hello"
+          printf 'module hello\n\nmain :: () {\n\tprint("Hello there!")\n}\n' > hello.mara
+          "$RUNNER_TEMP/unpacked/mara-linux-x64/mara" build hello
+          ./hello | grep -q "Hello there!"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mara-linux-x64
+          path: mara-linux-x64.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Mara $GITHUB_REF_NAME" --generate-notes
