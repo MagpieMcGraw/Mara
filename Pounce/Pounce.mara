@@ -40,8 +40,8 @@ Marker :: struct {
 	color: [3!]f32
 }
 
-MARKER_DEPTH :: 120.0   // the squares' plane: z, facing the camera as it starts
-MARKER_HALF  :: 20.0    // half a square's side (its scale, 40)
+MARKER_DEPTH :: 120.0   // z of the plane the squares sit on
+MARKER_HALF  :: 20.0    // half a square's side
 
 Timers :: struct {
 	work  := time.Timer()
@@ -49,12 +49,10 @@ Timers :: struct {
 	fixed := time.Fixed_Timer()
 }
 
-// Megastruct - this is the actual game data
 Megastruct :: struct {
 	initialized: bool
 	running: bool
 
-	// Platform handles
 	window: sdl.Window
 	gl_context: sdl.GLContext
 
@@ -63,18 +61,13 @@ Megastruct :: struct {
 	fps := 60.9
 	frame_counter := 0
 
-	// Input
 	using events: Event_State,
-
-	// Asset system
-	//assets: Assets
 
 	cameras: [6]Camera = all Camera(1280, 720, 90)
 
 	cam := Camera(1280, 720, 90)
 	mouse_look: bool
 
-	// Draw states
 	vao: VAO_State = void
 	draw_state_object: DrawState
 	draw_state_highlight: DrawState
@@ -82,14 +75,13 @@ Megastruct :: struct {
 
 	assets := Assets()
 
-	// Rendering
 	quad:   Quad_Renderer
 	player := Player()
 	playa  := Playa()
 
 	markers: [4!]Marker
-	dragging: i64 = -1    // the square the mouse is dragging; -1: none
-	drag_offset: Vec3     // from the mouse's point on the plane to it
+	dragging: i64 = -1    // the dragged square's index; -1: none
+	drag_offset: Vec3     // from the mouse's point on the plane to the square
 }
 
 game_init :: fun(game: ^Megastruct, memory_bytes: ^[]byte) -> err {
@@ -108,9 +100,7 @@ game_init :: fun(game: ^Megastruct, memory_bytes: ^[]byte) -> err {
 	_ = sdl.GL_MakeCurrent(game.window, game.gl_context)
 	gl_load(GL_GetProcAddress)
 
-	// testing the gfx
 	game.vao = VAO_State()
-	//gfx.primitives_init(&game.vao)
 	draw_state_init(&game.draw_state_object,
 		"data/shaders/instanced.glsl",
 		&game.vao, 8192, 32)
@@ -120,34 +110,24 @@ game_init :: fun(game: ^Megastruct, memory_bytes: ^[]byte) -> err {
 
 	&game.assets.init(&game.vao, "data/fonts/Inter_18pt-Regular.ttf")
 
-	// Texture binding flows asset -> draw state: the object shader samples the
-	// image atlas, the text shader samples the font atlas. Without this the
-	// draw states sample texture 0 and discard everything (draw_state_assert_ready
-	// catches it).
+	// Object shader: the image atlas. Text shader: the font atlas.
 	game.draw_state_object.texture = game.assets.texture_id
 	game.draw_state_text.texture = game.assets.font_texture_id
 
-	// Camera setup mirrors the Warlock reference (Warlock.odin): sit at the origin
-	// and look_down (a 180 flip about Y). At raw identity the camera's view axis is
-	// parallel to the world up (+Z) that camera_turn_walking yaws around, so
-	// horizontal mouselook rolled instead of panning; look_down fixes the
-	// orientation. The scene then sits out along +Z in front of the camera.
+	// Flipped 180 about Y: the scene sits along +Z, in front of the camera.
 	game.cam.obj.pos = Vec3{0, 0, 0}
 	camera_look_down(&game.cam)
 
-	// Playa quad shows the whole font atlas (layer 0) so the MDEI text path has
-	// real glyph data to sample. tex_coords {1,1,0,0} maps the quad's 0..1 UVs
-	// across the full sheet ({0,0,0,0} would sample one empty corner and discard).
+	// The playa quad shows the whole font atlas (ATLAS_TEXTURE).
 	game.playa.obj.pos = Vec3{0, 0, 120}
 	game.playa.obj.scale = Vec3{70, 70, 70}
 	game.playa.visual.texture = ATLAS_TEXTURE
 
-	// Orientation cross of solid quads around the playa: +X red, +Y green,
-	// -X blue, -Y yellow, at its depth.
-	game.markers[0] = Marker{pos = Vec3{ 90,   0, MARKER_DEPTH}, color = [1, 0, 0]}
-	game.markers[1] = Marker{pos = Vec3{  0,  90, MARKER_DEPTH}, color = [0, 1, 0]}
-	game.markers[2] = Marker{pos = Vec3{-90,   0, MARKER_DEPTH}, color = [0, 0, 1]}
-	game.markers[3] = Marker{pos = Vec3{  0, -90, MARKER_DEPTH}, color = [1, 1, 0]}
+	// A cross of squares around the playa, at its depth.
+	game.markers[0] = Marker{Vec3{ 90,   0, MARKER_DEPTH}, [1, 0, 0]}
+	game.markers[1] = Marker{Vec3{  0,  90, MARKER_DEPTH}, [0, 1, 0]}
+	game.markers[2] = Marker{Vec3{-90,   0, MARKER_DEPTH}, [0, 0, 1]}
+	game.markers[3] = Marker{Vec3{  0, -90, MARKER_DEPTH}, [1, 1, 0]}
 
 	game.running = true
 	game.initialized = true
@@ -173,39 +153,35 @@ game_events :: fun(game: ^Megastruct) {
 		game.running = false
 	}
 
-	// Mouselook gate (matches the Warlock reference): right-click toggles it.
-	// Enabling turns on relative mouse mode, which locks the cursor to the window
-	// and feeds unbounded relative motion — so turning never stops at the window
-	// edge. The turn itself runs once per frame here, not per fixed step.
+	// Right-click toggles mouselook (relative mouse mode).
 	if ev.mouse.pressed[3] {
 		game.mouse_look = not game.mouse_look
 		_ = sdl.SetWindowRelativeMouseMode(game.window, game.mouse_look)
 	}
 	if game.mouse_look do camera_turn_walking(&game.cam, &ev.mouse)
 
-	// Squares dragged with the left button: the one under the mouse when it's
-	// pressed, then kept under it — where its ray meets their plane, less
-	// where on the square it was grabbed — while it's held.
+	// Left button: grab the square under the mouse, keep it there while held.
 	if not game.mouse_look {
 		at, on := mouse_on_plane(game, MARKER_DEPTH)
 		if ev.mouse.pressed[1] and on {
 			game.dragging = -1
 			for m, i in game.markers {
-				if abs_f32(at.x - m.pos.x) <= MARKER_HALF and abs_f32(at.y - m.pos.y) <= MARKER_HALF {
+				dx := abs_f32(at.x - m.pos.x)
+				dy := abs_f32(at.y - m.pos.y)
+				if dx <= MARKER_HALF and dy <= MARKER_HALF {
 					game.dragging = i
 					game.drag_offset = m.pos - at
 				}
 			}
 		}
 		if not ev.mouse.held[1] do game.dragging = -1
-		if game.dragging >= 0 and on do game.markers[game.dragging].pos = at + game.drag_offset
+		if game.dragging >= 0 and on {
+			game.markers[game.dragging].pos = at + game.drag_offset
+		}
 	}
 }
 
-// Where the mouse points on the plane z: the line under it from the near
-// plane to the far — the mouse in the window's -1..1 (the camera keeps the
-// size it was made with: the window's own is used) put back through view and
-// projection — to where it crosses z. False when it doesn't, in view.
+// Where the mouse's ray crosses the plane at z; false when it doesn't.
 mouse_on_plane :: fun(game: ^Megastruct, z: f32) -> Vec3, bool {
 	w : i32 = 0
 	h : i32 = 0
@@ -225,47 +201,36 @@ mouse_on_plane :: fun(game: ^Megastruct, z: f32) -> Vec3, bool {
 	if t < 0 or t > 1 do return Vec3{all 0}, false
 	return Vec3{a.x + d.x * t, a.y + d.y * t, z}, true
 }
+
 game_update :: fun(game: ^Megastruct, dt: f64) {
 	camera_move(&game.cam, &game.events.keyboard, f32(game.timers.fixed.step))
 	camera_update(&game.cam, f32(game.timers.fixed.step))
 }
-// Append a solid-colored quad through the object shader. The image atlas holds a
-// white pixel at (0,0) layer 0, so DEFAULT_TEXTURE (uv {0,0,0,0}) samples white
-// and `color` comes through flat — a clean orientation marker.
-draw_marker :: fun(state: ^DrawState, pos: Vec3, color: [3!]f32, cam: Camera) {
-	obj := Object(){pos = pos, scale = Vec3{40, 40, 40}, exists = true, accel = Vec3{0, 0, 0}, tracking_offset = Vec3{0, 0, 0}, speed = 0, turn_speed = 0, highlighted = false}
-	vis := Visual(){color = color, texture_index = 0, resolve = false}
+
+// A flat-colored quad: DEFAULT_TEXTURE samples the atlas's white pixel.
+draw_marker :: fun(state: ^DrawState,
+	pos: Vec3, color: [3!]f32, cam: Camera)
+{
+	obj := Object(){pos = pos, scale = Vec3{40, 40, 40}}
+	vis := Visual(){color = color}
 	append_one(state, obj, vis, cam)
 }
 
 game_draw :: fun(game: ^Megastruct) {
-	// --- Everything OpenGL needs to draw this frame ---
-	// Static GPU state (checked by draw_state_assert_ready):
-	//   shader         linked program        (0 = link failed)
-	//   command_buffer MDI indirect buffer
-	//   texture        sampler2DArray source (image / font atlas)
-	//   vao + 3 VBOs   vao / vertex_vbo / ebo / instance_vbo
-	//   mesh_count>0   at least one mesh uploaded to the shared VAO
-	//   index_offset>0 geometry actually uploaded (indices exist to draw)
-	// Per-frame data (checked inside draw_state_render):
-	//   each batch's instances.len is its instance count (one source of truth)
-	//   each mesh_id resolves to a VAO_Mesh with index_count > 0
-	//   command_count > 0 once batches are flattened to DrawCommands
 	draw_state_assert_ready(&game.draw_state_object)
 	draw_state_assert_ready(&game.draw_state_text)
 
 	ClearColor(0.85, 0.80, 0.70, 1.0)
 	Clear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT)
 
-	// The squares (game.markers), so one object isn't the only thing on
-	// screen. Drawn through the object shader / image atlas.
+	// The squares: object shader, image atlas.
 	for m in game.markers {
 		draw_marker(&game.draw_state_object, m.pos, m.color, game.cam)
 	}
 	draw_state_render(&game.draw_state_object)
 	draw_state_reset(&game.draw_state_object)
 
-	// Playa quad through the text shader / font atlas.
+	// The playa: text shader, font atlas.
 	append_one(&game.draw_state_text,
 		game.playa.obj, game.playa.visual, game.cam)
 	draw_state_render(&game.draw_state_text)

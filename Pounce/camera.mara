@@ -37,8 +37,7 @@ Camera :: struct(w, h, fovy : f32) {
 }
 
 camera_look_down :: fun(camera: ^Camera) {
-	camera.obj.dir *= quat_angle_axis(
-	to_radians(180), Vec3{0, 1, 0})
+	camera.obj.dir *= quat_angle_axis(to_radians(180), Vec3{0, 1, 0})
 }
 
 camera_align_with_gravity :: fun(camera: ^Camera) {
@@ -51,8 +50,7 @@ camera_move :: fun(camera: ^Camera, keyboard: ^Keyboard, loop_time: f32) {
 
 	fwd, up, right := obj_get_directions(camera.obj.dir)
 
-	// The view looks toward -fwd (obj_get_directions' "fwd" is the local +Z
-	// column, opposite the OpenGL view axis), so W = -fwd walks into the screen.
+	// The view looks toward -fwd, so W walks into the screen.
 	if keyboard.held[sdl.Scancode.W] {
 		direction -= fwd
 	}
@@ -86,25 +84,21 @@ camera_move :: fun(camera: ^Camera, keyboard: ^Keyboard, loop_time: f32) {
 
 camera_turn_flying :: fun(camera: ^Camera, mouse: ^Mouse) {
 	sensitivity: f32 = 0.005
-	turn_speed: f32 = 0.5  // Faster turn speed for direct mode
+	turn_speed: f32 = 0.5
 	x_rot := turn_speed * mouse.xrel * sensitivity
 	y_rot := turn_speed * mouse.yrel * sensitivity
 	z_rot := turn_speed * mouse.wheel * 5 * sensitivity
 
-	// Get camera's local axes
 	camera_fwd, camera_up, camera_right := obj_get_directions(camera.obj.dir)
 
-	// Directly apply rotation (no momentum)
 	yaw_quat := quat_angle_axis(x_rot, camera_up)
 	camera.obj.dir = yaw_quat * camera.obj.dir
 
-	// Recalculate after yaw
 	camera_fwd, camera_up, camera_right = obj_get_directions(camera.obj.dir)
 
 	pitch_quat := quat_angle_axis(y_rot, camera_right)
 	camera.obj.dir = pitch_quat * camera.obj.dir
 
-	// Roll
 	if z_rot != 0 {
 		camera_fwd, _, _ = obj_get_directions(camera.obj.dir)
 		roll_quat := quat_angle_axis(z_rot, camera_fwd)
@@ -112,24 +106,20 @@ camera_turn_flying :: fun(camera: ^Camera, mouse: ^Mouse) {
 	}
 }
 
-// Walking camera - constrained to ground-based movement
-// Yaw always around world up, no roll, maintains upright orientation
+// Turns about the world's up and the camera's right: it never rolls.
 camera_turn_walking :: fun(camera: ^Camera, mouse: ^Mouse) {
 	sensitivity: f32 = 0.01
 	x_rot := camera.obj.turn_speed * mouse.xrel * sensitivity
 	y_rot := camera.obj.turn_speed * mouse.yrel * sensitivity
 
-	// World up axis for yaw (always stays upright)
 	world_up := Vec3{0, 0, 1}
 
-	// Yaw around world up (horizontal turning, unaffected by pitch)
 	if mouse.xrel != 0 {
 		yaw_quat := quat_angle_axis(x_rot, world_up)
 		camera.obj.dir = yaw_quat * camera.obj.dir
 	}
 
-	// Pitch around camera's local right axis (look up/down). Negated so moving the
-	// mouse up looks up (the looked-down camera frame inverts the raw yrel sense).
+	// Negated: moving the mouse up looks up.
 	if mouse.yrel != 0 {
 		_, _, camera_right := obj_get_directions(camera.obj.dir)
 		pitch_quat := quat_angle_axis(-y_rot, camera_right)
@@ -161,23 +151,22 @@ camera_update_size :: fun(camera: ^Camera, w_width, w_height: f32) {
 	aspect_ratio := w_width / w_height
 	camera.fov_x = camera.fov_y * aspect_ratio
 
-	camera.proj = mat4_perspective(camera.fov_y, aspect_ratio, camera.near_plane, camera.far_plane)
+	camera.proj = mat4_perspective(camera.fov_y,
+		aspect_ratio, camera.near_plane, camera.far_plane)
 
-	// Update orthographic projection for 2D rendering
 	half_w := w_width / 2
 	half_h := w_height / 2
 	camera.ortho = mat4_ortho(-half_w, half_w, -half_h, half_h, -1, 1)
 }
 
-// Project world position to screen pixels (origin at center, +x right, +y up)
-// Returns screen x, y in pixels from center, and ok=false if behind camera
-world_to_screen :: fun(camera: ^Camera, world_pos: Vec3) -> (x, y: f32, ok: bool) {
+// Pixels from the screen's center (+x right, +y up); false behind the camera.
+world_to_screen :: fun(camera: ^Camera, world_pos: Vec3)
+-> (x, y: f32, ok: bool) {
 	// Transform to clip space
 	pos4 := Vec4{world_pos.x, world_pos.y, world_pos.z, 1}
 	view_pos := camera.view * pos4
 	clip_pos := camera.proj * view_pos
 
-	// Check if behind camera (w <= 0 means behind or at camera plane)
 	if clip_pos.w <= 0 {
 		return 0, 0, false
 	}

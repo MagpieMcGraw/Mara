@@ -18,7 +18,7 @@ Mesh_Batch :: struct {
     instances:      [MAX_INSTANCES_PER_BATCH]Instance
 }
 
-// DrawCommand for MultiDrawIndirect
+// One MultiDrawIndirect command, in GL's layout
 DrawCommand :: struct {
     index_count:    u32
     instance_count: u32
@@ -27,44 +27,31 @@ DrawCommand :: struct {
     base_instance:  u32
 }
 
-// DrawState bundles everything needed for one MDI draw call
+// Everything one MultiDrawIndirect call needs
 DrawState :: struct {
-	// Shader and texture
 	shader_id: u32,
 	texture: u32,
 
-	// Reference to VAO state (for dynamic mesh access)
 	vao_state: ^VAO_State,
 
-	// OpenGL resources
 	command_buffer: u32,
 
-	// Per-mesh batches (one instance array per mesh type)
 	batches: [MAX_BATCHES]Mesh_Batch
 	batch_count: i64
 
-	// Total capacity across all batches
 	instance_capacity: i64,
 
-	// Draw commands (owned by this DrawState)
 	commands: [256]DrawCommand,
 	command_count: i64,
 }
 
-// Set up a draw state where it lives. (Filled in place, not returned: a
-// DrawState is ~790 KB, and a returned one is built in a temporary on the
-// stack, then copied — two of them overflowed the 1 MB stack.)
-draw_state_init :: fun(
-	state: ^DrawState,
-	shader_file: []utf8,
-	vao_state: ^VAO_State,
-	max_instances: i64,
-	max_commands: isize,)
+// Filled in place: a DrawState is ~790 KB, too big to return on the stack.
+draw_state_init :: fun(state: ^DrawState, shader_file: []utf8,
+	vao_state: ^VAO_State, max_instances: i64, max_commands: isize)
 {
 	shader_id, shader_err := make_program(shader_file)
 	if bool(shader_err) do print(shader_err)
 
-	// Create persistent command buffer for MDI
 	command_buffer: u32
 	gl.GenBuffers(1, &command_buffer)
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, command_buffer)
@@ -76,8 +63,6 @@ draw_state_init :: fun(
 
 	state^ = DrawState{
 		shader_id = shader_id,
-		texture = 0,
-		batch_count = 0,
 		texture = 0,
 		batch_count = 0,
 		vao_state = vao_state,
@@ -93,27 +78,20 @@ draw_state_bind :: fun(state: ^DrawState) {
 	gl.BindTexture(gl.TEXTURE_2D_ARRAY, state.texture)
 }
 
-// Everything OpenGL needs to be LIVE before a draw can produce pixels.
-// Every handle below is a GL object name; 0 means "never created". A count
-// or offset of 0 means there is nothing for the draw to point at. We assert
-// instead of rendering a silent black frame — a failure here prints the exact
-// field that is missing at the exact line, which beats staring at a blank
-// window. (Per-frame instance data is checked in draw_state_render.)
+// A missing GL object asserts here instead of drawing a blank frame.
 draw_state_assert_ready :: fun(state: ^DrawState) {
-	// Program + per-draw GPU resources
-	assert(state.shader_id != 0)          // linked shader program
-	assert(state.command_buffer != 0)  // MultiDrawIndirect command buffer
-	assert(state.texture != 0)         // both current shaders sample a sampler2DArray
+	assert(state.shader_id != 0)
+	assert(state.command_buffer != 0)
+	assert(state.texture != 0)
 
-	// The shared geometry VAO and its backing buffers
 	vao := state.vao_state
-	assert(vao != void)                // draw_state_init gave it one
+	assert(vao != void)
 	assert(vao.vao != 0)
 	assert(vao.vertex_vbo != 0)
 	assert(vao.ebo != 0)
 	assert(vao.instance_vbo != 0)
 
-	// Geometry must actually be uploaded, or there are no indices to draw
+	// Nothing uploaded: no indices to draw
 	assert(vao.mesh_count > 0)
 	assert(vao.index_offset > 0)
 }
@@ -134,11 +112,8 @@ get_or_create_batch :: fun(state: ^DrawState, mesh_id: i64) -> ^Mesh_Batch {
     return batch
 }
 
-draw_state_append :: fun(
-	state: ^DrawState,
-	objects: []Object,
-	visuals: []Visual,
-	cam: Camera)
+draw_state_append :: fun(state: ^DrawState,
+	objects: []Object, visuals: []Visual, cam: Camera)
 {
 	if objects.len == 0 do return
 	if visuals.len == 0 do return
@@ -146,18 +121,15 @@ draw_state_append :: fun(
 	for i in 0:objects.len {
 		if not objects[i].exists do continue
 
-		// FOR NOW ASSUMING DIRECT MAPPING FROM OBJ TO VIS
+		// For now objects[i] goes with visuals[i]
 		obj := objects[i]
 		vis := visuals[i]
 		mesh_id := visuals[i].mesh.index
 
-		// Get or create batch for this mesh
 		batch := get_or_create_batch(state, mesh_id)
 
 		mvp := opengl_create_mvp_matrix(
-			obj.pos,
-			obj.dir,
-			obj.scale,
+			obj.pos, obj.dir, obj.scale,
 			cam.view, cam.proj,
 		)
 		instance := Instance{
@@ -170,24 +142,16 @@ draw_state_append :: fun(
 	}
 }
 
-append_one :: fun(
-	state: ^DrawState,
-	obj: Object,
-	vis: Visual,
-	cam: Camera)
+append_one :: fun(state: ^DrawState,
+	obj: Object, vis: Visual, cam: Camera)
 {
 	if not obj.exists do return
 
-	// FOR NOW ASSUMING DIRECT MAPPING FROM OBJ TO VIS
 	mesh_id := vis.mesh.index
-
-	// Get or create batch for this mesh
 	batch := get_or_create_batch(state, mesh_id)
 
 	mvp := opengl_create_mvp_matrix(
-		obj.pos,
-		obj.dir,
-		obj.scale,
+		obj.pos, obj.dir, obj.scale,
 		cam.view, cam.proj,
 	)
 	instance := Instance{
@@ -207,19 +171,16 @@ draw_state_reset :: fun(state: ^DrawState) {
     state.command_count = 0
 }
 
-// Render draw state using MultiDrawIndirect
-// Uploads each batch's instances sequentially, then issues one MDI call
-draw_state_render :: fun(state: ^DrawState) {	
+// Uploads each batch's instances, then draws them all with one call.
+draw_state_render :: fun(state: ^DrawState) {
 	vao_info := state.vao_state
-	assert(vao_info != void)   // draw_state_init gave it one
+	assert(vao_info != void)
 	gl.BindBuffer(gl.ARRAY_BUFFER, vao_info.instance_vbo)
 
 	gpu_offset: isize = 0
 	state.command_count = 0
 	for i in 0:state.batch_count {
 	    batch := &state.batches[i]
-	    // instances.len is the single source of truth for the instance count
-	    // (the append operator maintains it). No second counter to fall out of sync.
 	    count := batch.instances.len
 	    if count == 0 do continue
 	    if batch.mesh_id not in 0:vao_info.mesh_count do continue
@@ -252,21 +213,15 @@ draw_state_render :: fun(state: ^DrawState) {
 	gl.MultiDrawElementsIndirect(
 		gl.TRIANGLES,
 		gl.UNSIGNED_INT,
-		0,                            // offset (0 = start of buffer)
-		i32(state.command_count),    // draw count
-		0,                           // stride (0 = tightly packed)
+		0, i32(state.command_count), 0,
 	)
 
 	gl.BindVertexArray(0)
 	gl.BindBuffer(gl.DRAW_INDIRECT_BUFFER, 0)
 }
 
-// Create MVP matrix from transform and camera
-opengl_create_mvp_matrix :: fun(
-	pos: Vec3
-	dir: Quat,
-	scale_factors: Vec3,
-	view_mx, proj_mx: Mat4) -> Mat4
+opengl_create_mvp_matrix :: fun(pos: Vec3, dir: Quat,
+	scale_factors: Vec3, view_mx, proj_mx: Mat4) -> Mat4
 {
 	rotation := mat4_from_quat(dir)
 	translation := mat4_translate(pos)

@@ -14,7 +14,6 @@ primitive_sphere :: fun(
     n_verts := (rings + 1) * (sectors + 1)
     n_inds  := rings * sectors * 6
 
-    // (Room for all of them, empty: each appended as it's made.)
     verts := slice([:n_verts]Vertex, storage)
     inds  := slice([:n_inds]u32, storage)
 
@@ -28,7 +27,7 @@ primitive_sphere :: fun(
             x := ring_radius * sin(theta)
             z := ring_radius * cos(theta)
 
-            // radius 0.5 → unit normal is 2 * position
+            // radius 0.5: the unit normal is 2 * position
             nx := x * 2.0
             ny := y * 2.0
             nz := z * 2.0
@@ -36,7 +35,9 @@ primitive_sphere :: fun(
             u_coord := f32(s) / f32(sectors)
             v_coord := f32(r) / f32(rings)
 
-            &verts ++ Vertex{position = [x, y, z], normal = [nx, ny, nz], uv = [u_coord, v_coord]}
+            &verts ++ Vertex{position = [x, y, z],
+            				 normal = [nx, ny, nz],
+            				 uv = [u_coord, v_coord]}
         }
     }
 
@@ -63,40 +64,88 @@ primitive_cube :: fun() -> [24!]Vertex, [36!]u32 {
     inds : [36!]u32
 
     // +Z face (front)
-    verts[0]  = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
-    verts[1]  = Vertex{position = [ 0.5, -0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [1.0, 0.0]}
-    verts[2]  = Vertex{position = [ 0.5,  0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [1.0, 1.0]}
-    verts[3]  = Vertex{position = [-0.5,  0.5,  0.5], normal = [0.0, 0.0, 1.0], uv = [0.0, 1.0]}
+    verts[0]  = Vertex{position = [-0.5, -0.5,  0.5],
+    				   normal =   [ 0.0,  0.0,  1.0],
+    				   uv =       [ 0.0,  0.0      ]}
+    verts[1]  = Vertex{position = [ 0.5, -0.5,  0.5],
+    				   normal =   [ 0.0,  0.0,  1.0],
+    				   uv =       [ 1.0,  0.0      ]}
+    verts[2]  = Vertex{position = [ 0.5,  0.5,  0.5],
+    				   normal =   [ 0.0,  0.0,  1.0],
+    				   uv =       [ 1.0,  1.0      ]}
+    verts[3]  = Vertex{position = [-0.5,  0.5,  0.5],
+    				   normal =   [ 0.0,  0.0,  1.0],
+    				   uv =       [ 0.0,  1.0      ]}
 
     // -Z face (back)
-    verts[4]  = Vertex{position = [ 0.5, -0.5, -0.5], normal = [0.0, 0.0, -1.0], uv = [0.0, 0.0]}
-    verts[5]  = Vertex{position = [-0.5, -0.5, -0.5], normal = [0.0, 0.0, -1.0], uv = [1.0, 0.0]}
-    verts[6]  = Vertex{position = [-0.5,  0.5, -0.5], normal = [0.0, 0.0, -1.0], uv = [1.0, 1.0]}
-    verts[7]  = Vertex{position = [ 0.5,  0.5, -0.5], normal = [0.0, 0.0, -1.0], uv = [0.0, 1.0]}
+    verts[4]  = Vertex{position = [ 0.5, -0.5, -0.5],
+    				   normal =   [ 0.0,  0.0, -1.0],
+    				   uv =       [ 0.0,  0.0      ]}
+    verts[5]  = Vertex{position = [-0.5, -0.5, -0.5],
+    				   normal =   [ 0.0,  0.0, -1.0],
+    				   uv =       [ 1.0,  0.0      ]}
+    verts[6]  = Vertex{position = [-0.5,  0.5, -0.5],
+    				   normal =   [ 0.0,  0.0, -1.0],
+    				   uv =       [ 1.0,  1.0      ]}
+    verts[7]  = Vertex{position = [ 0.5,  0.5, -0.5],
+    				   normal =   [ 0.0,  0.0, -1.0],
+    				   uv =       [ 0.0,  1.0      ]}
 
     // +X face (right)
-    verts[8]  = Vertex{position = [ 0.5, -0.5,  0.5], normal = [1.0, 0.0, 0.0], uv = [0.0, 0.0]}
-    verts[9]  = Vertex{position = [ 0.5, -0.5, -0.5], normal = [1.0, 0.0, 0.0], uv = [1.0, 0.0]}
-    verts[10] = Vertex{position = [ 0.5,  0.5, -0.5], normal = [1.0, 0.0, 0.0], uv = [1.0, 1.0]}
-    verts[11] = Vertex{position = [ 0.5,  0.5,  0.5], normal = [1.0, 0.0, 0.0], uv = [0.0, 1.0]}
+    verts[8]  = Vertex{position = [ 0.5, -0.5,  0.5],
+    				   normal =   [ 1.0,  0.0,  0.0],
+    				   uv =       [ 0.0,  0.0      ]}
+    verts[9]  = Vertex{position = [ 0.5, -0.5, -0.5],
+    				   normal =   [ 1.0,  0.0,  0.0],
+    				   uv =       [ 1.0,  0.0      ]}
+    verts[10] = Vertex{position = [ 0.5,  0.5, -0.5],
+    				   normal =   [ 1.0,  0.0,  0.0],
+    				   uv =       [ 1.0,  1.0      ]}
+    verts[11] = Vertex{position = [ 0.5,  0.5,  0.5],
+    				   normal =   [ 1.0,  0.0,  0.0],
+    				   uv =       [ 0.0,  1.0      ]}
 
     // -X face (left)
-    verts[12] = Vertex{position = [-0.5, -0.5, -0.5], normal = [-1.0, 0.0, 0.0], uv = [0.0, 0.0]}
-    verts[13] = Vertex{position = [-0.5, -0.5,  0.5], normal = [-1.0, 0.0, 0.0], uv = [1.0, 0.0]}
-    verts[14] = Vertex{position = [-0.5,  0.5,  0.5], normal = [-1.0, 0.0, 0.0], uv = [1.0, 1.0]}
-    verts[15] = Vertex{position = [-0.5,  0.5, -0.5], normal = [-1.0, 0.0, 0.0], uv = [0.0, 1.0]}
+    verts[12] = Vertex{position = [-0.5, -0.5, -0.5],
+    				   normal =   [-1.0,  0.0,  0.0],
+    				   uv =       [ 0.0,  0.0      ]}
+    verts[13] = Vertex{position = [-0.5, -0.5,  0.5],
+    				   normal =   [-1.0,  0.0,  0.0],
+    				   uv =       [ 1.0,  0.0      ]}
+    verts[14] = Vertex{position = [-0.5,  0.5,  0.5],
+    				   normal =   [-1.0,  0.0,  0.0],
+    				   uv =       [ 1.0,  1.0      ]}
+    verts[15] = Vertex{position = [-0.5,  0.5, -0.5],
+    				   normal =   [-1.0,  0.0,  0.0],
+    				   uv =       [ 0.0,  1.0      ]}
 
     // +Y face (top)
-    verts[16] = Vertex{position = [-0.5,  0.5,  0.5], normal = [0.0, 1.0, 0.0], uv = [0.0, 0.0]}
-    verts[17] = Vertex{position = [ 0.5,  0.5,  0.5], normal = [0.0, 1.0, 0.0], uv = [1.0, 0.0]}
-    verts[18] = Vertex{position = [ 0.5,  0.5, -0.5], normal = [0.0, 1.0, 0.0], uv = [1.0, 1.0]}
-    verts[19] = Vertex{position = [-0.5,  0.5, -0.5], normal = [0.0, 1.0, 0.0], uv = [0.0, 1.0]}
+    verts[16] = Vertex{position = [-0.5,  0.5,  0.5],
+    				   normal =   [ 0.0,  1.0,  0.0],
+    				   uv =       [ 0.0,  0.0      ]}
+    verts[17] = Vertex{position = [ 0.5,  0.5,  0.5],
+    				   normal =   [ 0.0,  1.0,  0.0],
+    				   uv =       [ 1.0,  0.0      ]}
+    verts[18] = Vertex{position = [ 0.5,  0.5, -0.5],
+    				   normal =   [ 0.0,  1.0,  0.0],
+    				   uv =       [ 1.0,  1.0      ]}
+    verts[19] = Vertex{position = [-0.5,  0.5, -0.5],
+    				   normal =   [ 0.0,  1.0,  0.0],
+    				   uv =       [ 0.0,  1.0      ]}
 
     // -Y face (bottom)
-    verts[20] = Vertex{position = [-0.5, -0.5, -0.5], normal = [0.0, -1.0, 0.0], uv = [0.0, 0.0]}
-    verts[21] = Vertex{position = [ 0.5, -0.5, -0.5], normal = [0.0, -1.0, 0.0], uv = [1.0, 0.0]}
-    verts[22] = Vertex{position = [ 0.5, -0.5,  0.5], normal = [0.0, -1.0, 0.0], uv = [1.0, 1.0]}
-    verts[23] = Vertex{position = [-0.5, -0.5,  0.5], normal = [0.0, -1.0, 0.0], uv = [0.0, 1.0]}
+    verts[20] = Vertex{position = [-0.5, -0.5, -0.5],
+    				   normal =   [ 0.0, -1.0,  0.0],
+    				   uv =       [ 0.0,  0.0      ]}
+    verts[21] = Vertex{position = [ 0.5, -0.5, -0.5],
+    				   normal =   [ 0.0, -1.0,  0.0],
+    				   uv =       [ 1.0,  0.0      ]}
+    verts[22] = Vertex{position = [ 0.5, -0.5,  0.5],
+    				   normal =   [ 0.0, -1.0,  0.0],
+    				   uv =       [ 1.0,  1.0      ]}
+    verts[23] = Vertex{position = [-0.5, -0.5,  0.5],
+    				   normal =   [ 0.0, -1.0,  0.0],
+    				   uv =       [ 0.0,  1.0      ]}
 
     // Indices for each face (CCW winding)
     for face in 0:6 {
@@ -115,10 +164,18 @@ primitive_cube :: fun() -> [24!]Vertex, [36!]u32 {
 
 // Orientation: Z forward, X right, Y up
 primitive_quad :: fun() -> verts: [4!]Vertex, inds: [6!]u32 {
-    verts[0] = Vertex{position = [-0.5, -0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [0.0, 0.0]}
-    verts[1] = Vertex{position = [ 0.5, -0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [1.0, 0.0]}
-    verts[2] = Vertex{position = [ 0.5,  0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [1.0, 1.0]}
-    verts[3] = Vertex{position = [-0.5,  0.5, 0.0], normal = [0.0, 0.0, 1.0], uv = [0.0, 1.0]}
+    verts[0] = Vertex{position = [-0.5, -0.5,  0.0],
+    				  normal =   [ 0.0,  0.0,  1.0],
+    				  uv =       [ 0.0,  0.0      ]}
+    verts[1] = Vertex{position = [ 0.5, -0.5,  0.0],
+    				  normal =   [ 0.0,  0.0,  1.0],
+    				  uv =       [ 1.0,  0.0      ]}
+    verts[2] = Vertex{position = [ 0.5,  0.5,  0.0],
+    				  normal =   [ 0.0,  0.0,  1.0],
+    				  uv =       [ 1.0,  1.0      ]}
+    verts[3] = Vertex{position = [-0.5,  0.5,  0.0],
+    				  normal =   [ 0.0,  0.0,  1.0],
+    				  uv =       [ 0.0,  1.0      ]}
 
     // Two triangles, CCW winding
     inds[0] = 0
@@ -127,9 +184,6 @@ primitive_quad :: fun() -> verts: [4!]Vertex, inds: [6!]u32 {
     inds[3] = 0
     inds[4] = 2
     inds[5] = 3
-    // ADD STRUCT ASSIGNING HERE
-    // OR ARRAY LITERAL?
-    // MAYBE IT ALREADY WORKS?
 
     return verts, inds
 }

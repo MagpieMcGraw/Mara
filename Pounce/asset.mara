@@ -15,16 +15,13 @@ Font :: struct {
 	size : i32 = 1024
 	name: str64
 	layer: u32,
-	offset_x, offset_y: i32,  // Position within atlas layer
-	metrics: Line_Metrics     // from mara.font, filled by load_glyphs_and_metrics
-	glyphs: [256]Glyph      // partial array: carries a slice header, so &glyphs
-}                             // flows into the loader's ^[]Glyph param directly
+	offset_x, offset_y: i32,  // position within the atlas layer
+	metrics: Line_Metrics
+	glyphs: [256]Glyph
+}
 
-// Streaming state
 Stream_State :: union {
-	Idle,           // Nothing to do
-	Streaming,      // Loading assets from cache
-	Done,           // All assets loaded
+	Idle, Streaming, Done
 }
 
 // Files found on disk in the data directory
@@ -44,14 +41,11 @@ FONT_RANGE :: 256
 FONT_SCALE :: 125
 
 Assets :: struct {
-	// LATER
-	// cache: Cache,
-
 	// GPU texture array for images
 	texture_id:   u32,
 	texture_size: i32,
 
-	// GPU texture array for fonts (single-channel)
+	// GPU texture array for fonts
 	font_texture_id:   u32,
 	font_texture_size: i32,
 
@@ -65,14 +59,11 @@ Assets :: struct {
 	mesh_stream: Mesh_Stream,
 	font_stream: Font_Stream,
 
-	// Reference to VAO for mesh uploads
 	vao: ^VAO_State,
 
-	// Files found on disk
 	on_disk: Disk,
 
-	// Resolution state
-	needs_resolve: bool,  // Set true to trigger a resolve pass
+	needs_resolve: bool,  // set to trigger a resolve pass
 }
 
 Tex_Stream :: struct {
@@ -95,61 +86,59 @@ Font_Stream :: struct {
 	initialized:  bool
 }
 
-// // Initialize asset system - FAST, only loads cache TOC
 init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
     a.vao = vao
+    target :: gl.TEXTURE_2D_ARRAY
 
-    // default meshes
     prim_indices, prim_names := gfx.primitives_init(vao)
     for i in 0:prim_names.cap {
         &a.meshes ++ Mesh{prim_names[i], prim_indices[i]}
     }
 
-    // GPU texture array setup
+    // Image texture array
     a.texture_size = 2048
 
     gl.GenTextures(1, &a.texture_id)
-    gl.BindTexture(gl.TEXTURE_2D_ARRAY, a.texture_id)
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, i32(gl.CLAMP_TO_EDGE))
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, i32(gl.CLAMP_TO_EDGE))
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, i32(gl.NEAREST))
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, i32(gl.NEAREST))
+    gl.BindTexture(target, a.texture_id)
+    gl.TexParameteri(target, gl.TEXTURE_WRAP_S, i32(gl.CLAMP_TO_EDGE))
+    gl.TexParameteri(target, gl.TEXTURE_WRAP_T, i32(gl.CLAMP_TO_EDGE))
+    gl.TexParameteri(target, gl.TEXTURE_MIN_FILTER, i32(gl.NEAREST))
+    gl.TexParameteri(target, gl.TEXTURE_MAG_FILTER, i32(gl.NEAREST))
 
-    // Allocate texture array on GPU
-    gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8,
+    gl.TexImage3D(target, 0, gl.RGBA8,
         a.texture_size, a.texture_size, ATLAS_LAYERS,
         0, gl.RGBA, gl.UNSIGNED_BYTE, void)
 
-    // White pixel at (0,0) layer 0 for default
+    // A white pixel at (0,0), layer 0: the default texture
     white := [4!]u8{255, 255, 255, 255}
-    gl.TexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 1, 1, 1,
+    gl.TexSubImage3D(target, 0, 0, 0, 0, 1, 1, 1,
         gl.RGBA, gl.UNSIGNED_BYTE, &white[0])
-    gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
+    gl.BindTexture(target, 0)
 
-    // Register default texture so it can be queried by name
     &a.textures ++ DEFAULT_TEXTURE
 
-    // GPU font texture array setup, one layer per font
+    // Font texture array, one layer per font
     a.font_texture_size = 1024
 
     gl.GenTextures(1, &a.font_texture_id)
-    gl.BindTexture(gl.TEXTURE_2D_ARRAY, a.font_texture_id)
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, i32(gl.CLAMP_TO_EDGE))
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, i32(gl.CLAMP_TO_EDGE))
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, i32(gl.LINEAR_MIPMAP_LINEAR))
-    gl.TexParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, i32(gl.LINEAR))
+    gl.BindTexture(target, a.font_texture_id)
+    gl.TexParameteri(target, gl.TEXTURE_WRAP_S, i32(gl.CLAMP_TO_EDGE))
+    gl.TexParameteri(target, gl.TEXTURE_WRAP_T, i32(gl.CLAMP_TO_EDGE))
+    gl.TexParameteri(target, gl.TEXTURE_MIN_FILTER,
+        i32(gl.LINEAR_MIPMAP_LINEAR))
+    gl.TexParameteri(target, gl.TEXTURE_MAG_FILTER, i32(gl.LINEAR))
 
-    gl.TexImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8,
+    gl.TexImage3D(target, 0, gl.RGBA8,
         a.font_texture_size, a.font_texture_size, MAX_FONTS,
         0, gl.RGBA, gl.UNSIGNED_BYTE, void)
-    gl.BindTexture(gl.TEXTURE_2D_ARRAY, 0)
+    gl.BindTexture(target, 0)
 
     load_font_test(a, fname)
 }
 
 load_font_test :: fun(a: ^Assets, fname: []utf8) {
 	this_font := &a.fonts[.len]
-	this_font^ = Font()   // (an element of a bare array is its zero: built here)
+	this_font^ = Font()
 	pixels : [MSDF_ATLAS * MSDF_ATLAS * 3]byte
 	e := load_glyphs_and_metrics(fname,
 		&this_font.glyphs, &this_font.metrics, &pixels)
@@ -171,215 +160,7 @@ load_font_test :: fun(a: ^Assets, fname: []utf8) {
     a.fonts.len += 1
 }
 
-// // Get texture by substring match - returns ok=false if not found
-// get_texture :: proc(a: ^Assets, query: string) -> (texture: Texture, ok: bool) {
-//     best_idx := -1
-//     best_pos := max(int)
-
-//     for i in 0:a.texture_count {
-//         pos := string_match(a.textures[i].name, query)
-//         if pos >= 0 && pos < best_pos {
-//             best_pos = pos
-//             best_idx = i
-//         }
-//     }
-
-//     if best_idx >= 0 {
-//         return a.textures[best_idx], true
-//     }
-
-//     return {}, false
-// }
-
-// // Get mesh by substring match - returns ok=false if not found
-// get_mesh :: proc(a: ^Assets, query: string) -> (mesh: Mesh, ok: bool) {
-//     best_idx := -1
-//     best_pos := max(int)
-
-//     for i in 0:a.mesh_count {
-//         pos := string_match(a.meshes[i].name, query)
-//         if pos >= 0 && pos < best_pos {
-//             best_pos = pos
-//             best_idx = i
-//         }
-//     }
-
-//     if best_idx >= 0 {
-//         return a.meshes[best_idx], true
-//     }
-
-//     return {}, false
-// }
-
-// // Get font by substring match - returns pointer to font, or nil if not loaded
-// get_font :: proc(a: ^Assets, query: string) -> ^Font {
-//     best_idx := -1
-//     best_pos := max(int)
-
-//     for i in 0:a.font_count {
-//         pos := string_match(a.fonts[i].name, query)
-//         if pos >= 0 && pos < best_pos {
-//             best_pos = pos
-//             best_idx = i
-//         }
-//     }
-
-//     if best_idx >= 0 {
-//         return &a.fonts[best_idx]
-//     }
-
-//     return nil
-// }
-
-// // Check if a specific texture is loaded
-// // Get texture index by substring match - returns -1 if not found
-// get_texture_index :: proc(a: ^Assets, query: string) -> int {
-//     best_idx := -1
-//     best_pos := max(int)
-
-//     for i in 0:a.texture_count {
-//         pos := string_match(a.textures[i].name, query)
-//         if pos >= 0 && pos < best_pos {
-//             best_pos = pos
-//             best_idx = i
-//         }
-//     }
-//     return best_idx
-// }
-
-// texture_loaded :: proc(a: ^Assets, query: string) -> bool {
-//     return get_texture_index(a, query) >= 0
-// }
-
-// // Check if a specific mesh is loaded
-// mesh_loaded :: proc(a: ^Assets, query: string) -> bool {
-//     for i in 0:a.mesh_count {
-//         if string_match(a.meshes[i].name, query) >= 0 {
-//             return true
-//         }
-//     }
-//     return false
-// }
-
-// // Check if a specific font is loaded
-// font_loaded :: proc(a: ^Assets, query: string) -> bool {
-//     for i in 0:a.font_count {
-//         if string_match(a.fonts[i].name, query) >= 0 {
-//             return true
-//         }
-//     }
-//     return false
-// }
-
-// // ============================================================================
-// // Disk Scanning
-// // ============================================================================
-
-// DATA_PATH :: "data"
-
-// // Scan data folder for asset files, 1 level deep into subfolders
-// disk_scan :: proc(disk: ^Disk, allocator: mem.Allocator) {
-//     disk.model_count = 0
-//     disk.texture_count = 0
-//     disk.audio_count = 0
-//     disk.font_count = 0
-
-//     model_exts   := []string{".glb", ".gltf"}
-//     texture_exts := []string{".png", ".jpg", ".jpeg", ".tga", ".bmp"}
-//     audio_exts   := []string{".wav", ".ogg", ".mp3", ".flac"}
-//     font_exts    := []string{".ttf", ".otf"}
-
-//     disk_scan_folder(DATA_PATH, "models",   model_exts,   disk.models[:],   &disk.model_count,   allocator)
-//     disk_scan_folder(DATA_PATH, "textures", texture_exts, disk.textures[:], &disk.texture_count, allocator)
-//     disk_scan_folder(DATA_PATH, "models",   texture_exts, disk.textures[:], &disk.texture_count, allocator)  // textures embedded with models
-//     disk_scan_folder(DATA_PATH, "audio",    audio_exts,   disk.audio[:],    &disk.audio_count,   allocator)
-//     disk_scan_folder(DATA_PATH, "fonts",    font_exts,    disk.fonts[:],    &disk.font_count,    allocator)
-// }
-
-// // Scan a folder and its immediate subfolders for files with given extensions
-// // Stores relative paths like "subfolder/file.ext" or just "file.ext"
-// @(private)
-// disk_scan_folder :: proc(
-//     base: string,
-//     folder: string,
-//     extensions: []string,
-//     out: []string,
-//     count: ^int,
-//     allocator: mem.Allocator,
-// ) {
-//     path := strings.concatenate({base, "/", folder}, context.temp_allocator)
-
-//     handle, err := os.open(path)
-//     if err != 0 do return
-//     defer os.close(handle)
-
-//     infos, read_err := os.read_dir(handle, -1)
-//     if read_err != 0 do return
-//     defer os.file_info_slice_delete(infos)
-
-//     for info in infos {
-//         if info.is_dir {
-//             // Scan 1 level deep - pass subfolder name for relative path
-//             subfolder_path := strings.concatenate({path, "/", info.name}, context.temp_allocator)
-//             disk_scan_subfolder(subfolder_path, info.name, extensions, out, count, allocator)
-//         } else {
-//             // File in root of asset folder - just filename
-//             if disk_has_extension(info.name, extensions) && count^ < len(out) {
-//                 out[count^] = strings.clone(info.name, allocator)
-//                 count^ += 1
-//             }
-//         }
-//     }
-// }
-
-// // Scan a subfolder (non-recursive, just files)
-// // Stores paths as "subfolder/file.ext"
-// @(private)
-// disk_scan_subfolder :: proc(
-//     path: string,
-//     subfolder_name: string,
-//     extensions: []string,
-//     out: []string,
-//     count: ^int,
-//     allocator: mem.Allocator,
-// ) {
-//     handle, err := os.open(path)
-//     if err != 0 do return
-//     defer os.close(handle)
-
-//     infos, read_err := os.read_dir(handle, -1)
-//     if read_err != 0 do return
-//     defer os.file_info_slice_delete(infos)
-
-//     for info in infos {
-//         if info.is_dir do continue
-
-//         if disk_has_extension(info.name, extensions) && count^ < len(out) {
-//             // Store as "subfolder/filename.ext"
-//             relative_path := strings.concatenate({subfolder_name, "/", info.name}, allocator)
-//             out[count^] = relative_path
-//             count^ += 1
-//         }
-//     }
-// }
-
-// // Check if filename has one of the given extensions (case-insensitive)
-// @(private)
-// disk_has_extension :: proc(name: string, extensions: []string) -> bool {
-//     dot := strings.last_index(name, ".")
-//     if dot < 0 do return false
-
-//     ext := strings.to_lower(name[dot:], context.temp_allocator)
-//     for e in extensions {
-//         if ext == e do return true
-//     }
-//     return false
-// }
-
-// === Texture streaming internals ===
-
-// Texture packer - packs textures into atlas, no GL calls
-// Used by main thread (1 texture per frame) or async (pack until full)
+// Packs textures into an atlas, no GL calls
 Texture_Packer :: struct {
     pack_ctx: [64!]byte, 	// placeholder
     pack_nodes: [64!]byte,	// placeholder

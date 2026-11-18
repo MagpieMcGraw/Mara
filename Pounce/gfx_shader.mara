@@ -1,4 +1,3 @@
-
 module gfx.shader
 
 use mara.core
@@ -17,13 +16,7 @@ Shader_Error :: error {
 VERSION_TAG :: "#version"
 INCLUDE_TAG :: "#include "
 
-// A shader file's text as GL gets it, added to `out`; the result is where in
-// `out` the fragment shader starts. The file holds the vertex shader, then
-// the fragment shader, each starting at a `#version` line. A line
-// `#include name` is replaced by that file's text, a file in the same
-// folder: the name is the rest of the line. Both kinds of line start at the
-// line's first character. A `#line` after each of them keeps the line
-// numbers GL reports the file's own.
+// Expands #include lines into out; returns where the fragment shader starts.
 expand :: fun(out: ^[]utf8, text: []utf8, filepath: []utf8) -> i64, err {
 	fragment_at : i64 = 0
 	versions : i64 = 0
@@ -55,6 +48,7 @@ expand :: fun(out: ^[]utf8, text: []utf8, filepath: []utf8) -> i64, err {
 			}
 			out ++ this ++ "\n"
 		}
+		// So GL reports the file's own line numbers
 		if renumber do out ++ "#line " ++ int_text(line + 1) ++ "\n"
 		line += 1
 		at = stop + 1
@@ -63,10 +57,8 @@ expand :: fun(out: ^[]utf8, text: []utf8, filepath: []utf8) -> i64, err {
 	return fragment_at
 }
 
-// Compiles a file's two shaders (expand says what the file holds). What the
-// GL compiler says is printed.
+// Compiles a file's vertex and fragment shaders; GL's messages are printed.
 load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
-	// filled by the read — skip the zero-init
 	data: [32 * KB]byte = void
 	read_entire_file(filepath, &data)?
 
@@ -74,7 +66,9 @@ load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
 	text : [128 * KB]utf8
 	fragment_at := expand(&text, raw, filepath)?
 
-	compile :: fun(name: []utf8, text: []utf8, shader_type: gl.Shader_Type) -> u32, err {
+	compile :: fun(name: []utf8, text: []utf8,
+		shader_type: gl.Shader_Type) -> u32, err
+	{
 		shader := gl.CreateShader(shader_type)
 		source := text.ptr
 		n := i32(text.len)
@@ -86,7 +80,7 @@ load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
 
 		log : [2048]utf8
 		got : i32 = 0
-		log.len = log.cap   // (GL's to fill)
+		log.len = log.cap   // room for GL to fill
 		gl.GetShaderInfoLog(shader, i32(log.cap), &got, &log[0])
 		log.len = i64(got)
 		if log.len > 0 {
@@ -101,12 +95,12 @@ load_and_compile :: fun(filepath: []utf8) -> u32, u32, err {
 		return shader
 	}
 	vshader := compile(filepath, text[:fragment_at], gl.VERTEX_SHADER)?
-	fshader, ferr := compile(filepath, text[fragment_at:.len], gl.FRAGMENT_SHADER)
+	fshader, ferr := compile(filepath, text[fragment_at:.len],
+		gl.FRAGMENT_SHADER)
 	if ferr {gl.DeleteShader(vshader) return 0, 0, ferr}
 	return vshader, fshader
 }
 
-// A program linked from a file's two shaders (load_and_compile).
 make_program :: fun(filepath: []utf8) -> u32, err {
 	vshader, fshader, e := load_and_compile(filepath)
 	defer gl.DeleteShader(vshader)
@@ -124,7 +118,7 @@ make_program :: fun(filepath: []utf8) -> u32, err {
 
 	log : [1024]utf8
 	got : i32 = 0
-	log.len = log.cap   // (GL's to fill)
+	log.len = log.cap   // room for GL to fill
 	gl.GetProgramInfoLog(program, i32(log.cap), &got, &log[0])
 	log.len = i64(got)
 	if log.len > 0 {

@@ -10,12 +10,12 @@ Object :: struct {
 	pos: Vec3
 	scale: Vec3
 	accel: Vec3
-	tracking_offset: Vec3 // used to follow other objects
+	tracking_offset: Vec3
 
 	speed, turn_speed : f32
 
-	exists := true     // used by Array to track active items
-	highlighted: bool // draw with highlight effect (wireframe overlay)
+	exists := true
+	highlighted: bool
 }
 
 obj_get_directions :: fun(dir: Quat) -> (fwd, up, right : Vec3) {
@@ -42,8 +42,8 @@ obj_track_other :: fun(obj: ^Object, other_obj: Object) {
 }
 
 DEFAULT_MESH :: Mesh{"=quad", 0}
-DEFAULT_TEXTURE :: Texture{"DEFAULT", {0, 0, 0, 0}, 0}  // 1x1 white pixel at (0,0)
-ATLAS_TEXTURE :: Texture{"ATLAS", {1, 1, 0, 0}, 0} 
+DEFAULT_TEXTURE :: Texture{"DEFAULT", {0, 0, 0, 0}, 0} // white pixel
+ATLAS_TEXTURE :: Texture{"ATLAS", {1, 1, 0, 0}, 0}
 
 Visual :: struct {
 	texture := DEFAULT_TEXTURE

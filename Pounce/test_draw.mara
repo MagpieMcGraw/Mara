@@ -3,14 +3,29 @@ module test_draw
 use mara.math
 use mara.open_gl
 
-// Minimal "filled colored quad" renderer — one shader, one VAO, one VBO holding
-// a unit-quad TRIANGLE_STRIP. Each draw_quad call sets uniforms and issues a
-// single DrawArrays. Coordinates are pixel-space with origin at the top-left;
-// the vertex shader maps them to clip space using u_screen.
+// A filled, colored quad in pixel coordinates, origin at the top left.
 
-// Desktop GL 4.5 Core: `#version 330 core` for these simple shaders.
-QUAD_VS :: "#version 330 core\nlayout(location=0) in vec2 a_pos;\nuniform vec2 u_pos;\nuniform vec2 u_size;\nuniform vec2 u_screen;\nvoid main() {\n  vec2 pixel = u_pos + a_pos * u_size;\n  vec2 ndc = (pixel / u_screen) * 2.0 - 1.0;\n  ndc.y = -ndc.y;\n  gl_Position = vec4(ndc, 0.0, 1.0);\n}\n"
-QUAD_FS :: "#version 330 core\nuniform vec3 u_color;\nout vec4 frag_color;\nvoid main() {\n  frag_color = vec4(u_color, 1.0);\n}\n"
+QUAD_VS :: "
+	#version 330 core
+	layout(location=0) in vec2 a_pos;
+	uniform vec2 u_pos;
+	uniform vec2 u_size;
+	uniform vec2 u_screen;
+	void main() {
+	  vec2 pixel = u_pos + a_pos * u_size;
+	  vec2 ndc = (pixel / u_screen) * 2.0 - 1.0;
+	  ndc.y = -ndc.y;
+	  gl_Position = vec4(ndc, 0.0, 1.0);
+	}
+	"
+QUAD_FS :: "
+	#version 330 core
+	uniform vec3 u_color;
+	out vec4 frag_color;
+	void main() {
+	  frag_color = vec4(u_color, 1.0);
+	}
+	"
 
 Quad_Renderer :: struct {
 	program:  u32
@@ -34,7 +49,7 @@ quad_init :: fun(r: ^Quad_Renderer) {
 	r.u_screen = GetUniformLocation(r.program, "u_screen")
 	r.u_color  = GetUniformLocation(r.program, "u_color")
 
-	// Unit quad as a TRIANGLE_STRIP: (0,0), (1,0), (0,1), (1,1).
+	// A unit quad as a triangle strip
 	verts : [8!]f32 = [8!]f32{0, 0, 1, 0, 0, 1, 1, 1}
 
 	GenVertexArrays(1, &r.vao)
@@ -46,7 +61,9 @@ quad_init :: fun(r: ^Quad_Renderer) {
 	VertexAttribPointer(0, 2, FLOAT, 0, 8, 0)
 }
 
-draw_quad :: fun(r: ^Quad_Renderer, screen_w: f32, screen_h: f32, x: f32, y: f32, w: f32, h: f32, color: Vec3) {
+draw_quad :: fun(r: ^Quad_Renderer, screen_w: f32, screen_h: f32,
+	x: f32, y: f32, w: f32, h: f32, color: Vec3)
+{
 	UseProgram(r.program)
 	BindVertexArray(r.vao)
 	Uniform2f(r.u_screen, screen_w, screen_h)

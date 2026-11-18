@@ -18,7 +18,7 @@ Mouse :: struct {
 
 Dropfile :: struct {
     was_dropped: bool
-    name: [256]utf8   // dropped-file path — read_cstring caps at 128 today
+    name: [256]utf8
 }
 
 Event_State :: struct {
@@ -65,9 +65,9 @@ process :: fun(events: ^Event_State) {
             events.mouse.wheel += e.y
 
         WindowFocusGained
-        	events.window_in_focus = true
+            events.window_in_focus = true
         WindowFocusLost
-        	events.window_in_focus = false
+            events.window_in_focus = false
 
         DropFile
             events.dropfile.was_dropped = true

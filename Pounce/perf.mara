@@ -6,7 +6,7 @@ use mara.time
 
 MAX_PERF_PHASES :: 16
 
-// we assume there's no gaps between phases 
+// Phases follow each other with no gaps.
 Performance_Timer :: struct {
     names: [MAX_PERF_PHASES!][64]utf8
     times: [MAX_PERF_PHASES!]f64
@@ -15,11 +15,8 @@ Performance_Timer :: struct {
     total_start: i64
 }
 
-// Call once at the start of a timing session with the first phase name.
-perf_timer_begin :: fun(
-	first_phase: []utf8) -> Performance_Timer
-{
-	timer := Performance_Timer{all 0}
+perf_timer_begin :: fun(first_phase: []utf8) -> Performance_Timer {
+    timer := Performance_Timer{all 0}
     timer.count = 0
     timer.total_start = clock_ns()
     timer.phase_start = timer.total_start
@@ -28,7 +25,7 @@ perf_timer_begin :: fun(
     return timer
 }
 
-// End the current phase, record its time, and start timing next_phase.
+// Ends the current phase and starts next_phase.
 perf_timer_mark :: fun(timer: ^Performance_Timer, next_phase: []utf8) {
     seconds, now := time_since(timer.phase_start)
 
@@ -44,7 +41,7 @@ perf_timer_mark :: fun(timer: ^Performance_Timer, next_phase: []utf8) {
     timer.phase_start = now
 }
 
-// End the final phase and print all phase times plus the total.
+// Ends the last phase and prints every phase's time and the total.
 perf_timer_end :: fun(timer: ^Performance_Timer) {
     seconds, _ := time_since(timer.phase_start)
 

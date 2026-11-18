@@ -1,42 +1,19 @@
 module cache
 
-// Asset cache — streaming rewrite of the old Odin cache_v3.
-//
-// Job: at BUILD time pre-decode every asset once (PNG -> raw pixels, GLB -> raw
-// verts/inds) and pack them into a flat .bin per asset type; at RUNTIME open that
-// .bin and STREAM assets out a few per frame (seek to one entry, read just its
-// payload) instead of slurping the whole file or re-decoding the source folders.
-//
-// This keeps cache_v3's STREAMING function — open once, read assets on demand by
-// index — but improves the architecture two ways:
-//   * ONE Cache_Entry (generic `meta` slot) and ONE `Cache` runtime handle,
-//     instead of cache_v3's five near-identical entry structs + five
-//     struct-of-arrays TOCs + five copies of every operation. Each asset type is
-//     just "open a different .bin and stream it."
-//   * The TOC is read on demand (one ~100-byte entry when that asset is streamed)
-//     rather than held resident in parallel arrays — the runtime asset tables
-//     (Assets.textures/.meshes) own name lookup, so the whole TOC never needs to
-//     sit in RAM. cache_v3 loaded all five TOCs up front; this loads none.
-//
-// File layout (written by the savers below, unchanged from the seek-free build):
-//   [Cache_Header] [Cache_Entry * count] [payload bytes, concatenated]
-// data_offset is absolute from the start of the file, so a streaming read is a
-// single seek + read.
-//
-// Validation is magic + version only, same level as cache_v3.
+// Asset cache: a .bin per asset type, built once, streamed by index.
 
-use mara.core   // str64, utf8, the `+` append overload
-use mara.files  // file_open_read/write, file_seek, file_read, file_write_text (all of it, bytes too), file_close
-use gfx         // Vertex, Mesh_Data
+use mara.core
+use mara.files
+use gfx
 
 CACHE_MAGIC   :: u32(0x68636143)  // "Cach" little-endian
 CACHE_VERSION :: u32(1)
 
 Cache_Error :: error {
-    Bad_Header   // magic/version mismatch or a too-short file -> caller rebuilds from source
+    Bad_Header   // wrong magic or version, or a file cut short
 }
 
-// File layout:  [Cache_Header] [Cache_Entry * count] [payload bytes, concatenated]
+// File layout: [Cache_Header] [Cache_Entry * count] [payload bytes]
 Cache_Header :: struct {
     magic:   u32
     version: u32
@@ -44,24 +21,19 @@ Cache_Header :: struct {
     _pad:    u32
 }
 
-// One entry per asset. `meta` is the asset-specific slot:
-//   textures: meta[0]=width  meta[1]=height
-//   meshes:   meta[0]=vertex_count  meta[1]=index_count
-// data_offset is absolute from the start of the file, so reading a payload needs
-// nothing but the entry itself.
+// meta: a texture's width, height; a mesh's vertex count, index count
 Cache_Entry :: struct {
     name:        [64!]utf8
     name_len:    u32
     meta:        [4!]u32
-    data_offset: u64
+    data_offset: u64   // from the file's start
     data_size:   u64
 }
 
 HEADER_SIZE :: size_of(Cache_Header)
 ENTRY_SIZE  :: size_of(Cache_Entry)
 
-// Build-time inputs. The runtime object.Texture/object.Mesh don't carry pixel or
-// vertex bytes (those live on the GPU), so saving needs its own carriers.
+// Build-time inputs: the bytes the runtime Texture and Mesh don't carry.
 Tex_Blob :: struct {
     name:   str64
     w, h:   i32
@@ -73,14 +45,10 @@ Mesh_Blob :: struct {
     mesh: Mesh_Data
 }
 
-// Size the header+TOC scratch buffer the savers need.
+// The bytes of a header and count entries: the room the savers' toc needs.
 cache_toc_bytes :: fun(count: i64) -> i64 {
     return HEADER_SIZE + count * ENTRY_SIZE
 }
-
-// ---------------------------------------------------------------------------
-// Name <-> entry helpers
-// ---------------------------------------------------------------------------
 
 entry_set_name :: fun(e: ^Cache_Entry, name: str64) {
     n := name.len
@@ -91,7 +59,6 @@ entry_set_name :: fun(e: ^Cache_Entry, name: str64) {
     e.name_len = u32(n)
 }
 
-// Reconstruct the entry's name as a str64.
 entry_name :: fun(e: ^Cache_Entry) -> str64 {
     out : str64
     for i in 0:i64(e.name_len) {
@@ -100,8 +67,7 @@ entry_name :: fun(e: ^Cache_Entry) -> str64 {
     return out
 }
 
-// Writes the header into `toc` and returns the absolute offset where payloads
-// begin (also the number of header+TOC bytes to write).
+// Returns the offset where payloads begin.
 cache_put_header :: fun(toc: ^[]byte, count: i64) -> i64 {
     h : Cache_Header = {
         magic   = CACHE_MAGIC,
@@ -113,16 +79,13 @@ cache_put_header :: fun(toc: ^[]byte, count: i64) -> i64 {
     return HEADER_SIZE + count * ENTRY_SIZE
 }
 
-// ---------------------------------------------------------------------------
-// Write (build step) — header+TOC built in `toc` (typed blits), payloads after.
-// ---------------------------------------------------------------------------
-
-// `toc` must hold cache_toc_bytes(blobs.len). Texture pixels are written
-// straight from the blobs — no staging copy.
-cache_save_textures :: fun(path: []utf8, blobs: []Tex_Blob, toc: ^[]byte) -> err {
+// toc must hold cache_toc_bytes(blobs.len).
+cache_save_textures :: fun(path: []utf8,
+    blobs: []Tex_Blob, toc: ^[]byte) -> err
+{
     count := blobs.len
-    toc.len = cache_toc_bytes(count)       // (a slice stops at len: the header+TOC are it)
-    off := cache_put_header(toc, count)   // absolute payload start
+    toc.len = cache_toc_bytes(count)
+    off := cache_put_header(toc, count)
 
     for i in 0:count {
         b := blobs[i]
@@ -146,15 +109,15 @@ cache_save_textures :: fun(path: []utf8, blobs: []Tex_Blob, toc: ^[]byte) -> err
     }
 }
 
-// `toc` holds header+TOC; `data` stages the concatenated vertex/index bytes —
-// each mesh's arrays written in as their raw bytes, one write each. `data`
-// must hold the summed payload bytes (a write past its cap stops the program).
-cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^[]byte) -> err {
+// data must hold every mesh's vertex and index bytes: they're staged there.
+cache_save_meshes :: fun(path: []utf8,
+    blobs: []Mesh_Blob, toc: ^[]byte, data: ^[]byte) -> err
+{
     count := blobs.len
-    toc.len = cache_toc_bytes(count)       // (a slice stops at len: the header+TOC are it)
-    base := cache_put_header(toc, count)   // absolute payload start
-    dcur : i64 = 0                         // cursor within `data`
-    data.len = data.cap                    // (staged anywhere in its room; its len the payload's after)
+    toc.len = cache_toc_bytes(count)
+    base := cache_put_header(toc, count)
+    dcur : i64 = 0   // cursor within data
+    data.len = data.cap
 
     for i in 0:count {
         b := blobs[i]
@@ -185,34 +148,16 @@ cache_save_meshes :: fun(path: []utf8, blobs: []Mesh_Blob, toc: ^[]byte, data: ^
     file_write_text(id, data[:])?
 }
 
-// ---------------------------------------------------------------------------
-// Read (runtime) — open once, stream assets by index.
-//
-//   c : Cache
-//   cache_open(&c, path)?               // header read + validated, handle left open
-//   for i in 0:c.count {
-//       e := cache_entry(&c, i)?        // one TOC entry (name, w/h or counts, size)
-//       px := cache_read(&c, e, &dst)?              // a texture's pixels (a view into dst), or
-//       m  := cache_read_mesh(&c, e, &scratch, &verts, &inds)?   // a mesh
-//   }
-//   cache_close(&c)
-//
-// The read functions fill a caller-owned buffer and return a slice / Mesh_Data
-// VIEWING it — the return-a-view-into-a-passed-buffer idiom. The caller owns the
-// destination, so the payload outlives `c` (survives cache_close).
-// ---------------------------------------------------------------------------
+// Reading: cache_open, then cache_entry + cache_read per index, cache_close.
 
-// A streaming handle: an open cache file plus its entry count. The TOC is read on
-// demand (cache_entry), so this stays tiny — embed one per asset type.
+// An open cache file and its entry count; entries are read on demand.
 Cache :: struct {
     file:    File_Id
     is_open: bool
     count:   i64
 }
 
-// Open a cache .bin, validate its header, leave the handle open for streaming.
-// Any error (missing file, bad magic/version) means "no usable cache" — the
-// caller rebuilds from the source folders. On error the handle is closed.
+// On any error there's no usable cache: rebuild it from the source files.
 cache_open :: fun(c: ^Cache, path: []utf8) -> err {
     c.is_open = false
     c.count = 0
@@ -244,9 +189,7 @@ cache_close :: fun(c: ^Cache) {
     }
 }
 
-// Read one TOC entry by index: the asset's name + meta (w/h or vert/index counts)
-// + where its payload lives. Cheap (one ~100-byte read) — call it to learn an
-// asset's shape before sizing the buffer cache_read fills.
+// One entry by index: its name, meta, and where its payload is.
 cache_entry :: fun(c: ^Cache, index: i64) -> Cache_Entry, err {
     file_seek(c.file, HEADER_SIZE + index * ENTRY_SIZE, SEEK_SET)?
     ebuf : [ENTRY_SIZE!]byte = void
@@ -256,35 +199,30 @@ cache_entry :: fun(c: ^Cache, index: i64) -> Cache_Entry, err {
     return e
 }
 
-// Stream an entry's raw payload into `dst`'s backing and return a view of it
-// (texture pixels). `dst` must have capacity for e.data_size bytes. One seek +
-// one read — `dst[0:size]` has len = cap = size, so file_read reads exactly this
-// entry and never spills into the next. The returned slice views `dst`, which the
-// caller owns, so it stays valid past cache_close.
+// Fills dst with e's payload (e.data_size bytes) and returns a view of it.
 cache_read :: fun(c: ^Cache, e: Cache_Entry, dst: ^[]byte) -> []byte, err {
     size := i64(e.data_size)
     file_seek(c.file, i64(e.data_offset), SEEK_SET)?
-    dst.len = size   // (a slice stops at len)
+    dst.len = size
     buf := dst[0 : size]
     file_read(c.file, &buf)?
     return buf
 }
 
-// Stream a mesh entry: read its payload into `scratch`, then its bytes into the
-// caller's verts/inds backing, one read each (vao_add_mesh wants real []Vertex /
-// []u32, and those outlive any file buffer). `scratch` must hold e.data_size
-// bytes, verts and inds the entry's counts. An entry whose size isn't its
-// counts' bytes, or a payload cut short, is Bad_Header: rebuild from source.
-// The returned Mesh_Data views verts/inds, which the caller owns.
-cache_read_mesh :: fun(c: ^Cache, e: Cache_Entry, scratch: ^[]byte, verts: ^[]Vertex, inds: ^[]u32) -> Mesh_Data, err {
+// Fills verts and inds from a mesh entry; scratch must hold e.data_size bytes.
+cache_read_mesh :: fun(c: ^Cache, e: Cache_Entry, scratch: ^[]byte,
+    verts: ^[]Vertex, inds: ^[]u32) -> Mesh_Data, err
+{
     vcount := i64(e.meta[0])
     icount := i64(e.meta[1])
     size := i64(e.data_size)
     vbytes := vcount * size_of(Vertex)
-    if size != vbytes + icount * size_of(u32) do return Mesh_Data{all 0}, Bad_Header
+    if size != vbytes + icount * size_of(u32) {
+        return Mesh_Data{all 0}, Bad_Header
+    }
 
     file_seek(c.file, i64(e.data_offset), SEEK_SET)?
-    scratch.len = size   // (a slice stops at len: these are what's filled)
+    scratch.len = size
     verts.len = vcount
     inds.len = icount
     buf := scratch[0 : size]
