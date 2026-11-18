@@ -26,7 +26,7 @@ The Mara compiler is written in [Odin](https://odin-lang.org/). You need
 Odin on PATH to compile it. Its source is in `src`. From the repo root:
 
 ```
-odin build src -out:Mara.exe
+odin build src -o:speed -out:Mara.exe
 ```
 
 (On Linux, `-out:mara`.) The compiler finds `code`, `runtime` and `tools` beside its executable, so keep it in the repo root.
