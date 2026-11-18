@@ -2,14 +2,11 @@ module asset
 
 use mara.core
 
-use mara.files
-use mara.skyline
 use mara.font
 gl :: use mara.open_gl
 
 use object
 use gfx
-use cache
 
 Font :: struct {
 	size : i32 = 1024
@@ -20,22 +17,9 @@ Font :: struct {
 	glyphs: [256]Glyph
 }
 
-Stream_State :: union {
-	Idle, Streaming, Done
-}
-
-// Files found on disk in the data directory
-Disk :: struct {
-	models:		[MAX_MESHES]str64
-	textures:	[MAX_TEXTURES]str64
-	audio:		[MAX_AUDIO]str64
-	fonts:		[MAX_FONTS]str64
-}
-
 MAX_TEXTURES :: 1024
 MAX_MESHES :: 512
 MAX_FONTS :: 64
-MAX_AUDIO :: 256
 ATLAS_LAYERS :: 16
 FONT_RANGE :: 256
 FONT_SCALE :: 125
@@ -53,37 +37,7 @@ Assets :: struct {
 	meshes:		[MAX_MESHES]Mesh
 	fonts:		[MAX_FONTS]Font
 
-	state: Stream_State,
-
-	tex_stream := Tex_Stream()
-	mesh_stream: Mesh_Stream,
-	font_stream: Font_Stream,
-
 	vao: ^VAO_State,
-
-	on_disk: Disk,
-
-	needs_resolve: bool,  // set to trigger a resolve pass
-}
-
-Tex_Stream :: struct {
-	packer: = Skyline(1024, 1024)
-	cache_index:   i64
-	current_layer: u32
-	file_handle:   File_Id
-	file_open:     bool
-}
-
-Mesh_Stream :: struct {
-	cache_index:  i64
-	file_handle:  File_Id
-	file_open:    bool
-}
-
-Font_Stream :: struct {
-	font_files:   [MAX_FONTS!]str64
-	current:      i64
-	initialized:  bool
 }
 
 init :: fun(a: ^Assets, vao: ^VAO_State, fname: []utf8) {
@@ -158,12 +112,4 @@ load_font_test :: fun(a: ^Assets, fname: []utf8) {
     this_font.layer = u32(a.fonts.len)
     this_font.name = fname
     a.fonts.len += 1
-}
-
-// Packs textures into an atlas, no GL calls
-Texture_Packer :: struct {
-    pack_ctx: [64!]byte, 	// placeholder
-    pack_nodes: [64!]byte,	// placeholder
-    size: i32,
-    is_full: bool,
 }

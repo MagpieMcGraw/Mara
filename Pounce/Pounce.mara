@@ -14,9 +14,7 @@ use gfx
 use event
 use object
 use camera
-use perf
 use asset
-use test_draw
 use gfx.shader
 
 COLOR_RED 		:: Vec3{0.9, 0.2, 0.2}
@@ -27,12 +25,6 @@ COLOR_TEAL    	:: Vec3{0.1, 0.7, 0.7}
 COLOR_BLUE    	:: Vec3{0.2, 0.4, 0.9}
 COLOR_PURPLE  	:: Vec3{0.6, 0.2, 0.8}
 COLOR_MAGENTA 	:: [3!]f32{0.9, 0.2, 0.6}
-
-Player :: struct {
-	x, y: i64
-	size  := 50
-	color := COLOR_RED
-}
 
 // A square in the scene, dragged with the left mouse button.
 Marker :: struct {
@@ -75,9 +67,7 @@ Megastruct :: struct {
 
 	assets := Assets()
 
-	quad:   Quad_Renderer
-	player := Player()
-	playa  := Playa()
+	playa := Playa()
 
 	markers: [4!]Marker
 	dragging: i64 = -1    // the dragged square's index; -1: none
@@ -142,10 +132,6 @@ game_events :: fun(game: ^Megastruct) {
 	ev := &game.events	kb := &ev.keyboard	file := &ev.dropfile
 	if ev.quit 				do game.running = false
 	if file.was_dropped		do print("dropepd file: ", file.name)
-	if kb.pressed[W] 		do game.player.y -= 50
-	if kb.pressed[A] 		do game.player.x -= 50
-	if kb.pressed[S]		do game.player.y += 50
-	if kb.pressed[D] 		do game.player.x += 50
 	if kb.pressed[P]		do print("Printing!")
 	if kb.pressed[T]		do print("Testing!")
 	if kb.pressed[Escape] 	{
