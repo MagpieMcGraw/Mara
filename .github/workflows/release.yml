@@ -6,6 +6,8 @@
 # Each build: Odin builds the compiler, the docs' programs are built and run
 # with it, the package is made, and a program is built with the packaged
 # compiler alone. The test suite lives outside the repo: run it before tagging.
+# Linux builds with Ubuntu 24.04's clang 18: the oldest LLVM Mara's IR is
+# checked against (Windows uses tools/, clang 21).
 # A failing step's last lines show on the run's page (.github/report.sh).
 name: Release
 
