@@ -738,13 +738,30 @@ tp_range_dots :: proc(p: ^Tree_Parser) -> Token_Id {
     return tp_advance(p)
 }
 
+// Whether a `for`'s header has `kind` outside brackets, before its line
+// ends: `in` (`for x in xs`), `;` (`for i := 0; i < n; i += 1`). Its
+// kinds are read only then: `for 0:n` and `for lo:3` are ranges, not a
+// name typed 3 or a declaration of 0.
+tp_header_has :: proc(p: ^Tree_Parser, kind: Token_Kind) -> bool {
+    depth := 0
+    for i := 0; ; i += 1 {
+        #partial switch k := tp_peek(p, i); k {
+        case .Left_Paren, .Left_Bracket, .Left_Brace:    depth += 1
+        case .Right_Paren, .Right_Bracket, .Right_Brace: depth -= 1
+        case .Newline, .Do:                              if depth <= 0 { return false }
+        case .EOF:                                       return false
+        case:                                            if k == kind && depth == 0 { return true }
+        }
+    }
+}
+
 tp_for :: proc(p: ^Tree_Parser) -> Tree_Id {
     start := p.pos
     kw := tp_advance(p)
     // (`for &item in xs`: each item where it is, a pointer to it.)
     by_ref: Token_Id
     if tp_kind(p) == .Ampersand && tp_peek(p) == .Identifier { by_ref = tp_advance(p) }
-    if tp_kind(p) == .Identifier {
+    if tp_kind(p) == .Identifier && tp_header_has(p, .In) {
         m := tp_mark(p)
         first := tp_advance(p)
         // (The names after the first: an index; a loop over a call's values.)
@@ -775,18 +792,27 @@ tp_for :: proc(p: ^Tree_Parser) -> Tree_Id {
         }
         if by_ref != 0 { tp_error(p, by_ref, PARSE_REF_LOOP_NO_IN) }
         tp_reset(p, m)
+    } else if by_ref != 0 { tp_error(p, by_ref, PARSE_REF_LOOP_NO_IN) }
+    if tp_header_has(p, .Semicolon) {
+        m := tp_mark(p)
+        if init, ok := tp_try_assign(p); ok && tp_kind(p) == .Semicolon {
+            tp_advance(p)
+            cond := tp_condition(p)
+            tp_expect(p, .Semicolon)
+            post, _ := tp_try_assign(p)
+            body := tp_loop_body(p)
+            return tp_node(p, .For_C, kw, start, tree_rec_add(p.t, u32(init), u32(cond), u32(post), body))
+        }
+        tp_reset(p, m)
     }
-    m := tp_mark(p)
-    if init, ok := tp_try_assign(p); ok && tp_kind(p) == .Semicolon {
-        tp_advance(p)
-        cond := tp_condition(p)
-        tp_expect(p, .Semicolon)
-        post, _ := tp_try_assign(p)
-        body := tp_loop_body(p)
-        return tp_node(p, .For_C, kw, start, tree_rec_add(p.t, u32(init), u32(cond), u32(post), body))
-    }
-    tp_reset(p, m)
     cond := tp_condition(p)
+    // (`for 0:n`: a range with no name, counted for no one.)
+    if tp_is_range_mark(p) {
+        dots := tp_range_dots(p)
+        high := tp_condition(p)
+        body := tp_loop_body(p)
+        return tp_node(p, .For_Range, kw, start, tree_rec_add(p.t, 0, 0, u32(cond), u32(high), body), u32(dots))
+    }
     body := tp_loop_body(p)
     return tp_node(p, .For_Cond, kw, start, u32(cond), body)
 }

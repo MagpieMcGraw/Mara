@@ -1007,7 +1007,7 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         hc, hc_ok := tc_comptime_int(k, v.hi)
         if lc_ok && hc_ok && lc > hc { tc_error(k, span, TYPE_DESCENDING_RANGE, lc, tc_text(v.dots), hc, lc, hc) }
         tc_loop_name(k, v.var)
-        if tc_text(v.var) != "_" { tc_bind(k, tc_text(v.var), it, {v.var, .Local}) }
+        if v.var != 0 && tc_text(v.var) != "_" { tc_bind(k, tc_text(v.var), it, {v.var, .Local}) }
         tc_scope(k, v.body)
     case:
         if v.init != 0 { tc_stmt(k, v.init) }

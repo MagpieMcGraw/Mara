@@ -59,7 +59,7 @@ Tree_Tag :: enum u8 {
     Arm_Dot,        // `.V`: main: the variant; a: list — the body
     Arm_Variant,    // `V`, `V binding`: main: the variant; a: list — the body; b: the binding
     Arm_Value,      // a: the value; b: list — the body
-    For_Range,      // `for i [: T] in lo..hi`: a: rec {var, type, lo, hi, body: list}; b: its `..` or `:`
+    For_Range,      // `for i [: T] in lo..hi`, `for lo..hi`: a: rec {var (0: none), type, lo, hi, body: list}; b: its `..` or `:`
     For_Each,       // `for e[, i, …] [: T] in c`: a: rec {elem, the names after it: tokens, type, collection, body: list}
     For_C,          // `for init; cond; post`: a: rec {init, cond, post, body: list}
     For_Cond,       // `for cond`: a: the condition; b: list — the body
