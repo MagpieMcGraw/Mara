@@ -235,8 +235,8 @@ static void mara_crash_trim(const char* path, const char* tmp_path) {
 // in the program's directory is named from there; another, in full.)
 //
 // On Linux (glibc) the stack is walked by backtrace(), and the addresses are
-// named by addr2line — binutils', or LLVM's — run on the program: no trace
-// where neither is installed. A run of one call is one line there too, and a
+// named by addr2line — binutils', or LLVM's — run on the program, and on
+// each library with calls in it: no trace where neither is installed. A run of one call is one line there too, and a
 // deep stack shows its first calls and its last.
 
 #ifdef _WIN32
@@ -457,25 +457,63 @@ static void mara_stack(CONTEXT* from, int skip) {
 #define MARA_FRAMES_HEAD 40
 #define MARA_FRAMES_TAIL 12
 
-// A frame: its address, how many times in a row the stack has it, and what
-// the debug info says of it: its function, its source line (0: none).
+// A frame: its address, how many times in a row the stack has it, the
+// loaded object its code is in (mara_objects', -1: none found), and what the
+// debug info says of it: its function, its source line (0: none).
 typedef struct {
     void* at;
     int   times;
+    int   object;
     char  name[96];
     char  file[256];
     int   line;
 } Mara_Frame;
 
-static Mara_Frame mara_frames[MARA_FRAMES_CAP];
-static void*      mara_addrs[MARA_FRAMES_CAP];
-static int        mara_stack_done = 0;
+// A loaded object with frames in its code — the program, a library: its
+// file, and where it's loaded.
+typedef struct {
+    char               path[MARA_PATH_CAP];
+    unsigned long long base;
+} Mara_Object;
 
-// Where the program is loaded: the first object the loader lists.
-static int mara_base_of(struct dl_phdr_info* info, size_t size, void* data) {
-    (void)size;
-    *(unsigned long long*)data = (unsigned long long)info->dlpi_addr;
-    return 1;
+#define MARA_OBJECTS_CAP 16
+
+static Mara_Frame  mara_frames[MARA_FRAMES_CAP];
+static void*       mara_addrs[MARA_FRAMES_CAP];
+static Mara_Object mara_objects[MARA_OBJECTS_CAP];
+static int         mara_nframes, mara_nobjects;
+static int         mara_stack_done = 0;
+
+// One of the loaded objects, as the loader lists them (the program's name
+// is empty there): kept when a frame is in its code, the frame marked its.
+static int mara_object_of(struct dl_phdr_info* info, size_t size, void* data) {
+    (void)size; (void)data;
+    int mine = -1;
+    for (int k = 0; k < info->dlpi_phnum; k++) {
+        const ElfW(Phdr)* ph = &info->dlpi_phdr[k];
+        if (ph->p_type != PT_LOAD) continue;
+        unsigned long long lo = (unsigned long long)info->dlpi_addr + ph->p_vaddr;
+        unsigned long long hi = lo + ph->p_memsz;
+        for (int i = 0; i < mara_nframes; i++) {
+            unsigned long long at = (unsigned long long)mara_frames[i].at;
+            if (mara_frames[i].object >= 0 || at < lo || at >= hi) continue;
+            if (mine < 0) {
+                if (mara_nobjects == MARA_OBJECTS_CAP) return 1;
+                mine = mara_nobjects++;
+                Mara_Object* o = &mara_objects[mine];
+                o->base = (unsigned long long)info->dlpi_addr;
+                o->path[0] = 0;
+                if (info->dlpi_name && info->dlpi_name[0]) {
+                    snprintf(o->path, sizeof o->path, "%s", info->dlpi_name);
+                } else {
+                    ssize_t e = readlink("/proc/self/exe", o->path, sizeof o->path - 1);
+                    o->path[e > 0 ? e : 0] = 0;
+                }
+            }
+            mara_frames[i].object = mine;
+        }
+    }
+    return 0;
 }
 
 static int mara_is_mara(Mara_Frame* f) {
@@ -483,41 +521,47 @@ static int mara_is_mara(Mara_Frame* f) {
     return f->line > 0 && n > 5 && strcmp(f->file + n - 5, ".mara") == 0;
 }
 
-// The frames named: `tool` (and its flags) run on the program with every address (a return
-// address, the call's just before it; `exact`, a crash's own), two lines
-// back for each — its function, its file:line. Whether any was a .mara line.
-static int mara_name_frames(const char* tool, const char* exe, int n, void* exact) {
+// The frames named: `tool` (and its flags) run on each object with the
+// addresses of the frames in it (a return address, the call's just before
+// it; `exact`, a crash's own), two lines back for each — its function, its
+// file:line. Whether any was a .mara line.
+static int mara_name_frames(const char* tool, void* exact) {
     static char cmd[64 + MARA_PATH_CAP + MARA_FRAMES_CAP * 20];
-    unsigned long long base = 0;
-    dl_iterate_phdr(mara_base_of, &base);
-    int len = snprintf(cmd, sizeof cmd, "%s -e '%s'", tool, exe);
-    for (int i = 0; i < n; i++) {
-        unsigned long long at = (unsigned long long)mara_frames[i].at;
-        if (mara_frames[i].at != exact) at -= 1;
-        len += snprintf(cmd + len, sizeof cmd - (size_t)len, " 0x%llx", at - base);
-    }
-    snprintf(cmd + len, sizeof cmd - (size_t)len, " 2>/dev/null");
-    FILE* p = popen(cmd, "r");
-    if (!p) return 0;
     int found = 0;
-    char line[512];
-    for (int i = 0; i < n; i++) {
-        Mara_Frame* f = &mara_frames[i];
-        f->name[0] = 0; f->file[0] = 0; f->line = 0;
-        if (!fgets(line, sizeof line, p)) break;
-        line[strcspn(line, "\r\n")] = 0;
-        if (strcmp(line, "??") != 0) snprintf(f->name, sizeof f->name, "%s", line);
-        if (!fgets(line, sizeof line, p)) break;
-        line[strcspn(line, "\r\n")] = 0;
-        char* colon = strrchr(line, ':');   // (after it: the line, then maybe " (discriminator 1)")
-        if (colon) {
-            f->line = atoi(colon + 1);
-            *colon = 0;
-            snprintf(f->file, sizeof f->file, "%s", line);
+    for (int k = 0; k < mara_nobjects; k++) {
+        Mara_Object* o = &mara_objects[k];
+        // (A file's path; the command quotes it with these.)
+        if (o->path[0] != '/' || strchr(o->path, '\'')) continue;
+        int len = snprintf(cmd, sizeof cmd, "%s -e '%s'", tool, o->path);
+        for (int i = 0; i < mara_nframes; i++) {
+            if (mara_frames[i].object != k) continue;
+            unsigned long long at = (unsigned long long)mara_frames[i].at;
+            if (mara_frames[i].at != exact) at -= 1;
+            len += snprintf(cmd + len, sizeof cmd - (size_t)len, " 0x%llx", at - o->base);
         }
-        found |= mara_is_mara(f);
+        snprintf(cmd + len, sizeof cmd - (size_t)len, " 2>/dev/null");
+        FILE* p = popen(cmd, "r");
+        if (!p) continue;
+        char line[512];
+        for (int i = 0; i < mara_nframes; i++) {
+            Mara_Frame* f = &mara_frames[i];
+            if (f->object != k) continue;
+            f->name[0] = 0; f->file[0] = 0; f->line = 0;
+            if (!fgets(line, sizeof line, p)) break;
+            line[strcspn(line, "\r\n")] = 0;
+            if (strcmp(line, "??") != 0) snprintf(f->name, sizeof f->name, "%s", line);
+            if (!fgets(line, sizeof line, p)) break;
+            line[strcspn(line, "\r\n")] = 0;
+            char* colon = strrchr(line, ':');   // (after it: the line, then maybe " (discriminator 1)")
+            if (colon) {
+                f->line = atoi(colon + 1);
+                *colon = 0;
+                snprintf(f->file, sizeof f->file, "%s", line);
+            }
+            found |= mara_is_mara(f);
+        }
+        pclose(p);
     }
-    pclose(p);
     return found;
 }
 
@@ -565,16 +609,18 @@ static void mara_stack(void* exact) {
         } else {
             mara_frames[n].at = mara_addrs[i];
             mara_frames[n].times = 1;
+            mara_frames[n].object = -1;
             n += 1;
         }
     }
-    char exe[MARA_PATH_CAP];
-    ssize_t e = readlink("/proc/self/exe", exe, sizeof exe - 1);
-    if (n == 0 || e <= 0) return;
-    exe[e] = 0;
-    if (strchr(exe, '\'')) return;   // (the command quotes it with these)
-    // (Each with its functions' names as the source has them, where it can.)
-    if (!mara_name_frames("addr2line -f", exe, n, exact) && !mara_name_frames("llvm-addr2line --functions=short", exe, n, exact)) return;
+    if (n == 0) return;
+    // Which object each frame is in — the program, or a library (a Mara
+    // library's code has its own debug info, in its file).
+    mara_nframes = n;
+    mara_nobjects = 0;
+    dl_iterate_phdr(mara_object_of, NULL);
+    // (Each tool with its functions' names as the source has them, where it can.)
+    if (!mara_name_frames("addr2line -f", exact) && !mara_name_frames("llvm-addr2line --functions=short", exact)) return;
 
     int first = 0, last = n - 1;
     while (first < n && !mara_is_mara(&mara_frames[first])) first += 1;

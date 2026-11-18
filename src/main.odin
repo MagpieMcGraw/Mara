@@ -896,6 +896,24 @@ ll_to_o_path :: proc(ll_path: string) -> string {
     return strings.concatenate({ll_path, ".o"})
 }
 
+// What a tool run by system() ended with, as the tool said it: off Windows
+// system() gives the wait status — its exit code is the next byte up (256:
+// exit code 1), or it was ended by a signal (128 + it, as a shell says).
+tool_exit :: proc(ret: i32) -> int {
+    when ODIN_OS == .Windows { return int(ret) }
+    if ret & 0x7f != 0 { return 128 + int(ret & 0x7f) }
+    return int(ret >> 8) & 0xff
+}
+
+// A tool that failed, said: 127 is the shell's for a command it didn't find.
+tool_failed :: proc(what: string, ret: i32) {
+    code := tool_exit(ret)
+    fmt.printf("%s failed (exit code %d)\n", what, code)
+    when ODIN_OS != .Windows {
+        if code == 127 { fmt.printf("  (127: the command wasn't found — is it installed, and on PATH?)\n") }
+    }
+}
+
 // A runtime file (runtime/<name>.c) a native build links: mara_crash, in
 // every one, so asserts and crash() can tee their message into crash.txt;
 // mara_err, in every one, for errs' traces;
@@ -928,7 +946,7 @@ ensure_runtime :: proc(clang_path, compiler_dir, name: string) -> (string, bool)
     when ODIN_OS == .Windows { cmd = strings.concatenate({`"`, cmd, `"`}) }
     ret := libc.system(strings.clone_to_cstring(cmd))
     if ret != 0 {
-        fmt.printf("clang failed compiling %s.c (exit code %d)\n", name, ret)
+        tool_failed(fmt.tprintf("clang, compiling %s.c,", name), i32(ret))
         return "", false
     }
     return o_path, true
@@ -978,7 +996,7 @@ link_no_crt :: proc(ll_paths: []string, exe_name: string, lf: Link_Flags, compil
     ret := libc.system(strings.clone_to_cstring(cmd))
     if res_path != "" { os.remove(res_path) }
     if ret != 0 {
-        fmt.printf("lld-link failed (exit code %d)\n", ret)
+        tool_failed("lld-link", i32(ret))
         fmt.printf("  (The program is built with no C library: C code it links can call none of its functions — printf, malloc, strlen. If an undefined symbol above is one, build with `-crt` (or `crt = true` in build.mara), which needs Visual Studio's C library.)\n")
         return false
     }
@@ -1163,6 +1181,29 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     // Linux. No entry-point symbol required (DllMain stub is auto-generated).
     if shared {
         strings.write_string(&b, " -shared")
+        // Off Windows every name would be the library's to give — the
+        // runtime's and the standard library's among them, and of two Mara
+        // libraries in one program both would then use the first one's
+        // arena. Its #expose funs alone are named (a linker's version
+        // script); the rest stays inside.
+        when ODIN_OS != .Windows {
+            names := make([dynamic]string, context.temp_allocator)
+            for _, f in checked.functions { if f.is_exposed { append(&names, f.name) } }
+            slice.sort(names[:])
+            m := strings.builder_make(context.temp_allocator)
+            strings.write_string(&m, "{\n")
+            if len(names) > 0 {
+                strings.write_string(&m, "  global:\n")
+                for n in names { fmt.sbprintf(&m, "    %s;\n", n) }
+            }
+            strings.write_string(&m, "  local: *;\n};\n")
+            map_path, _ := filepath.join({build_dir, "exports.map"})
+            if os.write_entire_file(map_path, transmute([]u8)strings.to_string(m)) != nil {
+                fmt.printf("Couldn't write the library's exports to %s\n", map_path)
+                return false
+            }
+            fmt.sbprintf(&b, ` "-Wl,--version-script=%s"`, map_path)
+        }
     }
     // Windows EXE: embed an app manifest declaring the process ANSI code page
     // as UTF-8 (Win10 1903+), so the *A file APIs (CreateFileA, ...) read our
@@ -1226,7 +1267,7 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     ret := libc.system(cmd_cstr)
     if res_path != "" { os.remove(res_path) }
     if ret != 0 {
-        fmt.printf("clang failed (exit code %d)\n", ret)
+        tool_failed("clang", i32(ret))
         return false
     }
     return true
@@ -1254,7 +1295,7 @@ link_web :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program
     cmd_cstr := strings.clone_to_cstring(cmd)
     ret := libc.system(cmd_cstr)
     if ret != 0 {
-        fmt.printf("emcc failed (exit code %d)\n", ret)
+        tool_failed("emcc", i32(ret))
         return false
     }
     return true
@@ -1502,7 +1543,9 @@ version_text :: proc() -> string {
     return fmt.tprintf("%s (%s)", name, system)
 }
 
-USAGE :: "Usage: mara build [module|build] [-web] [-shared] [-release] [-x86] [-profile time|memory] [-no assert] [-no console] [-crt]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n       mara version\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
+WEB_TURNED_OFF :: "mara build -web is turned off for now: the web build isn't up to the rest of Mara."
+
+USAGE :: "Usage: mara build [module|build] [-shared] [-release] [-x86] [-profile time|memory] [-no assert] [-no console] [-crt]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n       mara version\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
 PROFILE_USAGE :: `-profile needs what to measure:
     -profile time     how long each fun takes: profile.txt, next to the program, when it ends
     -profile memory   how full each partial array and arena gets: memory.txt`
@@ -1786,7 +1829,12 @@ parse_args :: proc() -> CLI_Args {
     i := 0
     for i < len(os.args) {
         arg := os.args[i]
-        if arg == "-web"     { args.web     = true; i += 1; continue }
+        // (The web build is turned off — it hasn't kept up with the rest. All
+        // of it is still here: `args.web = true` is what the flag did.)
+        if arg == "-web" {
+            fmt.println(WEB_TURNED_OFF)
+            os.exit(1)
+        }
         if arg == "-shared"  { args.shared  = true; i += 1; continue }
         if arg == "-crt"     { args.crt     = true; i += 1; continue }
         if arg == "-release" { args.release = true; i += 1; continue }
