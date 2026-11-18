@@ -635,7 +635,7 @@ tc_array_entries :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, fa: ^Type_Fixed
     set := make([]bool, fa.size, context.temp_allocator)
     for e in entries {
         field := tc_name(k, e)
-        if len(field) != 1 || !is_swizzle_field(field, fa.size) {
+        if len(field) != 1 || !is_swizzle_field(field, fa.size) || tr.b[e] != 0 {
             tc_error(k, span, TYPE_FIELD_USE_SWIZZLE_COMPONENTS_WITHIN, name, field, fa.size)
             continue
         }
@@ -691,8 +691,47 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
             continue
         }
         tc_set_ref(k, e, {sd.fields[idx].decl, .Field})
-        tc_literal_field(k, Tree_Id(tr.a[e]), sd.fields[idx], 0, name, span)
+        f, found := tc_entry_field(k, e, sd, span)
+        if found { tc_literal_field(k, Tree_Id(tr.a[e]), f, 0, f.name, span) }
     }
+}
+
+// A named entry's field: `x = v` x; a path, `obj.pos = v`, pos of obj's
+// struct — each name a field of the struct before it, held in it (no
+// pointer), or an array's x, y, z, w (`obj.pos.z`): what's written is at its
+// offset in the value's memory.
+tc_entry_field :: proc(k: ^TC, e: Tree_Id, sd: ^Scope_Body, span: Span) -> (Struct_Type_Field, bool) {
+    path := entry_path(k.t, e)
+    f := sd.fields[sd.field_map[path[0]]]
+    for name in path[1:] {
+        if fa, is_array := distinct_base(f.type_).(^Type_Fixed_Array); is_array && len(name) == 1 && is_swizzle_field(name, fa.size) {
+            f = Struct_Type_Field{name = name, type_ = fa.elem}
+            continue
+        }
+        ts, is_scope := distinct_base(f.type_).(^Type_Scope)
+        if !is_scope || ts.kind != .Struct {
+            tc_error(k, span, TYPE_OVERRIDE_PATH_NO_STRUCT, f.name, type_name(f.type_), name)
+            return {}, false
+        }
+        idx, ok := ts.field_map[name]
+        if !ok {
+            tc_error(k, span, TYPE_CLASS_FIELD, scope_display_name(&ts.sd), name)
+            return {}, false
+        }
+        f = ts.fields[idx]
+    }
+    return f, true
+}
+
+// A named entry's field names: `x = v` its one, `obj.pos = v` obj's then
+// pos's.
+entry_path :: proc(t: ^Tree, e: Tree_Id) -> []string {
+    out := make([dynamic]string, context.temp_allocator)
+    last := Token_Id(t.b[e]) if t.b[e] != 0 else t.main[e]
+    for tok := t.main[e]; tok <= last; tok += 1 {
+        if build_tokens[tok].kind == .Identifier { append(&out, token_text(build_tokens[tok])) }
+    }
+    return out[:]
 }
 
 tc_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, name: string, span: Span, positional := false, probed: Type = nil) {

@@ -2010,13 +2010,13 @@ tp_literal :: proc(p: ^Tree_Parser, type_: Tree_Id, first: int, main: Token_Id =
             append(&entries, tp_node(p, .Broadcast, all_tok, all_start, u32(v)))
             tp_skip_newlines(p)
         } else {
-            positional := !(tp_kind(p) == .Identifier && tp_peek(p) == .Equals)
+            positional := !tp_named_entry(p)
             append(&entries, tp_entry(p, positional))
             for tp_kind(p) != .Right_Brace && tp_kind(p) != .EOF {
                 if tp_kind(p) == .Comma { tp_advance(p) }
                 tp_skip_newlines(p)
                 if tp_kind(p) == .Right_Brace { break }
-                named := tp_kind(p) == .Identifier && tp_peek(p) == .Equals
+                named := tp_named_entry(p)
                 if named == positional { tp_error(p, tp_here(p), PARSE_STRUCT_LIT_MIXED_FIELDS) }
                 append(&entries, tp_entry(p, positional))
             }
@@ -2030,8 +2030,21 @@ tp_entry :: proc(p: ^Tree_Parser, positional: bool) -> Tree_Id {
     if positional { return tp_expr(p) }
     start := p.pos
     name := tp_expect(p, .Identifier)
+    last: Token_Id
+    for tp_kind(p) == .Dot {
+        tp_advance(p)
+        last = tp_expect(p, .Identifier)
+    }
     tp_expect(p, .Equals)
-    return tp_node(p, .Named_Entry, name, start, u32(tp_expr(p)))
+    return tp_node(p, .Named_Entry, name, start, u32(tp_expr(p)), u32(last))
+}
+
+// Whether an entry is named: `name = v`, or a path, `obj.pos = v`.
+tp_named_entry :: proc(p: ^Tree_Parser) -> bool {
+    if tp_kind(p) != .Identifier { return false }
+    i := 1
+    for tp_peek(p, i) == .Dot && tp_peek(p, i + 1) == .Identifier { i += 2 }
+    return tp_peek(p, i) == .Equals
 }
 
 // Whether an expression is a pure name path (`A.B.C`): a qualified literal's

@@ -129,7 +129,8 @@ Tree_Tag :: enum u8 {
     Big_Endian,     // `#big_endian x[i]`: main: `#`; a: the read
     Literal,        // `{…}`, `Name{…}`, `[N!]T{…}`: main: `{` (a typed array's: its `[`);
                     // a: its type; b: list — its entries
-    Named_Entry,    // `name = v` in a literal: main: the name; a: the value
+    Named_Entry,    // `name = v` in a literal: main: the name; a: the value; b: a path's
+                    // last name, `obj.pos = v` (its names: entry_path)
     Broadcast,      // `all v`: main: `all`; a: the value
     Array,          // `[a, b]`: main: `[`; a: list — the elements
     If_Expr,        // `if c do a else b`: main: `if`; a: the condition; b: rec {then, else}
@@ -232,7 +233,7 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .Slice          = {a = .Node, b = .Rec, rec = {0 = .Node, 1 = .Node}},
     .Big_Endian     = {a = .Node},
     .Literal        = {a = .Node, b = .List},
-    .Named_Entry    = {a = .Node},
+    .Named_Entry    = {a = .Node, b = .Token},
     .Broadcast      = {a = .Node},
     .Array          = {a = .List},
     .If_Expr        = {a = .Node, b = .Rec, rec = {0 = .Node, 1 = .Node}},

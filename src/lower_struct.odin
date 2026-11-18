@@ -256,7 +256,7 @@ lw_literal_gaps :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Body,
     given := make(map[string]bool, allocator = context.temp_allocator)
     if len(entries) > 0 {
         if tr.tag[entries[0]] == .Named_Entry {
-            for e in entries { given[tc_name(k, e)] = true }
+            for e in entries { if tr.b[e] == 0 { given[tc_name(k, e)] = true } }   // (`obj.pos = v` gives part of obj)
         } else if call := tc_unparen(k, entries[0]); len(entries) == 1 && tc_is_call(k, call) && len(sd.fields) > 1 {
             return   // (a spread: every field the call's)
         } else {
@@ -332,12 +332,30 @@ lw_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
     }
     for e in entries {
         idx := sd.field_map[tc_name(k, e)]
-        lw_literal_field(k, Tree_Id(tr.a[e]), sd.fields[idx], 0, tc_name(k, e), span, gl)
+        if tr.b[e] == 0 {
+            lw_literal_field(k, Tree_Id(tr.a[e]), sd.fields[idx], 0, tc_name(k, e), span, gl)
+            continue
+        }
+        // (`obj.pos = v`: pos's place in obj's, obj's in the value's.)
+        path := entry_path(tr, e)
+        d := new_clone(graph_build_literal_field(gl, path[0], 0), context.temp_allocator)
+        f := sd.fields[idx]
+        for name in path[1:] {
+            if fa, is_array := distinct_base(f.type_).(^Type_Fixed_Array); is_array {
+                f = Struct_Type_Field{name = name, type_ = fa.elem}
+                d = new_clone(Dest{kind = .Index, index = swizzle_char_to_index(name[0]), type_ = fa.elem, parent = d}, context.temp_allocator)
+                continue
+            }
+            ts := distinct_base(f.type_).(^Type_Scope)
+            f = ts.fields[ts.field_map[name]]
+            d = new_clone(Dest{kind = .Field, name = name, type_ = f.type_, parent = d}, context.temp_allocator)
+        }
+        lw_literal_field(k, Tree_Id(tr.a[e]), f, 0, f.name, span, gl, d^)
     }
 }
 
-lw_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, name: string, span: Span, gl: ^Graph_Literal) {
-    d := graph_build_literal_field(gl, name, i)
+lw_literal_field :: proc(k: ^TC, value: Tree_Id, f: Struct_Type_Field, i: int, name: string, span: Span, gl: ^Graph_Literal, at := Dest{}) {
+    d := at if at.parent != nil else graph_build_literal_field(gl, name, i)   // (a path's place: given)
     r := lw_expr(k, value, .Into, dest = d, temp_span = span)
     lw_store(k, value, tc_node_type(k, value), r, d, span)
     lw_byte_view_address(k, f.type_, value)
