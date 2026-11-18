@@ -145,19 +145,22 @@ llvm_dbg_function :: proc(d: ^Llvm_Dbg, b: ^strings.Builder, head: Ir_Head, code
             if !entered && ins.op != .Label {
                 // The held ones' allocas, declared; a param's stored now.
                 entered = true
+                // (A param's store is on no line, as clang's: the fun's
+                // code begins after them all — where `break fun` stops.)
                 for v, i in dbg.vars {
                     if store[i] != .Held { continue }
-                    ir_print(b, Ir{op = .Alloca, dest = slot(i), ty = held[i]}, loc)
-                    if param[i] > 0 { ir_print(b, Ir{op = .Store, ty = held[i], a = v.at, b = slot(i)}, loc) }
-                    dbg_declare(d, b, slot(i), dbg_variable(d, v, sp, dbg, arg[i]), loc, deref = held[i] == IR_PTR && v.addr)
+                    ir_print(b, Ir{op = .Alloca, dest = slot(i), ty = held[i]})
+                    if param[i] > 0 { ir_print(b, Ir{op = .Store, ty = held[i], a = v.at, b = slot(i)}) }
+                    dbg_declare(d, b, slot(i), dbg_variable(d, v, sp, dbg, arg[i] if param[i] > 0 else v.param), loc, deref = held[i] == IR_PTR && v.addr)
                 }
             }
             ir_print(b, ins, loc)
             if ins.dest.kind == .None { continue }
             for v, i in dbg.vars {
                 if v.at != ins.dest || param[i] > 0 { continue }
+                // (main's `args` is no param of @main's: its number says it's one.)
                 #partial switch store[i] {
-                case .Own:  dbg_declare(d, b, v.at, dbg_variable(d, v, sp, dbg, 0), loc)
+                case .Own:  dbg_declare(d, b, v.at, dbg_variable(d, v, sp, dbg, v.param), loc)
                 case .Held: ir_print(b, Ir{op = .Store, ty = IR_PTR, a = v.at, b = slot(i)}, loc)
                 }
             }

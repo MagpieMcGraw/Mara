@@ -42,6 +42,7 @@ Dbg_Var :: struct {
     type_: Type,
     at:    Val,
     addr:  bool,
+    param: int,     // the fun's param it is, from 1 (0: none)
 }
 
 // A source line, where its code starts in its function (Ir .Line).

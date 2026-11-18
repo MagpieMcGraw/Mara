@@ -918,6 +918,9 @@ ensure_runtime :: proc(clang_path, compiler_dir, name: string) -> (string, bool)
     cb: strings.Builder
     strings.write_byte(&cb, '"'); strings.write_string(&cb, clang_path); strings.write_byte(&cb, '"')
     strings.write_string(&cb, " -c -O2 -D_CRT_SECURE_NO_WARNINGS ")
+    // (Off Windows a -shared build links them into a library: code that
+    // runs wherever it's loaded.)
+    if build_target() != .Windows { strings.write_string(&cb, "-fPIC ") }
     strings.write_byte(&cb, '"'); strings.write_string(&cb, c_path); strings.write_byte(&cb, '"')
     strings.write_string(&cb, " -o ")
     strings.write_byte(&cb, '"'); strings.write_string(&cb, o_path); strings.write_byte(&cb, '"')
@@ -1234,9 +1237,10 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
 link_web :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Program) -> bool {
     lf := build_link_flags(checked, web = true)
     if !lf.ok { return false }
+    // (Off Windows: the emcc on PATH, as emsdk_env.sh puts it there.)
+    emcc := strings.concatenate({"set EMSDK_PYTHON=", EMSDK_PYTHON, " && ", EMCC_PATH}) when ODIN_OS == .Windows else "emcc"
     cmd := strings.concatenate({
-        "set EMSDK_PYTHON=", EMSDK_PYTHON, " && ",
-        EMCC_PATH, " ", strings.join(ll_paths, " "), lf.extra_inputs,
+        emcc, " ", strings.join(ll_paths, " "), lf.extra_inputs,
         " -o ", exe_name,
         " -Wno-override-module",
         // Pounce's arena alone wants 192MB; let the heap grow rather than
@@ -1490,7 +1494,15 @@ CLI_Args :: struct {
     lsp:          bool,
 }
 
-USAGE :: "Usage: mara build [module|build] [-web] [-shared] [-release] [-x86] [-profile time|memory] [-no assert] [-no console] [-crt]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
+// Which compiler this is: a release's version and commit (version.odin).
+version_text :: proc() -> string {
+    system := "linux" when ODIN_OS == .Linux else "macos" when ODIN_OS == .Darwin else "windows"
+    name := fmt.tprintf("mara %s", MARA_VERSION) if MARA_VERSION != "" else "mara, built from source"
+    if MARA_COMMIT != "" { return fmt.tprintf("%s (%s, commit %s)", name, system, MARA_COMMIT) }
+    return fmt.tprintf("%s (%s)", name, system)
+}
+
+USAGE :: "Usage: mara build [module|build] [-web] [-shared] [-release] [-x86] [-profile time|memory] [-no assert] [-no console] [-crt]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n       mara version\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
 PROFILE_USAGE :: `-profile needs what to measure:
     -profile time     how long each fun takes: profile.txt, next to the program, when it ends
     -profile memory   how full each partial array and arena gets: memory.txt`
@@ -2064,6 +2076,12 @@ main :: proc() {
     arena: virtual.Arena
     if virtual.arena_init_growing(&arena) == nil {
         context.allocator = virtual.arena_allocator(&arena)
+    }
+
+    // `mara version`: which compiler this is, for a bug's report.
+    if len(os.args) >= 2 && (os.args[1] == "version" || os.args[1] == "--version" || os.args[1] == "-version") {
+        fmt.println(version_text())
+        return
     }
 
     args := parse_args()

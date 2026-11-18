@@ -3,9 +3,12 @@
 # and mara-linux-x64.tar.gz. A push to main that changes this file, or a run
 # started by hand from the Actions tab, builds them as artifacts only.
 #
-# Each build: Odin builds the compiler, the docs' programs are built and run
-# with it, the package is made, and a program is built with the packaged
-# compiler alone. The test suite lives outside the repo: run it before tagging.
+# Each build: Odin builds the compiler, the view window (`mara view`) and the
+# docs' programs are built with it and the docs' run, the package is made,
+# and a program is built with the packaged compiler alone. The test suite
+# lives outside the repo: run it before tagging.
+# The Linux window comes with the SDL3 it was built with (built here, of
+# SDL_RELEASE: Ubuntu 24.04 has no package of it), found beside it.
 # Linux builds with Ubuntu 24.04's clang 18: the oldest LLVM Mara's IR is
 # checked against (Windows uses tools/, clang 21).
 # A failing step's last lines show on the run's page (.github/report.sh).
@@ -20,6 +23,7 @@ on:
 
 env:
   ODIN_RELEASE: dev-2026-05
+  SDL_RELEASE: 3.4.4
 
 defaults:
   run:
@@ -42,6 +46,9 @@ jobs:
       - name: Build the compiler
         run: |
           source .github/report.sh
+          # (Its version: the tag's, and the commit — `mara version`.)
+          version=""; case "$GITHUB_REF" in refs/tags/v*) version=${GITHUB_REF_NAME#v} ;; esac
+          printf 'package mara\n\nMARA_VERSION :: "%s"\nMARA_COMMIT  :: "%s"\n' "$version" "${GITHUB_SHA::7}" > src/version.odin
           odin build src -o:speed -out:mara.exe
 
       - name: Build the view window
@@ -78,6 +85,7 @@ jobs:
           printf 'module hello\n\nmain :: () {\n\tprint("Hello there!")\n}\n' > hello.mara
           "$RUNNER_TEMP/unpacked/mara-windows-x64/mara.exe" build hello
           ./hello.exe | grep "Hello there!"
+          "$RUNNER_TEMP/unpacked/mara-windows-x64/mara.exe" version
 
       - uses: actions/upload-artifact@v4
         with:
@@ -100,7 +108,35 @@ jobs:
       - name: Build the compiler
         run: |
           source .github/report.sh
+          # (Its version: the tag's, and the commit — `mara version`.)
+          version=""; case "$GITHUB_REF" in refs/tags/v*) version=${GITHUB_REF_NAME#v} ;; esac
+          printf 'package mara\n\nMARA_VERSION :: "%s"\nMARA_COMMIT  :: "%s"\n' "$version" "${GITHUB_SHA::7}" > src/version.odin
           odin build src -o:speed -out:mara
+
+      - name: SDL3, for the view window
+        run: |
+          source .github/report.sh
+          sudo apt-get install -y -q cmake ninja-build pkg-config patchelf xvfb libgl1-mesa-dri \
+            libgl-dev libegl-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
+            libxkbcommon-dev libwayland-dev libdecor-0-dev libdrm-dev libgbm-dev libdbus-1-dev libudev-dev
+          curl -sSfL -o "$RUNNER_TEMP/sdl.tar.gz" "https://github.com/libsdl-org/SDL/releases/download/release-$SDL_RELEASE/SDL3-$SDL_RELEASE.tar.gz"
+          tar -xzf "$RUNNER_TEMP/sdl.tar.gz" -C "$RUNNER_TEMP"
+          cmake -S "$RUNNER_TEMP/SDL3-$SDL_RELEASE" -B "$RUNNER_TEMP/sdl" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF | tail -40
+          cmake --build "$RUNNER_TEMP/sdl" | tail -5
+          sudo cmake --install "$RUNNER_TEMP/sdl" | tail -5
+          sudo ldconfig
+
+      - name: Build the view window
+        run: |
+          source .github/report.sh
+          cd view && ../mara build view -release
+          # (Its SDL3 beside it, and looked for there first.)
+          cp -L "$(find /usr/lib -name libSDL3.so.0 | head -1)" .
+          patchelf --set-rpath '$ORIGIN' view
+          libs=$(ldd view)
+          echo "$libs"
+          case "$libs" in *"not found"*) echo "the window needs a library that isn't here"; exit 1 ;; esac
+          case "$libs" in *"libSDL3.so.0 => "*"/view/"*) ;; *) echo "the window doesn't take the SDL3 beside it"; exit 1 ;; esac
 
       - name: Build and run the docs' programs
         run: |
@@ -118,8 +154,10 @@ jobs:
           source .github/report.sh
           pkg=mara-linux-x64
           mkdir -p "$RUNNER_TEMP/$pkg"
-          git archive HEAD code runtime doc editor readme README.md LICENSE | tar -x -C "$RUNNER_TEMP/$pkg"
+          git archive HEAD code runtime view doc editor readme README.md LICENSE | tar -x -C "$RUNNER_TEMP/$pkg"
+          rm "$RUNNER_TEMP/$pkg/view/SDL3.dll"
           cp mara "$RUNNER_TEMP/$pkg/"
+          cp view/view view/libSDL3.so.0 "$RUNNER_TEMP/$pkg/view/"
           tar -czf "$pkg.tar.gz" -C "$RUNNER_TEMP" "$pkg"
 
       - name: Build a program with the package alone
@@ -131,6 +169,25 @@ jobs:
           printf 'module hello\n\nmain :: () {\n\tprint("Hello there!")\n}\n' > hello.mara
           "$RUNNER_TEMP/unpacked/mara-linux-x64/mara" build hello
           ./hello | grep "Hello there!"
+          "$RUNNER_TEMP/unpacked/mara-linux-x64/mara" version
+
+      # The packaged window on a display made for it (Xvfb, Mesa's software
+      # GL): it should still be running a few seconds in. A warning, not a
+      # failure: the runner's display isn't a user's.
+      - name: Start the packaged view window
+        run: |
+          source .github/report.sh
+          pkg="$RUNNER_TEMP/unpacked/mara-linux-x64"
+          cd "$RUNNER_TEMP/hello"
+          xvfb-run -a "$pkg/view/view" "$pkg/mara" hello mara-release-check > view.txt 2>&1 &
+          sleep 10
+          if pgrep -f "$pkg/view/view" > /dev/null; then
+            echo "the view window runs"
+          else
+            echo "::warning title=view (linux)::the packaged view window didn't stay up under Xvfb: $(tail -c 600 view.txt | tr '\n' ' ')"
+          fi
+          pkill -f "$pkg/view/view" || true
+          pkill Xvfb || true
 
       - uses: actions/upload-artifact@v4
         with:

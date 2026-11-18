@@ -41,6 +41,9 @@
 #include <fcntl.h>
 #include <signal.h>
 static volatile sig_atomic_t mara_crashing = 0;   // a crash's report, not an assert's (the signal's handler)
+#if defined(__x86_64__) || defined(__i386__)
+static void mara_trap_unwatched(int sig) { (void)sig; }   // (__mara_crash_end's breakpoint, no debugger there)
+#endif
 #endif
 
 #define MARA_CRASH_FILE "crash.txt"
@@ -605,6 +608,7 @@ static void mara_stack(void* exact) {
         __mara_tee_printf("  ... %lld more calls\n", calls);
         for (int k = nruns - MARA_FRAMES_TAIL; k < nruns; k++) mara_print_run(mara_runs[k], dir, dir_len);
     }
+    if (got == MARA_FRAMES_CAP) __mara_tee_printf("  ... the stack goes on: its first %d calls were read\n", MARA_FRAMES_CAP);
 }
 #endif
 
@@ -637,13 +641,20 @@ void __mara_crash_end(void) {
 
 #ifndef _WIN32
     // An assert's report, under a debugger: the program stops here, its calls
-    // and their variables to look at, before it exits. (A signal that's
-    // ignored still stops a traced program; with no debugger it does
-    // nothing. A crash's signal has stopped it already.)
+    // and their variables to look at, before it exits. (A crash's signal
+    // has stopped it already.) A breakpoint instruction where there is one:
+    // the stop is in this fun, two calls from the program's own code; with
+    // no debugger its signal is handled by doing nothing. Elsewhere the
+    // signal is raised, ignored: that still stops a traced program.
     if (!mara_crashing) {
         fflush(stdout);
+#if defined(__x86_64__) || defined(__i386__)
+        signal(SIGTRAP, mara_trap_unwatched);
+        __asm__ volatile("int3");
+#else
         signal(SIGTRAP, SIG_IGN);
         raise(SIGTRAP);
+#endif
     }
 #endif
 }

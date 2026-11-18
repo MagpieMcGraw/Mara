@@ -160,11 +160,11 @@ llvm_line :: proc(e: ^Llvm, op: Node_Id) {
 // A variable for the debug info, with its storage: its memory, or (addr)
 // what holds its address, or what holds its value.
 @(private="file")
-llvm_debug_var :: proc(e: ^Llvm, d: Node_Id, at: Val, addr: bool) {
+llvm_debug_var :: proc(e: ^Llvm, d: Node_Id, at: Val, addr: bool, param := 0) {
     if !llvm_debug(e) || (at.kind != .Local && at.kind != .Temp) { return }
     name := graph_name(e.pg, d)
     for v in e.dbg.vars { if v.name == name && v.at == at { return } }   // (one met again)
-    append(&e.dbg.vars, Dbg_Var{name, graph_type(e.pg, d), at, addr})
+    append(&e.dbg.vars, Dbg_Var{name, graph_type(e.pg, d), at, addr, param})
 }
 
 // -profile time: a fun worth timing — main, and one that does work a probe is
@@ -421,6 +421,7 @@ llvm_sort_runs :: proc(runs: []i32) {
 @(private="file")
 llvm_variables :: proc(e: ^Llvm) -> bool {
     pg := e.pg
+    params := 0
     for id := Node_Id(1); id <= pg.end; id += 1 {
         e.stop = id
         #partial switch pg.kind[id] {
@@ -429,7 +430,8 @@ llvm_variables :: proc(e: ^Llvm) -> bool {
         case .Param:
             _ = llvm_param_type(graph_type(pg, id)) or_return
             e.value[id] = ir_local(fmt.tprintf("%s.arg", graph_name(pg, id)))
-            llvm_debug_var(e, id, e.value[id], addr = llvm_aggregate(graph_type(pg, id)))
+            params += 1
+            llvm_debug_var(e, id, e.value[id], addr = llvm_aggregate(graph_type(pg, id)), param = params)
         case .Result:
             if pg.written[id] == .Explicit && !llvm_named_result(e, id) { return false }
         case .Local:
