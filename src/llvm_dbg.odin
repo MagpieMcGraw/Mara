@@ -158,12 +158,14 @@ llvm_dbg_function :: proc(d: ^Llvm_Dbg, b: ^strings.Builder, head: Ir_Head, code
 }
 
 // A variable's record: it's in the memory `at` points to (deref: where the
-// pointer there points).
+// pointer there points). A call of llvm.dbg.declare, not a `#dbg_declare`
+// record: LLVM before 19 reads only the call (Ubuntu 24.04's clang is 18),
+// and later ones still read it.
 @(private="file")
 dbg_declare :: proc(d: ^Llvm_Dbg, b: ^strings.Builder, at: Val, variable, loc: int, deref := false) {
-    strings.write_string(b, "    #dbg_declare(ptr ")
+    strings.write_string(b, "    call void @llvm.dbg.declare(metadata ptr ")
     ir_print_val(b, at)
-    fmt.sbprintf(b, ", !%d, !DIExpression(%s), !%d)\n", variable, "DW_OP_deref" if deref else "", loc)
+    fmt.sbprintf(b, ", metadata !%d, metadata !DIExpression(%s)), !dbg !%d\n", variable, "DW_OP_deref" if deref else "", loc)
 }
 
 // A variable's node: its name, its type; `arg`, the param it is (from 1).
@@ -216,6 +218,7 @@ llvm_dbg_module :: proc(b: ^strings.Builder, ds: []^Llvm_Dbg) {
         append(&cus, d.cu)
     }
     if len(cus) == 0 { return }
+    strings.write_string(b, "declare void @llvm.dbg.declare(metadata, metadata, metadata)\n")
     strings.write_string(b, "!llvm.dbg.cu = !{")
     for cu, i in cus { fmt.sbprintf(b, "%s!%d", ", " if i > 0 else "", cu) }
     f := LLVM_DBG_FLAGS
