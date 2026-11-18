@@ -20,6 +20,10 @@ And real code looks like that
 
 Main feature of Mara is stack-like memory allocation. Everything in Mara lives until the end of scope. You can get data out of functions by returning it, or by passing in a block of memory and writing to it.
 
+## Download
+
+Ready-built compilers are on the [releases page](https://github.com/MagpieMcGraw/Mara/releases): `mara-windows-x64.zip` and `mara-linux-x64.tar.gz`. Unpack it anywhere and put its folder on PATH. On Windows that's all; on Linux, install clang and lld with your package manager.
+
 ## Building the compiler
 
 The Mara compiler is written in [Odin](https://odin-lang.org/). You need
