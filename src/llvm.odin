@@ -1257,6 +1257,8 @@ llvm_named_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
 // `{all x}`: every element of an array — a fixed array's, or all of a
 // partial array's, its len then its cap — the one value: a register value
 // stored, an aggregate copied (its partial arrays re-pointed).
+LLVM_FILL_IN_A_ROW :: 16   // (a fill of more elements than this is a loop)
+
 @(private="file")
 llvm_fill :: proc(e: ^Llvm, ops: []Operand) -> bool {
     g, pg := e.g, e.pg
@@ -1277,14 +1279,43 @@ llvm_fill :: proc(e: ^Llvm, ops: []Operand) -> bool {
     if !llvm_scalar(elem) && !llvm_aggregate(elem) { return false }
     v := llvm_operand(e, ops[1], elem) or_return
     ir := llvm_type_from_checker(elem)
-    for k in 0 ..< n {
+    // An element's place, by its number (a constant's, or a loop's counter).
+    slot_at :: proc(g: ^Codegen, pa: ^Type_Partial_Array, ir, array: Ir_Type, to, k: Val) -> Val {
         slot := fresh_tmp(g)
         if pa != nil {
-            ir_gep_inbounds(g, slot, partial_array_ir_type(ir, pa.size), to, {IR_I32, ir_int(0), {}}, {IR_I32, ir_int(PARTIAL_ELEMENTS_FIELD), {}}, {IR_I32, ir_int(k), {}})
+            ir_gep_inbounds(g, slot, partial_array_ir_type(ir, pa.size), to, {IR_I32, ir_int(0), {}}, {IR_I32, ir_int(PARTIAL_ELEMENTS_FIELD), {}}, {IR_I64, k, {}})
         } else {
-            emit_array_gep_const(g, slot, llvm_type_from_checker(at), to, k)
+            ir_gep(g, slot, array, to, {IR_I64, ir_int(0), {}}, {IR_I64, k, {}})
         }
+        return slot
+    }
+    array := llvm_type_from_checker(at) if pa == nil else IR_VOID
+    if n <= LLVM_FILL_IN_A_ROW {
+        for k in 0 ..< n {
+            slot := slot_at(g, pa, ir, array, to, ir_int(k))
+            if llvm_scalar(elem) { emit_store(g, ir, v, slot) } else { llvm_copy(e, slot, v, elem) }
+        }
+    } else {
+        // A loop: thousands of copies in a row are one block of code an
+        // optimizer takes a minute over (a release build's link).
+        count := fresh_tmp(g)
+        emit_alloca(g, count, IR_I64)
+        emit_store(g, IR_I64, ir_int(0), count)
+        loop, body, done := fresh_label(g, "fill.loop"), fresh_label(g, "fill.body"), fresh_label(g, "fill.end")
+        emit_br(g, loop)
+        emit_label(g, loop)
+        k, more := fresh_tmp(g), fresh_tmp(g)
+        emit_load_into(g, k, IR_I64, count)
+        ir_icmp(g, more, .Slt, IR_I64, k, ir_int(n))
+        emit_cond_br(g, more, body, done)
+        emit_label(g, body)
+        slot := slot_at(g, pa, ir, array, to, k)
         if llvm_scalar(elem) { emit_store(g, ir, v, slot) } else { llvm_copy(e, slot, v, elem) }
+        next := fresh_tmp(g)
+        ir_bin(g, next, .Add, IR_I64, k, ir_int(1))
+        emit_store(g, IR_I64, next, count)
+        emit_br(g, loop)
+        emit_label(g, done)
     }
     if pa != nil {
         emit_header_set(g, to, SLICE.len, ir_int(pa.size))
