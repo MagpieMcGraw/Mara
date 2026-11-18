@@ -932,6 +932,16 @@ ensure_runtime :: proc(clang_path, compiler_dir, name: string) -> (string, bool)
     }
     o_time, o_err := os_old.last_write_time_by_name(o_path)
     if o_err == nil && o_time >= c_time { return o_path, true }
+    // (An installed compiler's folder may not be the user's to write: the
+    // object is then theirs, in their cache folder, as a bundled library is.)
+    if !folder_writable(filepath.dir(o_path)) {
+        o_path = bundled_lib_elsewhere(c_path, strings.concatenate({name, ".o"}))
+        if o_path == "" {
+            fmt.printf(BUILD_LIB_NO_FOLDER, c_path)
+            return "", false
+        }
+        if o_time, o_err = os_old.last_write_time_by_name(o_path); o_err == nil && o_time >= c_time { return o_path, true }
+    }
 
     cb: strings.Builder
     strings.write_byte(&cb, '"'); strings.write_string(&cb, clang_path); strings.write_byte(&cb, '"')

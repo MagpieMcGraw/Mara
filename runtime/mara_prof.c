@@ -334,7 +334,8 @@ static void prof_dump(void) {
     fprintf(out, "Each probed call costs its caller about %.3f us; probes %% is how much of a fun's total that is, for the calls inside it.\n", probe * us);
     fprintf(out, "Funs that call nothing and don't loop aren't probed: their time is their caller's self.\n");
     if (open) {
-        fprintf(out, "%zu calls were running at exit; their times end there. Innermost first:\n", open);
+        if (open == 1) fprintf(out, "1 call was running at exit; its time ends there:\n");
+        else           fprintf(out, "%zu calls were running at exit; their times end there. Innermost first:\n", open);
         for (size_t i = 0; i < shown; i++) {
             fprintf(out, "    %s  %s", running[i]->name, running[i]->where);
             if (times[i] > 1) fprintf(out, "  (%zu calls in a row)", times[i]);

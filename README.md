@@ -22,7 +22,7 @@ Main feature of Mara is stack-like memory allocation. Everything in Mara lives u
 
 ## Download
 
-Ready-built compilers are on the [releases page](https://github.com/MagpieMcGraw/Mara/releases): `mara-windows-x64.zip` and `mara-linux-x64.tar.gz`. Unpack it anywhere and put its folder on PATH. On Windows that's all; on Linux, install clang and lld with your package manager.
+Ready-built compilers are on the [releases page](https://github.com/MagpieMcGraw/Mara/releases): `mara-windows-x64.zip` and `mara-linux-x64.tar.gz`. Unpack it anywhere and put its folder on PATH. On Windows that's all; on Linux, install clang and lld with your package manager. The Linux compiler needs glibc 2.34 or newer (Ubuntu 22.04, Debian 12); its window, `mara view`, needs 2.38 (Ubuntu 24.04).
 
 ## Building the compiler
 

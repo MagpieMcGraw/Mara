@@ -1,7 +1,7 @@
 package mara
 
 import "core:c"
-import "core:os"
+import "core:fmt"
 import "core:strings"
 import "core:sys/posix"
 import "core:time"
@@ -44,21 +44,22 @@ start_detached :: proc(exe: string, args: []string) -> bool {
     return n == 0
 }
 
-// A request line sent to the window listening on `name` (a Unix socket,
-// where mara.os's pipe_listen puts it), and its reply, to the end it closes
-// the connection at — or No_Window, or Broken when one stops answering
-// (VIEW_QUIET without a byte).
+// A request line sent to the window listening on `name`, and its reply, to
+// the end it closes the connection at — or No_Window, or Broken when one
+// stops answering (VIEW_QUIET without a byte). The window listens where
+// mara.os's pipe_listen puts a name (pipe_address, os/linux.mara): a Unix
+// socket in Linux's abstract namespace, no file — a 0, the name, a dot and
+// the user's id, the address's size saying where it ends.
 view_exchange :: proc(name, request: string) -> (reply: string, how: View_Exchange) {
-    dir := os.get_env("XDG_RUNTIME_DIR", context.temp_allocator)
-    if dir == "" { dir = "/tmp" }
-    path := strings.concatenate({dir, "/", name, ".sock"}, context.temp_allocator)
+    path := fmt.tprintf("%s.%d", name, posix.getuid())
     at := posix.sockaddr_un{sun_family = .UNIX}
-    if len(path) >= len(at.sun_path) { return "", .No_Window }
-    copy(at.sun_path[:], transmute([]u8)path)
+    if 1 + len(path) > len(at.sun_path) { return "", .No_Window }
+    copy(at.sun_path[1:], transmute([]u8)path)
+    size := posix.socklen_t(int(offset_of(posix.sockaddr_un, sun_path)) + 1 + len(path))
     fd := posix.socket(.UNIX, .STREAM)
     if fd < 0 { return "", .No_Window }
     defer posix.close(fd)
-    if posix.connect(fd, (^posix.sockaddr)(&at), posix.socklen_t(size_of(at))) != .OK { return "", .No_Window }
+    if posix.connect(fd, (^posix.sockaddr)(&at), size) != .OK { return "", .No_Window }
     line := strings.concatenate({request, "\n"}, context.temp_allocator)
     // (NOSIGNAL: a window gone is a failed send, not SIGPIPE ending us.)
     if posix.send(fd, raw_data(line), len(line), {.NOSIGNAL}) != len(line) { return "", .Broken }

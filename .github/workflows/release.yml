@@ -160,6 +160,10 @@ jobs:
             "$mara" build "$n" || { echo "doc/$f doesn't build"; exit 1; }
             timeout 60 "./$n" > /dev/null || { echo "doc/$f doesn't run"; exit 1; }
           done
+          # The two profilers' builds, which make the runtime's other objects
+          # (the package comes with them all: nothing to compile in its folder).
+          "$mara" build profiling -profile time && ./profiling > /dev/null && grep -q "total ms" profile.txt
+          "$mara" build memory_profiling -profile memory && ./memory_profiling > /dev/null && grep -q "unused B" memory.txt
 
       - name: Package
         run: |
@@ -170,13 +174,21 @@ jobs:
           rm "$RUNNER_TEMP/$pkg/view/SDL3.dll"
           cp mara "$RUNNER_TEMP/$pkg/"
           cp view/view view/libSDL3.so.0 "$RUNNER_TEMP/$pkg/view/"
-          tar -czf "$pkg.tar.gz" -C "$RUNNER_TEMP" "$pkg"
+          # (The runtime's objects, made after its sources: used as they are.)
+          cp runtime/mara_crash.o runtime/mara_err.o runtime/mara_prof.o runtime/mara_mem.o "$RUNNER_TEMP/$pkg/runtime/"
+          # (Its files root's, not this runner's user's: unpacked as root they keep their owner.)
+          tar --owner=0 --group=0 --numeric-owner -czf "$pkg.tar.gz" -C "$RUNNER_TEMP" "$pkg"
 
       - name: Build a program with the package alone
         run: |
           source .github/report.sh
           mkdir -p "$RUNNER_TEMP/unpacked" "$RUNNER_TEMP/hello"
           tar -xzf mara-linux-x64.tar.gz -C "$RUNNER_TEMP/unpacked"
+          # (As an install that isn't the user's to write: nothing is made in
+          # it. One runtime object taken out first: that one is compiled into
+          # the user's cache folder instead.)
+          rm "$RUNNER_TEMP/unpacked/mara-linux-x64/runtime/mara_err.o"
+          chmod -R a-w "$RUNNER_TEMP/unpacked/mara-linux-x64"
           cd "$RUNNER_TEMP/hello"
           printf 'module hello\n\nmain :: () {\n\tprint("Hello there!")\n}\n' > hello.mara
           mara="$RUNNER_TEMP/unpacked/mara-linux-x64/mara" exe=
@@ -212,16 +224,22 @@ jobs:
           pkg="$RUNNER_TEMP/unpacked/mara-linux-x64"
           cd "$RUNNER_TEMP/hello"
           xvfb-run -a -s "-screen 0 1280x800x24" bash -c '
-            "$0/view/view" "$0/mara" hello mara-release-check > view.txt 2>&1 &
+            "$0/mara" view > view.txt 2>&1
             sleep 10
-            if kill -0 $! 2> /dev/null; then
+            if pgrep -f "$0/view/view" > /dev/null; then
               echo "the view window runs"
+              # The compiler reaches it: words looked up in its docs, and a
+              # second `mara view` moves this window, opening no other.
+              "$0/mara" docs append || { echo "mara docs did not reach the window"; exit 1; }
+              "$0/mara" view
+              sleep 3
+              [ "$(pgrep -fc "$0/view/view")" = 1 ] || { echo "a second mara view opened a second window"; exit 1; }
             else
               echo "::warning title=view (linux)::the packaged view window did not stay up under Xvfb: $(tail -c 600 view.txt | tr "\n" " ")"
             fi
             import -window root "$1" || echo "no picture of the display"
-            kill $! 2> /dev/null || true
           ' "$pkg" "$GITHUB_WORKSPACE/view-linux.png"
+          pkill -f "$pkg/view/view" || true
           pkill -f "$pkg/mara" || true
 
       - uses: actions/upload-artifact@v4
