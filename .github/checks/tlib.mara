@@ -1,0 +1,20 @@
+module tlib
+
+use mara.core
+use mara.memory
+
+#allocator Arena_Basic
+
+// Fills a big local (it goes on the caller's arena) and adds it up.
+#expose
+fill_sum :: fun(a: ^Arena_Basic, n: i64) -> i64 {
+	xs : [4000]i64
+	for i in 0:n {
+		&xs ++ i
+	}
+	total := 0
+	for x in xs {
+		total += x
+	}
+	return total + xs.len
+}

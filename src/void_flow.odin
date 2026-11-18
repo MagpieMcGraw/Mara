@@ -1363,6 +1363,16 @@ void_edge :: proc(c: ^Void_Code, last: Node_Id, k: int, state: []u64) {
     if graph_op_of(g, last) != .Branch || k > 1 { return }
     ops := graph_operands(g, last)
     if len(ops) == 0 { return }
+    // `-no assert`: an assert is behind a branch never taken (lw_assert's,
+    // the one branch on a constant the compiler makes), and the check takes
+    // it as said all the same — the way around it says nothing may be void,
+    // so what the assert says is what's known after it.
+    if x := ops[0].op; k == 1 && graph_is_const(x) && graph_written(g, x) == .Synthetic {
+        if _, is_bool := graph_type(g, x).(Type_Bool); is_bool {
+            for &w in state { w = 0 }
+            return
+        }
+    }
     void_narrow(c, state, ops[0], k == 0)
 }
 

@@ -1094,7 +1094,15 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
             if err != nil { os.close(c.err) }
         }
         if err != nil {
-            fmt.printf("Couldn't start clang (%s) for '%s': %v\n", clang_path, c.ll_path, err)
+            if e, is := err.(os.General_Error); is && e == .Not_Exist {
+                when ODIN_OS == .Windows {
+                    fmt.printf("There is no clang at %s: Mara builds programs with the clang and lld in the tools folder beside it.\n", clang_path)
+                } else {
+                    fmt.printf("clang isn't installed, or isn't on PATH. Mara builds programs with clang and lld: install both (Ubuntu: sudo apt install clang lld).\n")
+                }
+            } else {
+                fmt.printf("Couldn't start clang (%s) for '%s': %v\n", clang_path, c.ll_path, err)
+            }
             for &other in clangs { wait(&other) }
             return false
         }
@@ -1185,8 +1193,11 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         // runtime's and the standard library's among them, and of two Mara
         // libraries in one program both would then use the first one's
         // arena. Its #expose funs alone are named (a linker's version
-        // script); the rest stays inside.
+        // script); the rest stays inside. Its code runs wherever it's
+        // loaded, said outright (-fPIC): its thread-local arena slot is
+        // otherwise reached as a program's own is, which no library links.
         when ODIN_OS != .Windows {
+            strings.write_string(&b, " -fPIC")
             names := make([dynamic]string, context.temp_allocator)
             for _, f in checked.functions { if f.is_exposed { append(&names, f.name) } }
             slice.sort(names[:])

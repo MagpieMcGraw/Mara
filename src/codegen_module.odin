@@ -340,7 +340,11 @@ generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bo
     // Linux objects have none yet.)
     debug := debug && !(x86 && checked.target_os == .Linux)
     if debug && !x86 { g.dbg = llvm_dbg_begin(context.allocator, checked, LLVM_DBG_MAIN) }
-    checked.threads = program_starts_threads(checked)
+    // (A library's too, whatever it starts itself: its host decides which
+    // threads call in, and each #expose fun puts its caller's arena in the
+    // slot — one slot for them all, and two threads calling at once would
+    // each run on the other's arena.)
+    checked.threads = program_starts_threads(checked) || shared
     if checked.threads && (profile != "" || profile_memory != "") {
         codegen_fatal(&g, {}, CODE_PROFILE_THREADS)
     }
@@ -1124,8 +1128,8 @@ module_ll_path :: proc(build_dir, module_name: string, ext := ".ll") -> string {
 program_globals :: proc(checked: ^Checked_Program, own: bool) -> []Ir_Global {
     gls := make([dynamic]Ir_Global)
     linkage: Ir_Linkage = .Default if own else .External
-    // (Each thread its own, in a program that starts threads: a thread's
-    // arena is its own — thread_run.)
+    // (Each thread its own, in a program that starts threads — a thread's
+    // arena is its own, thread_run — and in a library: generate_program.)
     append(&gls, Ir_Global{name = "__mara_arena", linkage = linkage, thread = checked.threads, ty = IR_PTR, init = {v = IR_NULL}})
     // The program's atoms (checked_atom): each one's text, a 0 after it, the
     // table of them (its address, its length) and their count — in the module

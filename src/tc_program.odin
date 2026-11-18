@@ -158,7 +158,8 @@ tc_validate_allocator :: proc(k: ^TC) {
     }
     alloc := tc_find_allocator(k)
     if alloc == nil {
-        tc_error(k, {}, TYPE_PROGRAM_SCOPE_ALLOCATOR_KNOWN_TYPE, name)
+        at := tree_span(k.t, k.arena_stmt) if k.arena_stmt != 0 else Span{}
+        tc_error(k, at, TYPE_PROGRAM_SCOPE_ALLOCATOR_KNOWN_TYPE, name, ALLOCATOR_WANTS_MEMORY if strings.has_prefix(name, "Arena_") else "")
         k.table.has_scope_allocator = false
         return
     }

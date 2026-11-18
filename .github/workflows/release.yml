@@ -18,7 +18,7 @@ on:
   push:
     tags: ['v*']
     branches: [main]
-    paths: ['.github/workflows/release.yml', '.github/report.sh']
+    paths: ['.github/workflows/release.yml', '.github/report.sh', '.github/checks/**']
   workflow_dispatch:
 
 env:
@@ -183,6 +183,13 @@ jobs:
           "$mara" build hello
           ./hello | grep "Hello there!"
           "$mara" version
+          # A library called from four threads at once, each with its own
+          # arena (.github/checks): every call's result right.
+          mkdir -p "$RUNNER_TEMP/tlib" && cd "$RUNNER_TEMP/tlib"
+          cp "$GITHUB_WORKSPACE/.github/checks/tlib.mara" "$GITHUB_WORKSPACE/.github/checks/host.c" .
+          "$mara" build tlib -shared
+          cc host.c ./tlib.so -lpthread -o host
+          LD_LIBRARY_PATH=. ./host
           # A runtime error's report from a packaged build: it exits 1, and
           # says the calls that were running.
           mkdir -p "$RUNNER_TEMP/oops" && cd "$RUNNER_TEMP/oops"
