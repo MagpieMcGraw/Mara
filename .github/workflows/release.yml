@@ -117,7 +117,7 @@ jobs:
         run: |
           source .github/report.sh
           sudo apt-get install -y -q cmake ninja-build pkg-config patchelf xvfb libgl1-mesa-dri \
-            libgl-dev libegl-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
+            libgl-dev libegl-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
             libxkbcommon-dev libwayland-dev libdecor-0-dev libdrm-dev libgbm-dev libdbus-1-dev libudev-dev
           curl -sSfL -o "$RUNNER_TEMP/sdl.tar.gz" "https://github.com/libsdl-org/SDL/releases/download/release-$SDL_RELEASE/SDL3-$SDL_RELEASE.tar.gz"
           tar -xzf "$RUNNER_TEMP/sdl.tar.gz" -C "$RUNNER_TEMP"
