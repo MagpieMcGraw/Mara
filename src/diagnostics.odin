@@ -353,7 +353,7 @@ TYPE_ALL_KEYWORD :: "`all` is a keyword — `all v` gives v for every item (a br
 TYPE_ENUM_NUMBER_INTEGER :: "%s(n) takes an integer, the value of one of its variants: %s is none"
 TYPE_ENUM_NO_SUCH_VALUE :: "%d is no %s variant's value — its variants are %s"
 TYPE_LOOP_ITEM_TOO_BIG :: "'%s', a %s, is %d bytes, too big to copy onto the stack each round: take each item where it is, `for &%s in %s` (a pointer to it, nothing copied)"
-TYPE_VALUE_TOO_LARGE_STACK_BYTES :: "value '%s' is too large for the stack (%d bytes). Route big values through the program's arena — add `include mara.memory`, then at the module's top:\n\n    #allocator Arena_Basic(64 * MB)"
+TYPE_VALUE_TOO_LARGE_STACK_BYTES :: "value '%s' is too large for the stack (%d bytes). Route big values through the program's arena — add `use mara.memory`, then at the module's top:\n\n    #allocator Arena_Basic(64 * MB)"
 TYPE_SIZE_EXPRESSION_INTEGER :: "size expression must be an integer, got %s"
 TYPE_SLICE_COUNT_SPELLING :: "'%s(n)' is no type: n of %s are written `[:n]%s` (a slice of n)"
 TYPE_SLICE_ALIAS_CAPACITY :: "a slice has no storage of its own, so a type can't carry a count: slice an array that has the room, `a[0:n]`"

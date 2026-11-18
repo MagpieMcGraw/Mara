@@ -1258,6 +1258,7 @@ llvm_named_result :: proc(e: ^Llvm, d: Node_Id) -> bool {
 // partial array's, its len then its cap — the one value: a register value
 // stored, an aggregate copied (its partial arrays re-pointed).
 LLVM_FILL_IN_A_ROW :: 16   // (a fill of more elements than this is a loop)
+LLVM_FILL_AT_ONCE  :: 16 * 1024   // (the most bytes one of its copies moves)
 
 @(private="file")
 llvm_fill :: proc(e: ^Llvm, ops: []Operand) -> bool {
@@ -1295,9 +1296,9 @@ llvm_fill :: proc(e: ^Llvm, ops: []Operand) -> bool {
             slot := slot_at(g, pa, ir, array, to, ir_int(k))
             if llvm_scalar(elem) { emit_store(g, ir, v, slot) } else { llvm_copy(e, slot, v, elem) }
         }
-    } else {
-        // A loop: thousands of copies in a row are one block of code an
-        // optimizer takes a minute over (a release build's link).
+    } else if g.profile_memory && value_has_partial_array(g, elem) {
+        // (-profile memory: each element's lists told to the profiler, an
+        // element at a time.)
         count := fresh_tmp(g)
         emit_alloca(g, count, IR_I64)
         emit_store(g, IR_I64, ir_int(0), count)
@@ -1309,11 +1310,47 @@ llvm_fill :: proc(e: ^Llvm, ops: []Operand) -> bool {
         ir_icmp(g, more, .Slt, IR_I64, k, ir_int(n))
         emit_cond_br(g, more, body, done)
         emit_label(g, body)
-        slot := slot_at(g, pa, ir, array, to, k)
-        if llvm_scalar(elem) { emit_store(g, ir, v, slot) } else { llvm_copy(e, slot, v, elem) }
+        llvm_copy(e, slot_at(g, pa, ir, array, to, k), v, elem)
         next := fresh_tmp(g)
         ir_bin(g, next, .Add, IR_I64, k, ir_int(1))
         emit_store(g, IR_I64, next, count)
+        emit_br(g, loop)
+        emit_label(g, done)
+    } else {
+        // The first element, then what's filled copied after itself — one
+        // element, then two, four — to the end: a few big copies, however
+        // many elements. (One copy after another, by the thousand, is one
+        // block of code a release build's link took a minute over.)
+        first := slot_at(g, pa, ir, array, to, ir_int(0))
+        if llvm_scalar(elem) { emit_store(g, ir, v, first) } else { emit_memcpy(g, first, v, type_size(elem)) }
+        filled := fresh_tmp(g)
+        emit_alloca(g, filled, IR_I64)
+        emit_store(g, IR_I64, ir_int(1), filled)
+        loop, body, done := fresh_label(g, "fill.loop"), fresh_label(g, "fill.body"), fresh_label(g, "fill.end")
+        emit_br(g, loop)
+        emit_label(g, loop)
+        k, more := fresh_tmp(g), fresh_tmp(g)
+        emit_load_into(g, k, IR_I64, filled)
+        ir_icmp(g, more, .Slt, IR_I64, k, ir_int(n))
+        emit_cond_br(g, more, body, done)
+        emit_label(g, body)
+        // (No more at once than LLVM_FILL_AT_ONCE bytes: what's copied from
+        // stays in the processor's nearest cache.)
+        rest, less, most, m, bytes, next := fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g), fresh_tmp(g)
+        ir_bin(g, rest, .Sub, IR_I64, ir_int(n), k)
+        ir_icmp(g, less, .Slt, IR_I64, rest, k)
+        ir_select(g, most, less, IR_I64, rest, k)
+        if at_once := max(1, LLVM_FILL_AT_ONCE / max(1, type_size(elem))); at_once < n {
+            over := fresh_tmp(g)
+            ir_icmp(g, over, .Sgt, IR_I64, most, ir_int(at_once))
+            ir_select(g, m, over, IR_I64, ir_int(at_once), most)
+        } else {
+            m = most
+        }
+        ir_bin(g, bytes, .Mul, IR_I64, m, ir_int(type_size(elem)))
+        emit_memcpy_runtime(g, slot_at(g, pa, ir, array, to, k), first, bytes)
+        ir_bin(g, next, .Add, IR_I64, k, m)
+        emit_store(g, IR_I64, next, filled)
         emit_br(g, loop)
         emit_label(g, done)
     }
