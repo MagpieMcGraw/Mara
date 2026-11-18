@@ -23,7 +23,7 @@ Main feature of Mara is stack-like memory allocation. Everything in Mara lives u
 ## Building the compiler
 
 The Mara compiler is written in [Odin](https://odin-lang.org/). You need
-Odin on PATH to compile it. Its source is in `src`. From the repo root:
+Odin on PATH to compile it. On Windows, Odin links with Visual Studio's linker, so building the compiler also needs the MSVC C++ build tools and the Windows SDK. Its source is in `src`. From the repo root:
 
 ```
 odin build src -o:speed -out:Mara.exe
