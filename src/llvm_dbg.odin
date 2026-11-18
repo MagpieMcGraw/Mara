@@ -117,10 +117,18 @@ llvm_dbg_function :: proc(d: ^Llvm_Dbg, b: ^strings.Builder, head: Ir_Head, code
             if !numbered[k] { arg[i], numbered[k] = k + 1, true }
         }
         if param[i] > 0 || !v.addr { continue }
+        // (Its own alloca, when that's in the entry block: one made after
+        // is an address an instruction makes — its declare gets lost.)
+        first, met := true, false
         find: for part in code {
             for ins in part {
+                #partial switch ins.op {
+                case .Label: first &&= !met
+                case .Br, .Cond_Br, .Switch, .Ret, .Unreachable: first = false
+                }
+                met = true
                 if ins.dest != v.at { continue }
-                store[i], held[i] = .Own if ins.op == .Alloca else .Held, IR_PTR
+                store[i], held[i] = .Own if ins.op == .Alloca && first else .Held, IR_PTR
                 break find
             }
         }
@@ -189,9 +197,12 @@ dbg_subprogram :: proc(d: ^Llvm_Dbg, dbg: ^Dbg_Fun, link: string) -> int {
         d.fun_type = dbg_node(d)
         fmt.sbprintf(&d.text, "!%d = !DISubroutineType(types: !{{null}})\n", d.fun_type)
     }
+    // (Its linker's name too, but on Linux: gdb, told the file is C, then
+    // knows the fun by that name alone — `break hurt` finds nothing.)
+    linkage := "" if build_target() == .Linux else fmt.tprintf("linkageName: %s, ", dbg_quote(link))
     n := dbg_node(d)
-    fmt.sbprintf(&d.text, "!%d = distinct !DISubprogram(name: %s, linkageName: %s, scope: !%d, file: !%d, line: %d, type: !%d, scopeLine: %d, spFlags: DISPFlagDefinition, unit: !%d)\n",
-                 n, dbg_quote(dbg.name), dbg_quote(link), file, file, dbg.line, d.fun_type, dbg.line, d.cu)
+    fmt.sbprintf(&d.text, "!%d = distinct !DISubprogram(name: %s, %sscope: !%d, file: !%d, line: %d, type: !%d, scopeLine: %d, spFlags: DISPFlagDefinition, unit: !%d)\n",
+                 n, dbg_quote(dbg.name), linkage, file, file, dbg.line, d.fun_type, dbg.line, d.cu)
     return n
 }
 
@@ -223,7 +234,7 @@ llvm_dbg_module :: proc(b: ^strings.Builder, ds: []^Llvm_Dbg) {
     for cu, i in cus { fmt.sbprintf(b, "%s!%d", ", " if i > 0 else "", cu) }
     f := LLVM_DBG_FLAGS
     fmt.sbprintf(b, "}}\n!llvm.module.flags = !{{!%d, !%d}}\n!%d = !{{i32 2, !\"Debug Info Version\", i32 3}}\n", f, f + 1, f)
-    when ODIN_OS == .Windows {
+    if build_target() == .Windows {
         fmt.sbprintf(b, "!%d = !{{i32 2, !\"CodeView\", i32 1}}\n", f + 1)
     } else {
         fmt.sbprintf(b, "!%d = !{{i32 7, !\"Dwarf Version\", i32 4}}\n", f + 1)

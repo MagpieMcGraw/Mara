@@ -23,6 +23,10 @@
 // Compiled once to a sibling mara_crash.o (redone when this file is newer);
 // link_native appends it to every native link.
 
+#ifndef _WIN32
+#define _GNU_SOURCE   // (dl_iterate_phdr, REG_RIP)
+#endif
+
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -35,6 +39,8 @@
 #else
 #include <unistd.h>
 #include <fcntl.h>
+#include <signal.h>
+static volatile sig_atomic_t mara_crashing = 0;   // a crash's report, not an assert's (the signal's handler)
 #endif
 
 #define MARA_CRASH_FILE "crash.txt"
@@ -224,6 +230,11 @@ static void mara_crash_trim(const char* path, const char* tmp_path) {
 // is one line, and a deep stack shows its first calls and its last. A
 // program with no debug info (a -release build) reports no calls. (A file
 // in the program's directory is named from there; another, in full.)
+//
+// On Linux (glibc) the stack is walked by backtrace(), and the addresses are
+// named by addr2line — binutils', or LLVM's — run on the program: no trace
+// where neither is installed. A run of one call is one line there too, and a
+// deep stack shows its first calls and its last.
 
 #ifdef _WIN32
 #include <dbghelp.h>
@@ -433,6 +444,168 @@ static void mara_stack(CONTEXT* from, int skip) {
         CloseHandle(t);
     }
 }
+
+#elif defined(__linux__) && defined(__GLIBC__)
+#include <execinfo.h>
+#include <link.h>
+
+#define MARA_LINUX_STACK 1
+#define MARA_FRAMES_CAP  1024
+#define MARA_FRAMES_HEAD 40
+#define MARA_FRAMES_TAIL 12
+
+// A frame: its address, how many times in a row the stack has it, and what
+// the debug info says of it: its function, its source line (0: none).
+typedef struct {
+    void* at;
+    int   times;
+    char  name[96];
+    char  file[256];
+    int   line;
+} Mara_Frame;
+
+static Mara_Frame mara_frames[MARA_FRAMES_CAP];
+static void*      mara_addrs[MARA_FRAMES_CAP];
+static int        mara_stack_done = 0;
+
+// Where the program is loaded: the first object the loader lists.
+static int mara_base_of(struct dl_phdr_info* info, size_t size, void* data) {
+    (void)size;
+    *(unsigned long long*)data = (unsigned long long)info->dlpi_addr;
+    return 1;
+}
+
+static int mara_is_mara(Mara_Frame* f) {
+    size_t n = strlen(f->file);
+    return f->line > 0 && n > 5 && strcmp(f->file + n - 5, ".mara") == 0;
+}
+
+// The frames named: `tool` (and its flags) run on the program with every address (a return
+// address, the call's just before it; `exact`, a crash's own), two lines
+// back for each — its function, its file:line. Whether any was a .mara line.
+static int mara_name_frames(const char* tool, const char* exe, int n, void* exact) {
+    static char cmd[64 + MARA_PATH_CAP + MARA_FRAMES_CAP * 20];
+    unsigned long long base = 0;
+    dl_iterate_phdr(mara_base_of, &base);
+    int len = snprintf(cmd, sizeof cmd, "%s -e '%s'", tool, exe);
+    for (int i = 0; i < n; i++) {
+        unsigned long long at = (unsigned long long)mara_frames[i].at;
+        if (mara_frames[i].at != exact) at -= 1;
+        len += snprintf(cmd + len, sizeof cmd - (size_t)len, " 0x%llx", at - base);
+    }
+    snprintf(cmd + len, sizeof cmd - (size_t)len, " 2>/dev/null");
+    FILE* p = popen(cmd, "r");
+    if (!p) return 0;
+    int found = 0;
+    char line[512];
+    for (int i = 0; i < n; i++) {
+        Mara_Frame* f = &mara_frames[i];
+        f->name[0] = 0; f->file[0] = 0; f->line = 0;
+        if (!fgets(line, sizeof line, p)) break;
+        line[strcspn(line, "\r\n")] = 0;
+        if (strcmp(line, "??") != 0) snprintf(f->name, sizeof f->name, "%s", line);
+        if (!fgets(line, sizeof line, p)) break;
+        line[strcspn(line, "\r\n")] = 0;
+        char* colon = strrchr(line, ':');   // (after it: the line, then maybe " (discriminator 1)")
+        if (colon) {
+            f->line = atoi(colon + 1);
+            *colon = 0;
+            snprintf(f->file, sizeof f->file, "%s", line);
+        }
+        found |= mara_is_mara(f);
+    }
+    pclose(p);
+    return found;
+}
+
+static void mara_print_frame(Mara_Frame* f, const char* dir, size_t dir_len) {
+    const char* file = f->file;
+    if (dir_len && strncmp(file, dir, dir_len) == 0) file += dir_len;
+    if (mara_is_mara(f))  __mara_tee_printf("  at %s (%s:%d)\n", f->name[0] ? f->name : "?", file, f->line);
+    else if (f->name[0]) __mara_tee_printf("  at %s\n", f->name);
+    else                 __mara_tee_printf("  at ?\n");
+    if (f->times > 1) __mara_tee_printf("  ... the same call %d more times\n", f->times - 1);
+}
+
+// A run of frames: `period` of them from `at`, `times` over (calls that call
+// each other again and again).
+typedef struct { int at, period, times; } Mara_Run;
+
+#define MARA_CYCLE_CAP 4   // (the longest cycle of calls a run folds)
+
+static Mara_Run mara_runs[MARA_FRAMES_CAP];
+
+// Whether the `period` frames from a and from b are the same calls.
+static int mara_same(int a, int b, int period) {
+    for (int k = 0; k < period; k++) {
+        if (mara_frames[a + k].at != mara_frames[b + k].at || mara_frames[a + k].times != mara_frames[b + k].times) return 0;
+    }
+    return 1;
+}
+
+static void mara_print_run(Mara_Run r, const char* dir, size_t dir_len) {
+    for (int k = 0; k < r.period; k++) mara_print_frame(&mara_frames[r.at + k], dir, dir_len);
+    if (r.times > 1) __mara_tee_printf("  ... the %d calls above, %d more times\n", r.period, r.times - 1);
+}
+
+// The calls running here, into the report, once: from the first in the
+// program's own code (not the runtime's, the C library's) to its main.
+static void mara_stack(void* exact) {
+    if (mara_stack_done) return;
+    mara_stack_done = 1;
+    fflush(stdout);
+    int got = backtrace(mara_addrs, MARA_FRAMES_CAP);
+    int n = 0;
+    for (int i = 0; i < got; i++) {
+        if (n > 0 && mara_frames[n - 1].at == mara_addrs[i]) {
+            mara_frames[n - 1].times += 1;
+        } else {
+            mara_frames[n].at = mara_addrs[i];
+            mara_frames[n].times = 1;
+            n += 1;
+        }
+    }
+    char exe[MARA_PATH_CAP];
+    ssize_t e = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n == 0 || e <= 0) return;
+    exe[e] = 0;
+    if (strchr(exe, '\'')) return;   // (the command quotes it with these)
+    // (Each with its functions' names as the source has them, where it can.)
+    if (!mara_name_frames("addr2line -f", exe, n, exact) && !mara_name_frames("llvm-addr2line --functions=short", exe, n, exact)) return;
+
+    int first = 0, last = n - 1;
+    while (first < n && !mara_is_mara(&mara_frames[first])) first += 1;
+    while (last > first && !mara_is_mara(&mara_frames[last])) last -= 1;
+    for (int i = first; i <= last; i++) {
+        if (strcmp(mara_frames[i].name, "main") == 0 && mara_is_mara(&mara_frames[i])) { last = i; break; }
+    }
+    char dir[MARA_PATH_CAP];
+    size_t dir_len = __mara_exe_dir(dir, sizeof dir);
+    // The frames as runs: a cycle of a few calls that repeats (calls that
+    // call each other), once.
+    int nruns = 0;
+    for (int i = first; i <= last; ) {
+        Mara_Run r = {i, 1, 1};
+        for (int period = 2; period <= MARA_CYCLE_CAP; period++) {
+            int times = 1;
+            while (i + (times + 1) * period - 1 <= last && mara_same(i, i + times * period, period)) times += 1;
+            if (times >= 3 && times * period > r.times * r.period) r = (Mara_Run){i, period, times};
+        }
+        mara_runs[nruns++] = r;
+        i += r.period * r.times;
+    }
+    if (nruns <= MARA_FRAMES_HEAD + MARA_FRAMES_TAIL + 1) {
+        for (int k = 0; k < nruns; k++) mara_print_run(mara_runs[k], dir, dir_len);
+    } else {
+        long long calls = 0;
+        for (int k = MARA_FRAMES_HEAD; k < nruns - MARA_FRAMES_TAIL; k++) {
+            for (int j = 0; j < mara_runs[k].period; j++) calls += (long long)mara_frames[mara_runs[k].at + j].times * mara_runs[k].times;
+        }
+        for (int k = 0; k < MARA_FRAMES_HEAD; k++) mara_print_run(mara_runs[k], dir, dir_len);
+        __mara_tee_printf("  ... %lld more calls\n", calls);
+        for (int k = nruns - MARA_FRAMES_TAIL; k < nruns; k++) mara_print_run(mara_runs[k], dir, dir_len);
+    }
+}
 #endif
 
 void __mara_crash_end(void) {
@@ -443,6 +616,8 @@ void __mara_crash_end(void) {
         RtlCaptureContext(&here);
         mara_stack(&here, 1);
     }
+#elif defined(MARA_LINUX_STACK)
+    mara_stack(NULL);
 #endif
     mara_entry_active = 0;
     if (mara_entry_len == 0) return;
@@ -459,6 +634,18 @@ void __mara_crash_end(void) {
     char tmp[MARA_PATH_CAP];
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     mara_crash_trim(path, tmp);
+
+#ifndef _WIN32
+    // An assert's report, under a debugger: the program stops here, its calls
+    // and their variables to look at, before it exits. (A signal that's
+    // ignored still stops a traced program; with no debugger it does
+    // nothing. A crash's signal has stopped it already.)
+    if (!mara_crashing) {
+        fflush(stdout);
+        signal(SIGTRAP, SIG_IGN);
+        raise(SIGTRAP);
+    }
+#endif
 }
 
 // --- crashes the program doesn't report itself ----------------------------------
@@ -522,16 +709,14 @@ void __mara_crash_install(void) {
 
 #else
 
-#include <signal.h>
 #include <sys/resource.h>
+#include <ucontext.h>
 
 static char mara_signal_stack[64 * 1024];   // the report's: the stack may be what overflowed
 static char* mara_stack_top;                 // main's stack, for telling an overflow
 static size_t mara_stack_size;
-static volatile sig_atomic_t mara_crashing = 0;
 
 static void mara_crash_signal(int sig, siginfo_t* info, void* context) {
-    (void)context;
     if (mara_crashing) { signal(sig, SIG_DFL); raise(sig); return; }
     mara_crashing = 1;
     char* at = (char*)info->si_addr;
@@ -543,6 +728,20 @@ static void mara_crash_signal(int sig, siginfo_t* info, void* context) {
     else if (sig == SIGFPE)               __mara_tee_printf("Crashed: arithmetic error (integer division by zero?)\n");
     else if (sig == SIGILL)               __mara_tee_printf("Crashed: illegal instruction\n");
     else                                  __mara_tee_printf("Crashed: signal %d\n", sig);
+#ifdef MARA_LINUX_STACK
+    {
+        // (Where it crashed: that address itself, not a call's return.)
+        void* pc = NULL;
+#if defined(__x86_64__)
+        pc = (void*)((ucontext_t*)context)->uc_mcontext.gregs[REG_RIP];
+#elif defined(__aarch64__)
+        pc = (void*)((ucontext_t*)context)->uc_mcontext.pc;
+#endif
+        mara_stack(pc);
+    }
+#else
+    (void)context;
+#endif
     __mara_crash_end();
     fflush(stdout);
     exit(128 + sig);

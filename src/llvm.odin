@@ -65,6 +65,7 @@ Llvm :: struct {
     dbg:     Dbg_Fun,
     line_file: int,
     line_lo, line_hi: u32,
+    line_body: bool,              // a line after the fun's first has been marked
 }
 
 // Emit a fun with a body from the graph.
@@ -136,11 +137,20 @@ llvm_debug :: proc(e: ^Llvm) -> bool {
 // table.
 @(private="file")
 llvm_line :: proc(e: ^Llvm, op: Node_Id) {
-    at := graph_origin(e.pg, op).at
+    sp := graph_origin(e.pg, op)
+    at := sp.at
     if at == 0 { return }
+    // (What the compiler adds where a fun falls off its end — its scopes'
+    // exits, its return — is on the fun's last line, not its first.)
+    decl := e.ft.decl
+    if e.line_body && sp.end > at + 1 && graph_written(e.pg, op) == .Synthetic {
+        d, a := build_tokens[decl], build_tokens[at]
+        if a.file == d.file && token_line(a) == token_line(d) { at = sp.end - 1 }
+    }
     tok := build_tokens[at]
     if int(tok.file) == e.line_file && tok.offset >= e.line_lo && tok.offset < e.line_hi { return }
     line := token_line(tok)
+    e.line_body ||= decl != 0 && (tok.file != build_tokens[decl].file || line != token_line(build_tokens[decl]))
     starts := build_files[tok.file].lines[:]
     e.line_file, e.line_lo = int(tok.file), starts[line - 1]
     e.line_hi = starts[line] if line < len(starts) else max(u32)
