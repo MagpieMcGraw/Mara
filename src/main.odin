@@ -1090,7 +1090,7 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
         append(&command, "-Wno-override-module", "-mf16c")
         march := strings.trim_space(RELEASE_MARCH)
         if release {
-            append(&command, "-O3", "-flto")   // (bitcode: optimized whole at the link)
+            append(&command, "-O3", "-flto=thin")   // (bitcode: optimized across modules at the link)
             if march != "" { append(&command, march) }
         } else if checked.no_crt && march != "" {
             // (With no C library there's no floor or ceil to call: the
@@ -1180,10 +1180,12 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
     // vectorisation and aggressive inlining. With LTO the modules' objects
     // are bitcode, optimized together here: a call into another module
     // (an append into mara.core's) inlines as one within a module does.
-    // (Full LTO, not thin: thin left appends 3x slower; test_1M builds no
-    // slower either way.) The machine: RELEASE_MARCH, told the linker too.
+    // (Thin LTO: the programs run as fast as full LTO's and the link is
+    // shorter — Warlock's clang step 0.9 s → 0.5 s, the view's 2.5 → 2.3;
+    // only test_1M, nearly all dead code, is slower, 3.7 → 4.2 s.)
+    // The machine: RELEASE_MARCH, told the linker too.
     if release {
-        strings.write_string(&b, " -O3 -flto" + RELEASE_MARCH + RELEASE_LINK_CPU)
+        strings.write_string(&b, " -O3 -flto=thin" + RELEASE_MARCH + RELEASE_LINK_CPU)
     }
     // The objects' debug info, merged by lld into a PDB beside the program —
     // or none, and an earlier build's PDB taken away: a debugger, or a
