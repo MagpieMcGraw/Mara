@@ -85,7 +85,7 @@ LSP's has no `"id"`, and Sublime only merges menu items by id — another
 
 ## Settings (`Mara Ask.sublime-settings`)
 
-- `mara_path` — path to the compiler exe (default `C:/Code/Mara/Mara.exe`).
+- `mara_path` — path to the compiler exe (default `C:/Code/Mara/mara.exe`).
 - `default_depth` — `0` uses the tool's default depth; set `1`–`2` to keep large
   subjects from flooding the panel.
 - `highlight_flow` — mark a flow result's variables in the code (default `true`).
@@ -116,7 +116,7 @@ half-written: what parses is checked. In
 
 ```
 "mara": {
-    "command": ["C:/Code/Mara/Mara.exe", "lsp"],
+    "command": ["C:/Code/Mara/mara.exe", "lsp"],
     "enabled": true,
     "selector": "source.mara",
     "initializationOptions": {
@@ -135,7 +135,7 @@ Each option turns a feature off on the server's side: it isn't offered, so
 nothing shows. After a change, `LSP: Restart Servers`. (The LSP package's own
 `disabled_capabilities` per client does the same from the client's side, and
 its settings style what's shown — `diagnostics_highlight_style` and the like —
-for every language.) While Sublime runs `mara lsp`, Mara.exe is in use: to
+for every language.) While Sublime runs `mara lsp`, mara.exe is in use: to
 rebuild the compiler, restart the servers after, or rename the running exe
 aside first.
 

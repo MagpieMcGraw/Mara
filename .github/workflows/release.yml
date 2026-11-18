@@ -42,17 +42,17 @@ jobs:
       - name: Build the compiler
         run: |
           source .github/report.sh
-          odin build src -o:speed -out:Mara.exe
+          odin build src -o:speed -out:mara.exe
 
       - name: Build the view window
         run: |
           source .github/report.sh
-          cd view && ../Mara.exe build view -release
+          cd view && ../mara.exe build view -release
 
       - name: Build and run the docs' programs
         run: |
           source .github/report.sh
-          mara="$PWD/Mara.exe"
+          mara="$PWD/mara.exe"
           cp -r doc "$RUNNER_TEMP/doc" && cd "$RUNNER_TEMP/doc"
           for f in *.mara; do
             n=${f%.mara}
@@ -66,7 +66,7 @@ jobs:
           pkg=mara-windows-x64
           git archive --format=zip -o "$RUNNER_TEMP/files.zip" HEAD code runtime tools view doc editor readme README.md LICENSE
           7z x "$RUNNER_TEMP/files.zip" -o"$RUNNER_TEMP/$pkg" > /dev/null
-          cp Mara.exe "$RUNNER_TEMP/$pkg/"
+          cp mara.exe "$RUNNER_TEMP/$pkg/"
           cp view/view.exe "$RUNNER_TEMP/$pkg/view/"
           cd "$RUNNER_TEMP" && 7z a -tzip -mx=9 "$GITHUB_WORKSPACE/$pkg.zip" "$pkg" > /dev/null
 
@@ -76,7 +76,7 @@ jobs:
           7z x mara-windows-x64.zip -o"$RUNNER_TEMP/unpacked" > /dev/null
           mkdir -p "$RUNNER_TEMP/hello" && cd "$RUNNER_TEMP/hello"
           printf 'module hello\n\nmain :: () {\n\tprint("Hello there!")\n}\n' > hello.mara
-          "$RUNNER_TEMP/unpacked/mara-windows-x64/Mara.exe" build hello
+          "$RUNNER_TEMP/unpacked/mara-windows-x64/mara.exe" build hello
           ./hello.exe | grep "Hello there!"
 
       - uses: actions/upload-artifact@v4

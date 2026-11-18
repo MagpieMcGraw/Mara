@@ -55,7 +55,7 @@ serve :: proc(args: CLI_Args) {
     for {
         line, rerr := bufio.reader_read_string(&r, '\n', context.temp_allocator)
         if rerr != nil && line == "" { break }
-        // (Mara.exe rebuilt: ended, the query unanswered — the window starts
+        // (mara.exe rebuilt: ended, the query unanswered — the window starts
         // the new one and asks it again. Nothing said: serve's stderr reaches
         // the window with its answers, a word of it an answer begun.)
         if compiler_rebuilt(compiler) { os.exit(COMPILER_REBUILT_EXIT) }

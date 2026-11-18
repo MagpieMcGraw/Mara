@@ -7,8 +7,8 @@ The goal is a production ready compiler for under 50k lines.
 
 The compiler's source is in src/; both builds go in the repo root, beside code/, runtime/ and tools/.
 
-The compiler (Mara.exe, optimized — the one on the path):
-odin build src -o:speed -out:Mara.exe
+The compiler (mara.exe, optimized — the one on the path):
+odin build src -o:speed -out:mara.exe
 
 The dev build beside it (mara_dev.exe, debug — what the test scripts run;
 MARA_EXE=... names another):
@@ -30,7 +30,7 @@ When implementing a feature, prefer hard errors over silent fallbacks for unhand
 
 The tests live beside the repo, in C:\Code\test (not in git). Always build tests from inside that folder so the resulting `test.exe` and `output.ll` land there instead of polluting the repo root.
 
-The test suite (run.sh in the tests' folder) must not block work. Once a change passes the tests aimed at it, rebuild Mara.exe (keep the old one as Mara.prev.exe) and commit. Then run the suite in the background against a git worktree of that commit (MARA_ROOT and MARA_EXE pointed at it, a copy of the tests' folder), with JOBS=4. Keep working meanwhile. Fix whatever it finds in a new commit. One run covers a batch of small changes.
+The test suite (run.sh in the tests' folder) must not block work. Once a change passes the tests aimed at it, rebuild mara.exe (keep the old one as mara.prev.exe) and commit. Then run the suite in the background against a git worktree of that commit (MARA_ROOT and MARA_EXE pointed at it, a copy of the tests' folder), with JOBS=4. Keep working meanwhile. Fix whatever it finds in a new commit. One run covers a batch of small changes.
 
 # Surprise
 

@@ -3,7 +3,7 @@
     // PATH as a real .exe/.bat/.cmd (a Windows subprocess can't run an extension-
     // less shim), so the absolute path is the safe default. Forward slashes are
     // fine on Windows.
-    "mara_path": "C:/Code/Mara/Mara.exe",
+    "mara_path": "C:/Code/Mara/mara.exe",
 
     // Hops to expand. 0 = the tool's own default (calls: 1 level; types and flow:
     // all of them). Set to 1 or 2 to keep a god-object's type graph from flooding

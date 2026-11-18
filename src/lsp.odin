@@ -71,7 +71,7 @@ lsp :: proc(args: CLI_Args) {
     for {
         body, ok := lsp_read(&s.reader)
         if !ok { break }   // (the editor's gone)
-        // (Mara.exe rebuilt: ended — the editor starts the new one, which
+        // (mara.exe rebuilt: ended — the editor starts the new one, which
         // is sent the open files again.)
         if compiler_rebuilt(compiler) {
             fmt.eprintln("mara lsp: Mara was rebuilt — ending, so the new one starts")
