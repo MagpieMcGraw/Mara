@@ -83,9 +83,21 @@ jobs:
           7z x mara-windows-x64.zip -o"$RUNNER_TEMP/unpacked" > /dev/null
           mkdir -p "$RUNNER_TEMP/hello" && cd "$RUNNER_TEMP/hello"
           printf 'module hello\n\nmain :: () {\n\tprint("Hello there!")\n}\n' > hello.mara
-          "$RUNNER_TEMP/unpacked/mara-windows-x64/mara.exe" build hello
+          mara="$RUNNER_TEMP/unpacked/mara-windows-x64/mara.exe" exe=.exe
+          "$mara" build hello
           ./hello.exe | grep "Hello there!"
-          "$RUNNER_TEMP/unpacked/mara-windows-x64/mara.exe" version
+          "$mara" version
+          # A runtime error's report from a packaged build: it exits 1, and
+          # says the calls that were running.
+          mkdir -p "$RUNNER_TEMP/oops" && cd "$RUNNER_TEMP/oops"
+          printf 'module oops\n\npick :: fun(xs: []i64, at: i64) -> i64 {\n\treturn xs[at]\n}\n\nmain :: () {\n\txs : [2!]i64 = [1, 2]\n\tprint(pick(xs, 6))\n}\n' > oops.mara
+          "$mara" build oops
+          rc=0; ./oops$exe > oops.txt 2>&1 || rc=$?
+          cat oops.txt
+          [ "$rc" = 1 ] || { echo "a runtime error exits with $rc, not 1"; exit 1; }
+          grep -q "runtime error: index 6 out of bounds" oops.txt
+          grep -q "at pick (oops.mara:4)" oops.txt
+          grep -q "at main (oops.mara:9)" oops.txt
 
       - uses: actions/upload-artifact@v4
         with:
@@ -116,7 +128,7 @@ jobs:
       - name: SDL3, for the view window
         run: |
           source .github/report.sh
-          sudo apt-get install -y -q cmake ninja-build pkg-config patchelf xvfb libgl1-mesa-dri \
+          sudo apt-get install -y -q cmake ninja-build pkg-config patchelf xvfb libgl1-mesa-dri imagemagick \
             libgl-dev libegl-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
             libxkbcommon-dev libwayland-dev libdecor-0-dev libdrm-dev libgbm-dev libdbus-1-dev libudev-dev
           curl -sSfL -o "$RUNNER_TEMP/sdl.tar.gz" "https://github.com/libsdl-org/SDL/releases/download/release-$SDL_RELEASE/SDL3-$SDL_RELEASE.tar.gz"
@@ -167,27 +179,49 @@ jobs:
           tar -xzf mara-linux-x64.tar.gz -C "$RUNNER_TEMP/unpacked"
           cd "$RUNNER_TEMP/hello"
           printf 'module hello\n\nmain :: () {\n\tprint("Hello there!")\n}\n' > hello.mara
-          "$RUNNER_TEMP/unpacked/mara-linux-x64/mara" build hello
+          mara="$RUNNER_TEMP/unpacked/mara-linux-x64/mara" exe=
+          "$mara" build hello
           ./hello | grep "Hello there!"
-          "$RUNNER_TEMP/unpacked/mara-linux-x64/mara" version
+          "$mara" version
+          # A runtime error's report from a packaged build: it exits 1, and
+          # says the calls that were running.
+          mkdir -p "$RUNNER_TEMP/oops" && cd "$RUNNER_TEMP/oops"
+          printf 'module oops\n\npick :: fun(xs: []i64, at: i64) -> i64 {\n\treturn xs[at]\n}\n\nmain :: () {\n\txs : [2!]i64 = [1, 2]\n\tprint(pick(xs, 6))\n}\n' > oops.mara
+          "$mara" build oops
+          rc=0; ./oops$exe > oops.txt 2>&1 || rc=$?
+          cat oops.txt
+          [ "$rc" = 1 ] || { echo "a runtime error exits with $rc, not 1"; exit 1; }
+          grep -q "runtime error: index 6 out of bounds" oops.txt
+          grep -q "at pick (oops.mara:4)" oops.txt
+          grep -q "at main (oops.mara:9)" oops.txt
 
       # The packaged window on a display made for it (Xvfb, Mesa's software
-      # GL): it should still be running a few seconds in. A warning, not a
-      # failure: the runner's display isn't a user's.
+      # GL): it should still be running a few seconds in, and a picture of
+      # the display is kept (the view-screenshot artifact) to look at. A
+      # warning, not a failure: the runner's display isn't a user's.
       - name: Start the packaged view window
         run: |
           source .github/report.sh
           pkg="$RUNNER_TEMP/unpacked/mara-linux-x64"
           cd "$RUNNER_TEMP/hello"
-          xvfb-run -a "$pkg/view/view" "$pkg/mara" hello mara-release-check > view.txt 2>&1 &
-          sleep 10
-          if pgrep -f "$pkg/view/view" > /dev/null; then
-            echo "the view window runs"
-          else
-            echo "::warning title=view (linux)::the packaged view window didn't stay up under Xvfb: $(tail -c 600 view.txt | tr '\n' ' ')"
-          fi
-          pkill -f "$pkg/view/view" || true
-          pkill Xvfb || true
+          xvfb-run -a -s "-screen 0 1280x800x24" bash -c '
+            "$0/view/view" "$0/mara" hello mara-release-check > view.txt 2>&1 &
+            sleep 10
+            if kill -0 $! 2> /dev/null; then
+              echo "the view window runs"
+            else
+              echo "::warning title=view (linux)::the packaged view window did not stay up under Xvfb: $(tail -c 600 view.txt | tr "\n" " ")"
+            fi
+            import -window root "$1" || echo "no picture of the display"
+            kill $! 2> /dev/null || true
+          ' "$pkg" "$GITHUB_WORKSPACE/view-linux.png"
+          pkill -f "$pkg/mara" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: view-screenshot
+          path: view-linux.png
+          if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4
         with:
@@ -204,6 +238,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: mara-*
           merge-multiple: true
       - name: Publish
         env:
