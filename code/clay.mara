@@ -255,7 +255,6 @@ Element :: struct {
 	image:         ^byte   // an image command is made of it when it's set: the renderer's
 	floating:      Floating
 	custom:        ^byte   // ... a custom command
-	custom_tag:    i64     // a custom command is made of it too, when it's not 0: a number where a pointer is awkward
 	clip:          Clip
 	border:        Border
 	user:          ^byte   // passed on in its commands
@@ -270,7 +269,7 @@ Command_Kind :: union {
 	Image           // image in box
 	Scissor_Start   // what follows is clipped to box, until its Scissor_End
 	Scissor_End
-	Custom          // custom or custom_tag, the renderer's own
+	Custom          // custom, the renderer's own
 }
 
 // One thing to draw. Commands are in drawing order.
@@ -288,7 +287,6 @@ Command :: struct {
 	line_height:     i64
 	image:           ^byte
 	custom:          ^byte
-	custom_tag:      i64
 	clip_horizontal: bool
 	clip_vertical:   bool
 	user:            ^byte
@@ -1549,10 +1547,9 @@ final_layout :: fun(c: ^Context) {
 						picture.z = root.z
 						command_add(c, picture)
 					}
-					if node.decl.custom != void or node.decl.custom_tag != 0 {
+					if node.decl.custom != void {
 						own : Command
 						own.kind = Custom
-						own.custom_tag = node.decl.custom_tag
 						own.box = box
 						own.color = node.decl.background
 						own.corner_radius = node.decl.corner_radius
