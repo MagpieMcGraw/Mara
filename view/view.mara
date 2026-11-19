@@ -24,6 +24,7 @@ os :: use mara.os
 use mara.math
 use mara.sdl
 use mara.memory
+clay :: use mara.clay
 
 #allocator Arena_Basic(256 * MB)
 
@@ -57,15 +58,21 @@ Ui :: struct {
 	running:  bool = true
 	dirty:    bool = true    // drawn again when it is
 
-	panels:   [8]Panel     // back to front: the last is drawn over the rest
+	panels:   [8]Panel     // a column's from its top
+	col_weight: [MAX_COLS!]f32   // each column of panels' share of the window's width
+	focus:      i64          // the panel last pressed: where the keys go
 	menu_open:  i64 = MENU_NONE   // the menu open: MENU_PANELS, MENU_THEME
 	menu_hover: i64 = -1     // the menu's item under the mouse as last drawn
-	drag:       i64          // DRAG_NONE, _MOVE, _RESIZE: what the mouse is doing
+	drag:       i64          // DRAG_NONE, _MOVE, ...: what the mouse is doing
 	drag_kind:  i64          // the panel dragged
-	drag_edges: i64          // a resize's edges (EDGE_...)
 	drag_x:     f32          // the mouse where the drag began
 	drag_y:     f32
-	drag_box:   Rect         // the panel's box then
+	drag_a:     i64          // a gap's drag: the two beside it — columns, or panels' places
+	drag_b:     i64
+	drag_size_a: f32         // ... their sizes when it began
+	drag_size_b: f32
+	drop_on:    i64 = -1     // a panel's drag: the panel it would land by; -1: nowhere
+	drop_zone:  i64          // ... and where by it (DROP_...)
 
 	// The Profile panel's.
 	hover_row: i64 = -1      // the row under the mouse as last drawn; -1: none
@@ -138,6 +145,12 @@ main :: fun(args: [][]utf8) -> i64 {
 	hub : Hub
 	theme_set(&ui, THEME_DARK)
 	columns_default(&ui)
+	// (The window's layout, mara.clay's: its elements each frame, their
+	// boxes. A value of its own, passed beside ui: what Clay keeps points
+	// into nothing of ui's.)
+	lay := clay.Context()
+	lay.measure = measure_text
+	lay.measure_user = &ui
 
 	// (Its font and its layout beside it: the directory of its own file —
 	// exe_path's, however it was started; args[0] is what its
@@ -223,7 +236,7 @@ main :: fun(args: [][]utf8) -> i64 {
 	clamp_panels(&ui)
 	own_crash_look(&ui)
 	hub_start(&ui, &hub, args)
-	run(&ui, &p, &hub)
+	run(&ui, &p, &lay, &hub)
 	layout_save(&ui)
 	DestroyRenderer(ui.renderer)
 	DestroyWindow(ui.window)
@@ -239,7 +252,7 @@ main :: fun(args: [][]utf8) -> i64 {
 // pipes looked at. (Waiting, not spinning: for an event, a
 // quarter second at most to look at the file, less to look at the pipes —
 // hub_wait — or, with something to draw, until it's time to.)
-run :: fun(ui: ^Ui, p: ^Profile, hub: ^Hub) {
+run :: fun(ui: ^Ui, p: ^Profile, lay: ^clay.Context, hub: ^Hub) {
 	looked := GetTicks()
 	next_frame : u64 = 0   // the soonest the next frame is drawn (GetTicksNS)
 	for ui.running {
@@ -248,7 +261,7 @@ run :: fun(ui: ^Ui, p: ^Profile, hub: ^Hub) {
 			now := GetTicksNS()
 			if now >= next_frame {
 				measure(ui)
-				draw_window(ui, p)
+				draw_window(ui, lay, p)
 				ui.dirty = false
 				// (The next a refresh after this one, and a little more: frames
 				// sent faster than the display shows them queue up — the window
@@ -261,9 +274,9 @@ run :: fun(ui: ^Ui, p: ^Profile, hub: ^Hub) {
 		}
 		ev : Event
 		if WaitEventTimeout(&ev, wait) {
-			handle(ui, p, &ev)
+			handle(ui, p, lay, &ev)
 			for PollEvent(&ev) {
-				handle(ui, p, &ev)
+				handle(ui, p, lay, &ev)
 			}
 		}
 		hub_poll(ui, hub)
@@ -294,7 +307,7 @@ run :: fun(ui: ^Ui, p: ^Profile, hub: ^Hub) {
 
 // One event: the window closed, resized or shown again; the mouse moved,
 // pressed, released or wheeled; a key.
-handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
+handle :: fun(ui: ^Ui, p: ^Profile, lay: ^clay.Context, ev: ^Event) {
 	e := ev^
 	match e {
 	Quit
@@ -343,12 +356,12 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 			if docs_hover(ui) != ui.docs_hovered do ui.dirty = true
 			if ui.menu_open != MENU_NONE {
 				// (Over another menu's button: that menu, as menu bars do.)
-				b := menu_button_at(ui, ui.mouse_x, ui.mouse_y)
+				b := menu_button_at(ui, lay, ui.mouse_x, ui.mouse_y)
 				if b >= 0 and b != ui.menu_open {
 					ui.menu_open = b
 					ui.dirty = true
 				}
-				if menu_item_at(ui, ui.menu_open, ui.mouse_x, ui.mouse_y) != ui.menu_hover do ui.dirty = true
+				if menu_item_at(ui, lay, ui.menu_open, ui.mouse_x, ui.mouse_y) != ui.menu_hover do ui.dirty = true
 			}
 		}
 	WindowMouseLeave
@@ -358,11 +371,12 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 	MouseButtonDown
 		if e.button == 1 {
 			x, y, _ := cursor_now(ui)
-			press(ui, p, x, y, i64(e.clicks))
+			press(ui, lay, p, x, y, i64(e.clicks))
 		}
 	MouseButtonUp
 		if e.button == 1 {
 			if ui.drag == DRAG_COLUMN do column_drop(ui, p)
+			if ui.drag == DRAG_MOVE do drag_drop(ui)
 			end_drag(ui)
 		}
 	MouseWheel
@@ -450,6 +464,7 @@ end_drag :: fun(ui: ^Ui) {
 		return
 	}
 	ui.drag = DRAG_NONE
+	ui.drop_on = -1
 	layout_save(ui)
 }
 

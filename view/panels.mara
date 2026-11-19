@@ -5,16 +5,24 @@ use mara.string
 use mara.files
 use mara.math
 use mara.sdl
+clay :: use mara.clay
 
 // The window's panels: boxes it shows, each a view of something — the
-// profile, the docs, the asked query, the last crash, the keys — floating over the window's
-// ground. A panel is dragged by its title bar and resized by its edges and
-// corners; the one clicked comes to the front, its title bar's x hides it.
-// The menu bar's Panels menu shows or hides each and resets their layout;
-// its Theme menu makes the window dark or light. The layout — the window's
-// size, the theme, each panel's place, size, shown or not, front to back —
-// is kept in layout.txt beside the window's program: read when it opens,
-// written when it changes and when it closes.
+// profile, the docs, the asked query, the last crash, the keys — tiled:
+// side by side in columns, stacked in each, filling the window between
+// them. The gap between two is dragged to resize them; a panel's title
+// bar is dragged onto another panel to put it above or below it, or onto
+// its left or right edge for a column of its own; its x hides it. The menu
+// bar's Panels menu shows or hides each and resets their layout; its Theme
+// menu makes the window dark or light.
+//
+// The window is laid out by mara.clay each frame (window_layout): the menu
+// bar, the columns, each panel's frame and title bar, the open menu. What
+// Clay gives back is drawn (draw_window): its rectangles and text as they
+// are, a panel's content by the panel's own fun in the box Clay gave it.
+// The layout — the window's size, the theme, each panel's column, share
+// and shown or not — is kept in layout.txt beside the window's program:
+// read when it opens, written when it changes and when it closes.
 
 PROFILE_PANEL :: 0
 DOCS_PANEL    :: 1
@@ -29,24 +37,24 @@ MENU_PANELS :: 0
 MENU_THEME  :: 1
 MENUS       :: 2
 
-GRAB_OUT :: 5.0   // how far outside its border the mouse resizes a panel, pixels
-GRAB_IN  :: 3.0   // and inside it — but at its top: there its title bar moves it
-MIN_W  :: 200.0   // the least a panel is
-MIN_H  :: 100.0
-MARGIN :: 6.0     // the default layout's room around a panel
+GAP      :: 5.0     // the room between panels: what's dragged to resize them
+MIN_W    :: 120.0   // the least a column is dragged to
+MIN_H    :: 60.0    // ... a panel in its column
+MAX_COLS :: 8
 
-// What the mouse is doing with a panel, from a press on it to the release.
+// What the mouse is doing, from a press to the release.
 DRAG_NONE   :: 0
-DRAG_MOVE   :: 1
-DRAG_RESIZE :: 2
-DRAG_SELECT :: 3   // selecting its text (select.mara)
+DRAG_MOVE   :: 1   // a panel by its title bar, to another place among the panels
+DRAG_SELECT :: 3   // selecting a panel's text (select.mara)
 DRAG_COLUMN :: 4   // moving a column of the profile's table (profile_view.mara)
+DRAG_SPLIT_COLS :: 5   // the gap between two columns of panels
+DRAG_SPLIT_ROWS :: 6   // the gap between two panels of a column
 
-// The edges a resize moves (bits).
-EDGE_LEFT   :: 1
-EDGE_RIGHT  :: 2
-EDGE_TOP    :: 4
-EDGE_BOTTOM :: 8
+// Where a dragged panel would go, by the panel it's over.
+DROP_ABOVE :: 0
+DROP_BELOW :: 1
+DROP_LEFT  :: 2   // a column of its own, left of that panel's
+DROP_RIGHT :: 3
 
 // A rectangle in the window, pixels.
 Rect :: struct {
@@ -56,10 +64,14 @@ Rect :: struct {
 	h: f32
 }
 
+// A panel. The panels of a column are stacked in ui.panels' order.
 Panel :: struct {
-	kind:  i64     // PROFILE_PANEL, ...
-	shown: bool
-	box:   Rect    // its frame in the window: its title bar, then its content
+	kind:    i64    // PROFILE_PANEL, ...
+	shown:   bool
+	column:  i64    // the column it's in, from the left
+	weight:  f32    // its share of its column's height, among the shown ones
+	box:     Rect   // its frame in the window as last laid out: its title bar, then its content
+	content: Rect   // ... its content
 }
 
 // A panel kind's title, as its title bar and the menu show it.
@@ -90,30 +102,9 @@ inside :: fun(r: Rect, x: f32, y: f32) -> bool {
 	return x >= r.x and x < r.x + r.w and y >= r.y and y < r.y + r.h
 }
 
-// A panel's content: its box less its title bar and its border.
+// A panel's content, as last laid out.
 content_rect :: fun(ui: ^Ui, pn: Panel) -> Rect {
-	bar := bar_height(ui)
-	return Rect{x = pn.box.x + 1.0, y = pn.box.y + bar, w = pn.box.w - 2.0, h = pn.box.h - bar - 1.0}
-}
-
-// A panel's close box: the title bar's right end.
-close_rect :: fun(ui: ^Ui, pn: Panel) -> Rect {
-	bar := bar_height(ui)
-	return Rect{x = pn.box.x + pn.box.w - bar, y = pn.box.y, w = bar, h = bar}
-}
-
-// The Docs panel's pin: in its title bar, left of its close box.
-pin_rect :: fun(ui: ^Ui, pn: Panel) -> Rect {
-	close_box := close_rect(ui, pn)
-	w := text_width(&ui.text, pin_label(ui)) + 2.0 * PAD
-	return Rect{x = close_box.x - w, y = close_box.y, w = w, h = close_box.h}
-}
-
-// The Docs panel's reload: left of its pin (docs_reload).
-reload_rect :: fun(ui: ^Ui, pn: Panel) -> Rect {
-	pin := pin_rect(ui, pn)
-	w := text_width(&ui.text, "reload") + 2.0 * PAD
-	return Rect{x = pin.x - w, y = pin.y, w = w, h = pin.h}
+	return pn.content
 }
 
 // The pin's label: "pin"; pinned, "pinned" — "pinned · new" once a lookup
@@ -132,164 +123,322 @@ find_panel :: fun(ui: ^Ui, kind: i64) -> i64 {
 	return -1
 }
 
-// The front panel shown at (x, y): its place in ui.panels; -1 for none.
+// The panel shown at (x, y): its place in ui.panels; -1 for none.
 panel_at :: fun(ui: ^Ui, x: f32, y: f32) -> i64 {
-	i := ui.panels.len - 1
-	for i >= 0 {
-		if ui.panels[i].shown and inside(ui.panels[i].box, x, y) do return i
-		i -= 1
+	for pn, i in ui.panels {
+		if pn.shown and inside(pn.box, x, y) do return i
 	}
 	return -1
 }
 
-// The front panel shown that a press at (x, y) takes: one it's in, or one
-// whose border it's near enough to resize by; its place in ui.panels, -1
-// for none.
-panel_grab_at :: fun(ui: ^Ui, x: f32, y: f32) -> i64 {
-	i := ui.panels.len - 1
-	for i >= 0 {
-		if ui.panels[i].shown {
-			b := ui.panels[i].box
-			if inside(b, x, y) or edges_at(b, x, y) != 0 do return i
-		}
-		i -= 1
-	}
-	return -1
-}
-
-// The front panel shown: its place in ui.panels; -1 for none.
+// The panel the keys go to: the one last pressed, when it's shown; else the
+// first shown. Its place in ui.panels; -1 for none.
 front_panel :: fun(ui: ^Ui) -> i64 {
-	i := ui.panels.len - 1
-	for i >= 0 {
+	i := find_panel(ui, ui.focus)
+	if i >= 0 {
 		if ui.panels[i].shown do return i
-		i -= 1
+	}
+	for pn, k in ui.panels {
+		if pn.shown do return k
 	}
 	return -1
 }
 
-// Panel i moved to the front — the end of ui.panels: its place now.
+// Panel i is the one the keys go to. Its place in ui.panels: the same.
 bring_to_front :: fun(ui: ^Ui, i: i64) -> i64 {
-	last := ui.panels.len - 1
-	pn := ui.panels[i]
-	for k in i:last {
+	ui.focus = ui.panels[i].kind
+	return i
+}
+
+// ---- The tiling ----
+
+// The panels as they first are. A wide window: the profile at the left,
+// the docs over the asked query at its right. A tall one: the three
+// stacked. The last crash, hidden until there's one, under the profile;
+// the keys, hidden, last.
+default_layout :: fun(ui: ^Ui) {
+	default_layout_for(ui, ui.width >= ui.height * 1.1)
+}
+
+default_layout_for :: fun(ui: ^Ui, wide: bool) {
+	right := 0
+	if wide do right = 1
+	ui.panels.len = 0
+	&ui.panels ++ Panel{kind = PROFILE_PANEL, shown = true, column = 0, weight = 1.0}
+	&ui.panels ++ Panel{kind = CRASH_PANEL, shown = false, column = 0, weight = 1.0}
+	&ui.panels ++ Panel{kind = DOCS_PANEL, shown = true, column = right, weight = 1.0}
+	&ui.panels ++ Panel{kind = ASK_PANEL, shown = true, column = right, weight = 1.0}
+	&ui.panels ++ Panel{kind = KEYS_PANEL, shown = false, column = right, weight = 1.0}
+	for c in 0:MAX_COLS {
+		ui.col_weight[c] = 1.0
+	}
+	if wide {
+		ui.col_weight[0] = 0.55
+		ui.col_weight[1] = 0.45
+	}
+}
+
+// (Tiled panels are always inside the window: nothing to keep in.)
+clamp_panels :: fun(ui: ^Ui) {
+}
+
+// Whether a column has a panel shown.
+column_shown :: fun(ui: ^Ui, column: i64) -> bool {
+	for pn in ui.panels {
+		if pn.shown and pn.column == column do return true
+	}
+	return false
+}
+
+// The columns numbered from 0 again, none skipped: the ones no panel is in
+// drop out, their weights with them.
+compact_columns :: fun(ui: ^Ui) {
+	weights : [MAX_COLS!]f32
+	next := 0
+	for c in 0:MAX_COLS {
+		used := false
+		for pn in ui.panels {
+			if pn.column == c do used = true
+		}
+		if not used do continue
+		for k in 0:ui.panels.len {
+			if ui.panels[k].column == c do ui.panels[k].column = -1 - next
+		}
+		weights[next] = ui.col_weight[c]
+		next += 1
+	}
+	for k in 0:ui.panels.len {
+		ui.panels[k].column = -1 - ui.panels[k].column
+	}
+	for c in 0:MAX_COLS {
+		ui.col_weight[c] = 1.0
+		if c < next do ui.col_weight[c] = max_f32(weights[c], 0.01)
+	}
+}
+
+// The shown panel after panel i in its column; -1: it's the last.
+next_in_column :: fun(ui: ^Ui, i: i64) -> i64 {
+	for k in i + 1 : ui.panels.len {
+		if ui.panels[k].shown and ui.panels[k].column == ui.panels[i].column do return k
+	}
+	return -1
+}
+
+// The column with a panel shown after a column; -1: it's the last.
+next_column :: fun(ui: ^Ui, column: i64) -> i64 {
+	for c in column + 1 : MAX_COLS {
+		if column_shown(ui, c) do return c
+	}
+	return -1
+}
+
+// A column's box as last laid out: its shown panels' together.
+column_box :: fun(ui: ^Ui, column: i64) -> Rect {
+	b := Rect{all 0}
+	first := true
+	for pn in ui.panels {
+		if not pn.shown or pn.column != column do continue
+		if first {
+			b = pn.box
+			first = false
+		else
+			b.h = pn.box.y + pn.box.h - b.y
+		}
+	}
+	return b
+}
+
+// The gap at (x, y), to drag: between two panels of a column, or between
+// two columns. The drag begun (ui.drag, drag_a and drag_b: the two); false
+// when it's on none.
+split_at :: fun(ui: ^Ui, x: f32, y: f32) -> bool {
+	for pn, i in ui.panels {
+		if not pn.shown do continue
+		below := next_in_column(ui, i)
+		if below >= 0 {
+			if x >= pn.box.x and x < pn.box.x + pn.box.w and y >= pn.box.y + pn.box.h - 1.0 and y < ui.panels[below].box.y + 1.0 {
+				ui.drag = DRAG_SPLIT_ROWS
+				ui.drag_a = i
+				ui.drag_b = below
+				ui.drag_size_a = pn.box.h
+				ui.drag_size_b = ui.panels[below].box.h
+				return true
+			}
+		}
+	}
+	for c in 0:MAX_COLS {
+		if not column_shown(ui, c) do continue
+		right := next_column(ui, c)
+		if right < 0 do break
+		a := column_box(ui, c)
+		b := column_box(ui, right)
+		if x >= a.x + a.w - 1.0 and x < b.x + 1.0 and y >= a.y and y < a.y + a.h {
+			ui.drag = DRAG_SPLIT_COLS
+			ui.drag_a = c
+			ui.drag_b = right
+			ui.drag_size_a = a.w
+			ui.drag_size_b = b.w
+			return true
+		}
+	}
+	return false
+}
+
+// A gap dragged by d pixels since its press: the two beside it share what
+// they had between them anew, neither under the least.
+split_drag :: fun(ui: ^Ui, d: f32) {
+	both := ui.drag_size_a + ui.drag_size_b
+	least := MIN_H
+	if ui.drag == DRAG_SPLIT_COLS do least = MIN_W
+	least = min_f32(least, both / 2.0)
+	size_a := max_f32(least, min_f32(ui.drag_size_a + d, both - least))
+	if ui.drag == DRAG_SPLIT_COLS {
+		weights := ui.col_weight[ui.drag_a] + ui.col_weight[ui.drag_b]
+		ui.col_weight[ui.drag_a] = weights * size_a / both
+		ui.col_weight[ui.drag_b] = weights - ui.col_weight[ui.drag_a]
+	else
+		weights := ui.panels[ui.drag_a].weight + ui.panels[ui.drag_b].weight
+		ui.panels[ui.drag_a].weight = weights * size_a / both
+		ui.panels[ui.drag_b].weight = weights - ui.panels[ui.drag_a].weight
+	}
+	ui.dirty = true
+}
+
+// Where the panel dragged would go, the mouse at (x, y): ui.drop_on, the
+// panel it's over (-1: nowhere — none, or itself), and ui.drop_zone — its
+// left or right fifth: a column of its own there; else above or below it.
+drop_find :: fun(ui: ^Ui, x: f32, y: f32) {
+	ui.drop_on = -1
+	i := panel_at(ui, x, y)
+	if i < 0 do return
+	if ui.panels[i].kind == ui.drag_kind do return
+	b := ui.panels[i].box
+	ui.drop_on = ui.panels[i].kind
+	if x < b.x + b.w * 0.2 {
+		ui.drop_zone = DROP_LEFT
+	elif x >= b.x + b.w * 0.8
+		ui.drop_zone = DROP_RIGHT
+	elif y < b.y + b.h * 0.5
+		ui.drop_zone = DROP_ABOVE
+	else
+		ui.drop_zone = DROP_BELOW
+	}
+}
+
+// Where the dragged panel would land, to show while it's dragged: a strip
+// along the edge of the panel it's over.
+drop_strip :: fun(ui: ^Ui) -> Rect {
+	b := ui.panels[find_panel(ui, ui.drop_on)].box
+	if ui.drop_zone == DROP_ABOVE do return Rect{x = b.x, y = b.y, w = b.w, h = 4.0}
+	if ui.drop_zone == DROP_BELOW do return Rect{x = b.x, y = b.y + b.h - 4.0, w = b.w, h = 4.0}
+	if ui.drop_zone == DROP_LEFT do return Rect{x = b.x, y = b.y, w = 4.0, h = b.h}
+	return Rect{x = b.x + b.w - 4.0, y = b.y, w = 4.0, h = b.h}
+}
+
+// The dragged panel put where it was dropped: above or below the panel
+// it's over, sharing its room; or in a new column beside that panel's.
+drop_apply :: fun(ui: ^Ui) {
+	if ui.drop_on < 0 do return
+	from := find_panel(ui, ui.drag_kind)
+	moved := ui.panels[from]
+	for k in from : ui.panels.len - 1 {
 		ui.panels[k] = ui.panels[k + 1]
 	}
-	ui.panels[last] = pn
-	return last
-}
-
-// The panels as they first are: the profile at the left, the docs and the
-// asked query stacked at its right; the keys, hidden, over the docs; the
-// last crash, hidden until there's one, over the profile's lower half.
-default_layout :: fun(ui: ^Ui) {
-	top := bar_height(ui)
-	ui.panels.len = 0
-	room_h := ui.height - top - 2.0 * MARGIN
-	left_w := floor_f32((ui.width - 3.0 * MARGIN) * 0.55)
-	right_x := MARGIN + left_w + MARGIN
-	right_w := ui.width - right_x - MARGIN
-	upper_h := floor_f32((room_h - MARGIN) * 0.5)
-	keys := Panel{kind = KEYS_PANEL, shown = false}
-	keys.box = Rect{x = ui.width - 520.0 - 4.0 * MARGIN, y = top + 4.0 * MARGIN, w = 520.0, h = 330.0}
-	&ui.panels ++ keys
-	profile := Panel{kind = PROFILE_PANEL, shown = true}
-	profile.box = Rect{x = MARGIN, y = top + MARGIN, w = left_w, h = room_h}
-	&ui.panels ++ profile
-	docs := Panel{kind = DOCS_PANEL, shown = true}
-	docs.box = Rect{x = right_x, y = top + MARGIN, w = right_w, h = upper_h}
-	&ui.panels ++ docs
-	ask := Panel{kind = ASK_PANEL, shown = true}
-	ask.box = Rect{x = right_x, y = top + MARGIN + upper_h + MARGIN, w = right_w, h = room_h - upper_h - MARGIN}
-	&ui.panels ++ ask
-	crash := Panel{kind = CRASH_PANEL, shown = false}
-	crash.box = Rect{x = MARGIN, y = top + MARGIN + upper_h + MARGIN, w = left_w, h = room_h - upper_h - MARGIN}
-	&ui.panels ++ crash
-	clamp_panels(ui)
-}
-
-// Each panel kept inside the window, below the menu bar, no smaller than
-// the least.
-clamp_panels :: fun(ui: ^Ui) {
-	top := bar_height(ui)
-	for i in 0:ui.panels.len {
-		b := ui.panels[i].box
-		b.w = max_f32(MIN_W, min_f32(b.w, ui.width))
-		b.h = max_f32(MIN_H, min_f32(b.h, ui.height - top))
-		b.x = max_f32(0, min_f32(b.x, ui.width - b.w))
-		b.y = max_f32(top, min_f32(b.y, ui.height - b.h))
-		ui.panels[i].box = b
+	ui.panels.len -= 1
+	on := find_panel(ui, ui.drop_on)
+	target := ui.panels[on]
+	if ui.drop_zone == DROP_ABOVE or ui.drop_zone == DROP_BELOW {
+		moved.column = target.column
+		moved.weight = target.weight / 2.0
+		ui.panels[on].weight = target.weight / 2.0
+		at := on
+		if ui.drop_zone == DROP_BELOW do at = on + 1
+		ui.panels.len += 1
+		k := ui.panels.len - 1
+		for k > at {
+			ui.panels[k] = ui.panels[k - 1]
+			k -= 1
+		}
+		ui.panels[at] = moved
+	else
+		// (The columns from there on move over by one — compacted first, so
+		// there's room.)
+		&ui.panels ++ moved
+		compact_columns(ui)
+		target_column := ui.panels[find_panel(ui, ui.drop_on)].column
+		new_column := target_column
+		if ui.drop_zone == DROP_RIGHT do new_column = target_column + 1
+		c := MAX_COLS - 1
+		for c > new_column {
+			ui.col_weight[c] = ui.col_weight[c - 1]
+			c -= 1
+		}
+		for k in 0:ui.panels.len {
+			if ui.panels[k].column >= new_column do ui.panels[k].column += 1
+		}
+		last := ui.panels.len - 1
+		ui.panels[last].column = new_column
+		ui.panels[last].weight = 1.0
+		beside := target_column
+		if ui.drop_zone == DROP_LEFT do beside = target_column + 1
+		ui.col_weight[beside] /= 2.0
+		ui.col_weight[new_column] = ui.col_weight[beside]
 	}
+	compact_columns(ui)
 }
 
-// The edges of b the mouse at (x, y) is near enough to resize by (bits):
-// within GRAB_OUT outside its border or GRAB_IN inside — at its top, only
-// above it: a press on its title bar moves it, never resizes.
-edges_at :: fun(b: Rect, x: f32, y: f32) -> i64 {
-	if x < b.x - GRAB_OUT or x >= b.x + b.w + GRAB_OUT do return 0
-	if y < b.y - GRAB_OUT or y >= b.y + b.h + GRAB_OUT do return 0
-	edges : i64 = 0
-	if x < b.x + GRAB_IN do edges = edges | EDGE_LEFT
-	if x >= b.x + b.w - GRAB_IN do edges = edges | EDGE_RIGHT
-	if y < b.y do edges = edges | EDGE_TOP
-	if y >= b.y + b.h - GRAB_IN do edges = edges | EDGE_BOTTOM
-	return edges
-}
+// ---- Presses and drags ----
 
 // A press of the mouse at (x, y), the `clicks`-th of a quick run: with a
 // menu open, its item — on another menu's button, that menu; on a menu's
-// button, its menu; on a panel, it brought to the front and then — near its
-// edges, a resize; on its title bar, a move (its x: hidden); in its
-// content, the panel's own click — in lines, a selection begun (its click
-// when it's let go without selecting).
-press :: fun(ui: ^Ui, p: ^Profile, x: f32, y: f32, clicks: i64) {
+// button, its menu; on a gap between panels, a resize; on a panel's title
+// bar, a move (its x: hidden); in its content, the panel's own click — in
+// lines, a selection begun (its click when it's let go without selecting).
+press :: fun(ui: ^Ui, lay: ^clay.Context, p: ^Profile, x: f32, y: f32, clicks: i64) {
 	ui.dirty = true
 	if ui.menu_open != MENU_NONE {
 		m := ui.menu_open
 		ui.menu_open = MENU_NONE
-		item := menu_item_at(ui, m, x, y)
+		item := menu_item_at(ui, lay, m, x, y)
 		if item >= 0 {
 			menu_choose(ui, m, item)
 			return
 		}
 		// (A click elsewhere only closes it.)
-		b := menu_button_at(ui, x, y)
-		if b >= 0 and b != m do ui.menu_open = b
+		other := menu_button_at(ui, lay, x, y)
+		if other >= 0 and other != m do ui.menu_open = other
 		return
 	}
-	b := menu_button_at(ui, x, y)
+	b := menu_button_at(ui, lay, x, y)
 	if b >= 0 {
 		ui.menu_open = b
 		return
 	}
-	i := panel_grab_at(ui, x, y)
+	ui.drag_x = x
+	ui.drag_y = y
+	if split_at(ui, x, y) do return
+	i := panel_at(ui, x, y)
 	if i < 0 do return
 	i = bring_to_front(ui, i)
 	pn := ui.panels[i]
 	ui.drag_kind = pn.kind
-	ui.drag_x = x
-	ui.drag_y = y
-	ui.drag_box = pn.box
-	edges := edges_at(pn.box, x, y)
-	if edges != 0 {
-		ui.drag = DRAG_RESIZE
-		ui.drag_edges = edges
-		return
-	}
-	if y < pn.box.y + bar_height(ui) {
-		if inside(close_rect(ui, pn), x, y) {
+	if y < pn.content.y {
+		if in_part(ui, lay, "Close", pn.kind, x, y) {
 			ui.panels[i].shown = false
 			layout_save(ui)
 			return
 		}
-		if pn.kind == DOCS_PANEL and inside(pin_rect(ui, pn), x, y) {
+		if pn.kind == DOCS_PANEL and in_part(ui, lay, "Pin", pn.kind, x, y) {
 			docs_pin(ui)
 			return
 		}
-		if pn.kind == DOCS_PANEL and inside(reload_rect(ui, pn), x, y) {
+		if pn.kind == DOCS_PANEL and in_part(ui, lay, "Reload", pn.kind, x, y) {
 			docs_reload(ui)
 			return
 		}
 		ui.drag = DRAG_MOVE
+		ui.drag_moved = false
+		ui.drop_on = -1
 		return
 	}
 	if pn.kind == PROFILE_PANEL do profile_click(ui, p, content_rect(ui, pn), x, y)
@@ -314,101 +463,351 @@ menu_choose :: fun(ui: ^Ui, m: i64, item: i64) {
 	layout_save(ui)
 }
 
-// The mouse moved to (x, y) while a panel is dragged: its box follows —
-// or, selecting, the selection.
+// The mouse moved to (x, y) while something is dragged: a selection grows,
+// a gap moves, a panel's landing place is found.
 drag_to :: fun(ui: ^Ui, x: f32, y: f32) {
-	i := find_panel(ui, ui.drag_kind)
-	if i < 0 do return
 	if ui.drag == DRAG_SELECT {
-		select_to(ui, x, y)
+		if find_panel(ui, ui.drag_kind) >= 0 do select_to(ui, x, y)
 		return
 	}
-	dx := x - ui.drag_x
-	dy := y - ui.drag_y
-	b := ui.drag_box
+	if ui.drag == DRAG_SPLIT_COLS do split_drag(ui, x - ui.drag_x)
+	if ui.drag == DRAG_SPLIT_ROWS do split_drag(ui, y - ui.drag_y)
 	if ui.drag == DRAG_MOVE {
-		b.x += dx
-		b.y += dy
-	else
-		right := b.x + b.w
-		bottom := b.y + b.h
-		if (ui.drag_edges & EDGE_LEFT) != 0 {
-			b.x = min_f32(b.x + dx, right - MIN_W)
-			b.w = right - b.x
+		if abs_f32(x - ui.drag_x) > 6.0 or abs_f32(y - ui.drag_y) > 6.0 do ui.drag_moved = true
+		if ui.drag_moved {
+			drop_find(ui, x, y)
+			ui.dirty = true
 		}
-		if (ui.drag_edges & EDGE_RIGHT) != 0 do b.w = max_f32(b.w + dx, MIN_W)
-		if (ui.drag_edges & EDGE_TOP) != 0 {
-			b.y = min_f32(b.y + dy, bottom - MIN_H)
-			b.h = bottom - b.y
-		}
-		if (ui.drag_edges & EDGE_BOTTOM) != 0 do b.h = max_f32(b.h + dy, MIN_H)
 	}
-	ui.panels[i].box = b
-	clamp_panels(ui)
+}
+
+// A panel let go where it was dragged to: put there.
+drag_drop :: fun(ui: ^Ui) {
+	if ui.drag == DRAG_MOVE and ui.drag_moved do drop_apply(ui)
+	ui.drop_on = -1
 	ui.dirty = true
 }
 
-// The cursor's look for the mouse at (x, y): resize arrows near a panel's
-// edges; over lines, a text cursor — a hand over a place they open; else
-// the arrow.
+// The cursor's look for the mouse at (x, y): resize arrows over a gap
+// between panels; over lines, a text cursor — a hand over a place they
+// open; else the arrow.
 cursor_look :: fun(ui: ^Ui, x: f32, y: f32) -> i32 {
 	if ui.menu_open != MENU_NONE do return SYSTEM_CURSOR_DEFAULT
-	i := panel_grab_at(ui, x, y)
-	if i < 0 do return SYSTEM_CURSOR_DEFAULT
-	pn := ui.panels[i]
-	edges := edges_at(pn.box, x, y)
-	if edges == 0 and y >= pn.box.y + bar_height(ui) {
-		_, _, lines := panel_lines_at(ui, pn, x, y)
-		if lines {
-			if docs_hover(ui) >= 0 or crash_hover(ui) >= 0 do return SYSTEM_CURSOR_POINTER
-			return SYSTEM_CURSOR_TEXT
+	i := panel_at(ui, x, y)
+	if i >= 0 {
+		pn := ui.panels[i]
+		if inside(pn.content, x, y) {
+			_, _, lines := panel_lines_at(ui, pn, x, y)
+			if lines {
+				if docs_hover(ui) >= 0 or crash_hover(ui) >= 0 do return SYSTEM_CURSOR_POINTER
+				return SYSTEM_CURSOR_TEXT
+			}
 		}
+		return SYSTEM_CURSOR_DEFAULT
 	}
-	if edges == EDGE_LEFT | EDGE_TOP or edges == EDGE_RIGHT | EDGE_BOTTOM do return SYSTEM_CURSOR_NWSE_RESIZE
-	if edges == EDGE_RIGHT | EDGE_TOP or edges == EDGE_LEFT | EDGE_BOTTOM do return SYSTEM_CURSOR_NESW_RESIZE
-	if edges == EDGE_LEFT or edges == EDGE_RIGHT do return SYSTEM_CURSOR_EW_RESIZE
-	if edges == EDGE_TOP or edges == EDGE_BOTTOM do return SYSTEM_CURSOR_NS_RESIZE
-	return SYSTEM_CURSOR_DEFAULT
+	// (Between panels: which gap, asked without beginning a drag.)
+	was := ui.drag
+	look := SYSTEM_CURSOR_DEFAULT
+	if split_at(ui, x, y) {
+		look = SYSTEM_CURSOR_NS_RESIZE
+		if ui.drag == DRAG_SPLIT_COLS do look = SYSTEM_CURSOR_EW_RESIZE
+	}
+	ui.drag = was
+	return look
 }
 
-// The panels drawn back to front, each its frame and content; the menu bar
-// over them, its menu when one's open.
-draw_window :: fun(ui: ^Ui, p: ^Profile) {
+// ---- The window laid out ----
+
+// An element's id: a part of the window, by its name and which one it is —
+// a panel's kind, a menu, a menu's item.
+part :: fun(name: []utf8, which: i64) -> clay.Id {
+	return clay.element_id_at(name, which)
+}
+
+// A part's box as last laid out, and whether it was.
+part_box :: fun(ui: ^Ui, lay: ^clay.Context, name: []utf8, which: i64) -> Rect, bool {
+	b, found := clay.element_box(lay, part(name, which))
+	return Rect{x = b.x, y = b.y, w = b.w, h = b.h}, found
+}
+
+// Whether (x, y) is in a part.
+in_part :: fun(ui: ^Ui, lay: ^clay.Context, name: []utf8, which: i64, x: f32, y: f32) -> bool {
+	b, found := part_box(ui, lay, name, which)
+	return found and inside(b, x, y)
+}
+
+// A color as Clay has them.
+paint :: fun(c: Color) -> clay.Color {
+	return clay.Color{r = f32(c.r), g = f32(c.g), b = f32(c.b), a = 255.0}
+}
+
+// ... and one of Clay's as the window draws them.
+unpaint :: fun(c: clay.Color) -> Color {
+	return Color{r = u8(c.r), g = u8(c.g), b = u8(c.b)}
+}
+
+// Text's size for Clay: the window's font, or (font_id 1) its code font.
+measure_text :: fun(s: []utf8, config: ^clay.Text_Config, ui: ^Ui) -> clay.Size {
+	if config.font_id == 1 do return clay.Size{w = text_width(&ui.mono, s), h = ui.text.line}
+	return clay.Size{w = text_width(&ui.text, s), h = ui.text.line}
+}
+
+// Text in the window's font, in a color, on one line.
+label :: fun(ui: ^Ui, lay: ^clay.Context, s: []utf8, color: Color) {
+	clay.text_element(lay, s, clay.Text_Config{color = paint(color), wrap = clay.Wrap_None})
+}
+
+// A word in a bar that's pressed: a part, the word inside it with room at
+// its sides.
+bar_button :: fun(ui: ^Ui, lay: ^clay.Context, name: []utf8, which: i64, s: []utf8, color: Color, room: f32, top: f32) {
+	e : clay.Element
+	e.id = part(name, which)
+	e.layout.sizing = clay.Sizing{width = clay.size_fit(), height = clay.size_grow()}
+	e.layout.padding = clay.Padding{left = room, right = room, top = top}
+	clay.open_element(lay, e)
+		label(ui, lay, s, color)
+	clay.close_element(lay)
+}
+
+// A panel: its frame, a pixel of border around its title bar — its title,
+// what's pressed in it — and its content, a part of its own: what the
+// panel's fun draws in.
+panel_element :: fun(ui: ^Ui, lay: ^clay.Context, pn: Panel, share: f32) {
+	bar := bar_height(ui)
+	frame : clay.Element
+	frame.id = part("Panel", pn.kind)
+	frame.layout.sizing = clay.Sizing{width = clay.size_grow(), height = clay.size_percent(share)}
+	frame.layout.direction = clay.Top_To_Bottom
+	frame.layout.padding = clay.padding_all(1.0)
+	frame.background = paint(ui.border)
+	clay.open_element(lay, frame)
+		title : clay.Element
+		title.id = part("Title", pn.kind)
+		title.layout.sizing = clay.Sizing{width = clay.size_grow(), height = clay.size_fixed(bar - 1.0)}
+		title.background = paint(ui.header)
+		clay.open_element(lay, title)
+			color := ui.dim
+			if pn.kind == ui.focus do color = ui.ink
+			bar_button(ui, lay, "Name", pn.kind, panel_title(pn.kind), color, PAD - 1.0, ROW_PAD - 1.0)
+			spacer : clay.Element
+			spacer.layout.sizing = clay.Sizing{width = clay.size_grow(), height = clay.size_grow()}
+			clay.open_element(lay, spacer)
+			clay.close_element(lay)
+			if pn.kind == DOCS_PANEL {
+				bar_button(ui, lay, "Reload", pn.kind, "reload", ui.dim, PAD, ROW_PAD - 1.0)
+				pin_color := ui.dim
+				if ui.docs_pinned do pin_color = ui.accent
+				bar_button(ui, lay, "Pin", pn.kind, pin_label(ui), pin_color, PAD, ROW_PAD - 1.0)
+			}
+			bar_button(ui, lay, "Close", pn.kind, "x", ui.dim, floor_f32((bar - text_width(&ui.text, "x")) * 0.5), ROW_PAD - 1.0)
+		clay.close_element(lay)
+		content : clay.Element
+		content.id = part("Content", pn.kind)
+		content.layout.sizing = clay.Sizing{width = clay.size_grow(), height = clay.size_grow()}
+		// (Drawn by the panel's fun, its ground too: draw_content. Clay puts
+		// an element's own rectangle after its custom command, over it.)
+		content.custom_tag = 1 + pn.kind
+		clay.open_element(lay, content)
+		clay.close_element(lay)
+	clay.close_element(lay)
+}
+
+// The open menu: under its button, over everything — its items, each a
+// part, with a box to tick; Reset layout under a line.
+menu_element :: fun(ui: ^Ui, lay: ^clay.Context, m: i64) {
+	bar := bar_height(ui)
+	hovered := menu_item_at(ui, lay, m, ui.mouse_x, ui.mouse_y)
+	ui.menu_hover = hovered
+	tick := floor_f32(ui.text.line * 0.6)
+	list : clay.Element
+	list.id = clay.element_id("MenuList")
+	list.layout.sizing = clay.Sizing{width = clay.size_fit(), height = clay.size_fit()}
+	list.layout.direction = clay.Top_To_Bottom
+	list.background = paint(ui.header)
+	list.border = clay.Border{color = paint(ui.border), width = clay.Border_Width{right = 1.0, bottom = 1.0}}
+	list.floating = clay.Floating{attach = clay.To_Element, parent_id = part("Menu", m).id, element = clay.Left_Top, parent = clay.Left_Bottom, z = 10}
+	clay.open_element(lay, list)
+	for k in 0 : menu_items(m) {
+		if not menu_item_boxed(m, k) {
+			// (A line over it.)
+			gap : clay.Element
+			gap.layout.sizing = clay.Sizing{width = clay.size_grow(), height = clay.size_fixed(5.0)}
+			gap.layout.padding = clay.Padding{left = PAD, right = PAD, top = 2.0}
+			clay.open_element(lay, gap)
+				line : clay.Element
+				line.layout.sizing = clay.Sizing{width = clay.size_grow(), height = clay.size_fixed(1.0)}
+				line.background = paint(ui.border)
+				clay.open_element(lay, line)
+				clay.close_element(lay)
+			clay.close_element(lay)
+		}
+		item : clay.Element
+		item.id = part("MenuItem", k)
+		item.layout.sizing = clay.Sizing{width = clay.size_grow(), height = clay.size_fixed(bar)}
+		item.layout.padding = clay.Padding{left = PAD, right = 2.0 * PAD}
+		item.layout.gap = PAD
+		item.layout.align = clay.Child_Align{y = .Center}
+		if k == hovered do item.background = paint(ui.hover)
+		clay.open_element(lay, item)
+			if menu_item_boxed(m, k) {
+				// (A box: an edge, its inside, a fill when it's ticked.)
+				box : clay.Element
+				box.layout.sizing = clay.Sizing{width = clay.size_fixed(tick), height = clay.size_fixed(tick)}
+				box.layout.padding = clay.padding_all(1.0)
+				box.background = paint(ui.dim)
+				clay.open_element(lay, box)
+					inner : clay.Element
+					inner.layout.sizing = clay.Sizing{width = clay.size_grow(), height = clay.size_grow()}
+					inner.layout.padding = clay.padding_all(2.0)
+					inner.background = paint(ui.header)
+					clay.open_element(lay, inner)
+						if menu_item_ticked(ui, m, k) {
+							mark : clay.Element
+							mark.layout.sizing = clay.Sizing{width = clay.size_grow(), height = clay.size_grow()}
+							mark.background = paint(ui.accent)
+							clay.open_element(lay, mark)
+							clay.close_element(lay)
+						}
+					clay.close_element(lay)
+				clay.close_element(lay)
+			}
+			label(ui, lay, menu_item_text(m, k), ui.ink)
+		clay.close_element(lay)
+	}
+	clay.close_element(lay)
+}
+
+// The window as Clay elements: the menu bar; under it the columns with a
+// panel shown, each as wide as its share, its panels stacked in it by
+// theirs; the open menu; where a dragged panel would land. Then each
+// panel's box and content are what Clay made them (on whole pixels).
+window_layout :: fun(ui: ^Ui, lay: ^clay.Context) {
+	bar := bar_height(ui)
+	clay.set_layout_size(lay, ui.width, ui.height)
+	clay.set_pointer(lay, ui.mouse_x, ui.mouse_y, false)
+	clay.begin_layout(lay)
+	window : clay.Element
+	window.id = clay.element_id("Window")
+	window.layout.sizing = clay.Sizing{width = clay.size_grow(), height = clay.size_grow()}
+	window.layout.direction = clay.Top_To_Bottom
+	window.background = paint(ui.ground)
+	clay.open_element(lay, window)
+		menus : clay.Element
+		menus.id = clay.element_id("MenuBar")
+		menus.layout.sizing = clay.Sizing{width = clay.size_grow(), height = clay.size_fixed(bar)}
+		menus.background = paint(ui.header)
+		menus.border = clay.Border{color = paint(ui.border), width = clay.Border_Width{bottom = 1.0}}
+		clay.open_element(lay, menus)
+			for m in 0:MENUS {
+				button : clay.Element
+				button.id = part("Menu", m)
+				button.layout.sizing = clay.Sizing{width = clay.size_fit(), height = clay.size_fixed(bar - 1.0)}
+				button.layout.padding = clay.Padding{left = PAD, right = PAD, top = ROW_PAD}
+				if ui.menu_open == m do button.background = paint(ui.hover)
+				clay.open_element(lay, button)
+					label(ui, lay, menu_name(m), ui.ink)
+				clay.close_element(lay)
+			}
+		clay.close_element(lay)
+
+		total : f32 = 0.0
+		for c in 0:MAX_COLS {
+			if column_shown(ui, c) do total += ui.col_weight[c]
+		}
+		body : clay.Element
+		body.id = clay.element_id("Body")
+		body.layout.sizing = clay.Sizing{width = clay.size_grow(), height = clay.size_grow()}
+		body.layout.padding = clay.padding_all(GAP)
+		body.layout.gap = GAP
+		clay.open_element(lay, body)
+			for c in 0:MAX_COLS {
+				if not column_shown(ui, c) do continue
+				column : clay.Element
+				column.id = part("Column", c)
+				column.layout.sizing = clay.Sizing{width = clay.size_percent(ui.col_weight[c] / total), height = clay.size_grow()}
+				column.layout.direction = clay.Top_To_Bottom
+				column.layout.gap = GAP
+				clay.open_element(lay, column)
+					shares : f32 = 0.0
+					for pn in ui.panels {
+						if pn.shown and pn.column == c do shares += pn.weight
+					}
+					for pn in ui.panels {
+						if pn.shown and pn.column == c do panel_element(ui, lay, pn, pn.weight / shares)
+					}
+				clay.close_element(lay)
+			}
+		clay.close_element(lay)
+
+		if ui.menu_open != MENU_NONE do menu_element(ui, lay, ui.menu_open)
+		if ui.drag == DRAG_MOVE and ui.drag_moved and ui.drop_on >= 0 {
+			strip := drop_strip(ui)
+			landing : clay.Element
+			landing.layout.sizing = clay.Sizing{width = clay.size_fixed(strip.w), height = clay.size_fixed(strip.h)}
+			landing.background = paint(ui.accent)
+			landing.floating = clay.Floating{attach = clay.To_Root, offset = clay.Point{x = strip.x, y = strip.y}, z = 5, capture = clay.Passes}
+			clay.open_element(lay, landing)
+			clay.close_element(lay)
+		}
+	clay.close_element(lay)
+	problem := clay.end_layout(lay)
+	if problem do print("mara view: the window's layout failed:", problem)
+
+	for k in 0:ui.panels.len {
+		if not ui.panels[k].shown do continue
+		box, _ := part_box(ui, lay, "Panel", ui.panels[k].kind)
+		content, _ := part_box(ui, lay, "Content", ui.panels[k].kind)
+		ui.panels[k].box = pixel_rect(box)
+		ui.panels[k].content = pixel_rect(content)
+	}
+}
+
+// A rectangle with its sides on whole pixels.
+pixel_rect :: fun(r: Rect) -> Rect {
+	x := floor_f32(r.x + 0.5)
+	y := floor_f32(r.y + 0.5)
+	return Rect{x = x, y = y, w = floor_f32(r.x + r.w + 0.5) - x, h = floor_f32(r.y + r.h + 0.5) - y}
+}
+
+// The window drawn: laid out, then each of Clay's commands in order — a
+// rectangle, a border's sides, a line of text, what's clipped — and, for a
+// panel's content, the panel's own fun in its box.
+draw_window :: fun(ui: ^Ui, lay: ^clay.Context, p: ^Profile) {
 	r := ui.renderer
+	window_layout(ui, lay)
 	_ = SetRenderDrawColor(r, ui.ground.r, ui.ground.g, ui.ground.b, 255)
 	_ = RenderClear(r)
-	front := front_panel(ui)
-	for pn, i in ui.panels {
-		if pn.shown do draw_panel(ui, p, pn, i == front)
+	for cmd in lay.commands {
+		b := pixel_rect(Rect{x = cmd.box.x, y = cmd.box.y, w = cmd.box.w, h = cmd.box.h})
+		if cmd.kind == clay.Rectangle {
+			fill(r, b.x, b.y, b.w, b.h, unpaint(cmd.color))
+		elif cmd.kind == clay.Border_Lines
+			color := unpaint(cmd.color)
+			if cmd.border.left > 0.0 do fill(r, b.x, b.y, cmd.border.left, b.h, color)
+			if cmd.border.right > 0.0 do fill(r, b.x + b.w - cmd.border.right, b.y, cmd.border.right, b.h, color)
+			if cmd.border.top > 0.0 do fill(r, b.x, b.y, b.w, cmd.border.top, color)
+			if cmd.border.bottom > 0.0 do fill(r, b.x, b.y + b.h - cmd.border.bottom, b.w, cmd.border.bottom, color)
+		elif cmd.kind == clay.Text_Line
+			font := &ui.text
+			if cmd.font_id == 1 do font = &ui.mono
+			_ = text_draw(font, r, clay.command_text(lay, cmd), b.x, b.y, unpaint(cmd.color))
+		elif cmd.kind == clay.Scissor_Start
+			clip := SDL_Rect{x = i32(b.x), y = i32(b.y), w = i32(b.w), h = i32(b.h)}
+			_ = SetRenderClipRect(r, &clip)
+		elif cmd.kind == clay.Scissor_End
+			_ = SetRenderClipRect(r, void)
+		elif cmd.kind == clay.Custom
+			i := find_panel(ui, cmd.custom_tag - 1)
+			if i >= 0 do draw_content(ui, p, ui.panels[i])
+		}
 	}
-	draw_menu_bar(ui)
-	if ui.menu_open != MENU_NONE do draw_menu(ui, ui.menu_open)
 	_ = RenderPresent(r)
 }
 
-// A panel: its border, its title bar (the front one's title brighter), its
-// close box, its content — kept inside it.
-draw_panel :: fun(ui: ^Ui, p: ^Profile, pn: Panel, front: bool) {
+// A panel's content, kept inside its box.
+draw_content :: fun(ui: ^Ui, p: ^Profile, pn: Panel) {
 	r := ui.renderer
-	b := pn.box
-	bar := bar_height(ui)
-	fill(r, b.x, b.y, b.w, b.h, ui.border)
-	fill(r, b.x + 1.0, b.y + 1.0, b.w - 2.0, bar - 1.0, ui.header)
-	title_color := ui.dim
-	if front do title_color = ui.ink
-	_ = text_draw(&ui.text, r, panel_title(pn.kind), b.x + PAD, b.y + ROW_PAD, title_color)
-	close_box := close_rect(ui, pn)
-	_ = text_draw(&ui.text, r, "x", close_box.x + floor_f32((close_box.w - text_width(&ui.text, "x")) * 0.5), b.y + ROW_PAD, ui.dim)
-	if pn.kind == DOCS_PANEL {
-		pin := pin_rect(ui, pn)
-		pin_color := ui.dim
-		if ui.docs_pinned do pin_color = ui.accent
-		_ = text_draw(&ui.text, r, pin_label(ui), pin.x + PAD, b.y + ROW_PAD, pin_color)
-		reload := reload_rect(ui, pn)
-		_ = text_draw(&ui.text, r, "reload", reload.x + PAD, b.y + ROW_PAD, ui.dim)
-	}
-
-	c := content_rect(ui, pn)
+	c := pn.content
 	fill(r, c.x, c.y, c.w, c.h, ui.background)
 	clip := SDL_Rect{x = i32(c.x), y = i32(c.y), w = i32(c.w), h = i32(c.h)}
 	_ = SetRenderClipRect(r, &clip)
@@ -452,25 +851,18 @@ ask_parts :: fun(ui: ^Ui, r: Rect) -> Rect, Rect {
 	return Rect{x = r.x, y = r.y, w = r.w, h = h}, Rect{x = r.x, y = r.y + h + 1.0, w = r.w, h = r.h - h - 1.0}
 }
 
+// ---- The menus ----
+
 // A menu's name, as its button shows it.
 menu_name :: fun(m: i64) -> str64 {
 	if m == MENU_PANELS do return "Panels"
 	return "Theme"
 }
 
-// Menu m's button in the menu bar: after the ones before it.
-menu_button_rect :: fun(ui: ^Ui, m: i64) -> Rect {
-	x : f32 = 0
-	for k in 0:m {
-		x += text_width(&ui.text, menu_name(k)) + 2.0 * PAD
-	}
-	return Rect{x = x, y = 0, w = text_width(&ui.text, menu_name(m)) + 2.0 * PAD, h = bar_height(ui)}
-}
-
 // The menu button at (x, y); -1 for none.
-menu_button_at :: fun(ui: ^Ui, x: f32, y: f32) -> i64 {
+menu_button_at :: fun(ui: ^Ui, lay: ^clay.Context, x: f32, y: f32) -> i64 {
 	for m in 0:MENUS {
-		if inside(menu_button_rect(ui, m), x, y) do return m
+		if in_part(ui, lay, "Menu", m, x, y) do return m
 	}
 	return -1
 }
@@ -503,116 +895,56 @@ menu_item_boxed :: fun(m: i64, k: i64) -> bool {
 	return not (m == MENU_PANELS and k == PANEL_KINDS)
 }
 
-// Menu m's width: its widest item's, a box to tick beside it, room.
-menu_width :: fun(ui: ^Ui, m: i64) -> f32 {
-	w : f32 = 0
+// The open menu's item at (x, y), as last laid out; -1 for none.
+menu_item_at :: fun(ui: ^Ui, lay: ^clay.Context, m: i64, x: f32, y: f32) -> i64 {
 	for k in 0 : menu_items(m) {
-		w = max_f32(w, text_width(&ui.text, menu_item_text(m, k)))
-	}
-	return ceil_f32(w + ui.text.line + 3.0 * PAD)
-}
-
-// Item k of menu m, below its button: Reset layout below a line.
-menu_item_rect :: fun(ui: ^Ui, m: i64, k: i64) -> Rect {
-	bar := bar_height(ui)
-	y := bar + f32(k) * bar
-	if m == MENU_PANELS and k == PANEL_KINDS do y += 5.0
-	return Rect{x = menu_button_rect(ui, m).x, y = y, w = menu_width(ui, m), h = bar}
-}
-
-// Menu m's item at (x, y); -1 for none.
-menu_item_at :: fun(ui: ^Ui, m: i64, x: f32, y: f32) -> i64 {
-	for k in 0 : menu_items(m) {
-		if inside(menu_item_rect(ui, m, k), x, y) do return k
+		if in_part(ui, lay, "MenuItem", k, x, y) do return k
 	}
 	return -1
-}
-
-// The menu bar: its menus' buttons, the open one's lit.
-draw_menu_bar :: fun(ui: ^Ui) {
-	r := ui.renderer
-	bar := bar_height(ui)
-	fill(r, 0, 0, ui.width, bar, ui.header)
-	fill(r, 0, bar - 1.0, ui.width, 1.0, ui.border)
-	for m in 0:MENUS {
-		button := menu_button_rect(ui, m)
-		if ui.menu_open == m do fill(r, button.x, button.y, button.w, button.h - 1.0, ui.hover)
-		_ = text_draw(&ui.text, r, menu_name(m), button.x + PAD, ROW_PAD, ui.ink)
-	}
-}
-
-// Menu m: its items, each with a box, filled when it's ticked.
-draw_menu :: fun(ui: ^Ui, m: i64) {
-	r := ui.renderer
-	n := menu_items(m)
-	last := menu_item_rect(ui, m, n - 1)
-	top := bar_height(ui)
-	x := last.x
-	w := last.w
-	fill(r, x, top, w + 1.0, last.y + last.h - top + 1.0, ui.border)
-	fill(r, x, top, w, last.y + last.h - top, ui.header)
-	hovered := menu_item_at(ui, m, ui.mouse_x, ui.mouse_y)
-	ui.menu_hover = hovered
-	box := floor_f32(ui.text.line * 0.6)
-	for k in 0:n {
-		item := menu_item_rect(ui, m, k)
-		if k == hovered do fill(r, item.x, item.y, item.w, item.h, ui.hover)
-		if not menu_item_boxed(m, k) {
-			fill(r, x + PAD, item.y - 3.0, w - 2.0 * PAD, 1.0, ui.border)
-			_ = text_draw(&ui.text, r, menu_item_text(m, k), x + PAD, item.y + ROW_PAD, ui.ink)
-			continue
-		}
-		bx := x + PAD
-		by := floor_f32(item.y + (item.h - box) * 0.5)
-		fill(r, bx, by, box, box, ui.dim)
-		fill(r, bx + 1.0, by + 1.0, box - 2.0, box - 2.0, ui.header)
-		if menu_item_ticked(ui, m, k) do fill(r, bx + 3.0, by + 3.0, box - 6.0, box - 6.0, ui.accent)
-		_ = text_draw(&ui.text, r, menu_item_text(m, k), bx + box + PAD, item.y + ROW_PAD, ui.ink)
-	}
 }
 
 // The Keys panel: what the mouse and keys do.
 draw_keys :: fun(ui: ^Ui, r: Rect) {
 	keys : [19!][]utf8
 	does : [19!][]utf8
-	keys[18] = "Drag a column title"
-	does[18] = "move its column; the left ones are what a narrow panel shows"
 	keys[0] = "Click a column title"
 	does[0] = "sort the profile by it; again: the other way"
-	keys[17] = "Click a bar of the profile's chart"
-	does[17] = "the chart shows that fun alone; its top bar, or a caller named above it: back out"
-	keys[1] = "Wheel"
-	does[1] = "scroll the panel under the mouse"
-	keys[2] = "Up, Down, PageUp, PageDown, Home, End"
-	does[2] = "scroll the front panel"
-	keys[3] = "Shift+wheel, Left, Right"
-	does[3] = "scroll the profile sideways"
-	keys[4] = "Select words in Sublime"
-	does[4] = "Docs looks them up (the Mara Ask plugin)"
-	keys[5] = "Mara Ask in Sublime"
-	does[5] = "Ask shows its query and answer"
-	keys[6] = "Drag a title bar"
-	does[6] = "move its panel"
-	keys[7] = "Drag an edge or corner"
-	does[7] = "resize its panel"
-	keys[8] = "x in a title bar"
-	does[8] = "hide its panel"
-	keys[9] = "Panels (top left)"
-	does[9] = "show or hide panels, reset the layout"
-	keys[10] = "Theme (top left)"
-	does[10] = "dark or light"
-	keys[11] = "pin in the Docs title bar"
-	does[11] = "keep what's shown; lookups wait until it's unpinned"
-	keys[12] = "Click a call in Crash"
-	does[12] = "open its file at its line in the editor"
-	keys[13] = "Click a title in Docs"
-	does[13] = "open the file it's defined in, at its line, in the editor"
-	keys[14] = "F5, or reload in the Docs title bar"
-	does[14] = "look what Docs shows up again: your edits shown, the scroll kept"
-	keys[15] = "Drag over text; double, triple click"
-	does[15] = "select it; a word; a line (Docs, Ask, Crash)"
-	keys[16] = "Ctrl+C, Ctrl+A"
-	does[16] = "copy what's selected, code's indent as tabs; select all of the front panel"
+	keys[1] = "Drag a column title"
+	does[1] = "move its column; the left ones are what a narrow panel shows"
+	keys[2] = "Click a bar of the profile's chart"
+	does[2] = "the chart shows that fun alone; its top bar, or a caller named above it: back out"
+	keys[3] = "Wheel"
+	does[3] = "scroll the panel under the mouse"
+	keys[4] = "Up, Down, PageUp, PageDown, Home, End"
+	does[4] = "scroll the panel last clicked"
+	keys[5] = "Shift+wheel, Left, Right"
+	does[5] = "scroll the profile sideways"
+	keys[6] = "Select words in Sublime"
+	does[6] = "Docs looks them up (the Mara Ask plugin)"
+	keys[7] = "Mara Ask in Sublime"
+	does[7] = "Ask shows its query and answer"
+	keys[8] = "Drag a title bar onto a panel"
+	does[8] = "put its panel above or below that one; onto its left or right edge: in a column of its own"
+	keys[9] = "Drag the gap between panels"
+	does[9] = "resize them"
+	keys[10] = "x in a title bar"
+	does[10] = "hide its panel"
+	keys[11] = "Panels (top left)"
+	does[11] = "show or hide panels, reset the layout"
+	keys[12] = "Theme (top left)"
+	does[12] = "dark or light"
+	keys[13] = "pin in the Docs title bar"
+	does[13] = "keep what's shown; lookups wait until it's unpinned"
+	keys[14] = "Click a call in Crash"
+	does[14] = "open its file at its line in the editor"
+	keys[15] = "Click a title in Docs"
+	does[15] = "open the file it's defined in, at its line, in the editor"
+	keys[16] = "F5, or reload in the Docs title bar"
+	does[16] = "look what Docs shows up again: your edits shown, the scroll kept"
+	keys[17] = "Drag over text; double, triple click"
+	does[17] = "select it; a word; a line (Docs, Ask, Crash)"
+	keys[18] = "Ctrl+C, Ctrl+A"
+	does[18] = "copy what's selected, code's indent as tabs; select all of the panel last clicked"
 	widest : f32 = 0
 	for k in keys {
 		widest = max_f32(widest, text_width(&ui.text, k))
@@ -627,13 +959,16 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 	}
 }
 
+// ---- layout.txt ----
+
 // The layout written to layout.txt:
 //   mara view layout
 //   window <width> <height>
 //   theme <dark, light or sublime>
 //   own_crash <time>   (the window's own crash.txt's, when it last looked)
 //   columns <title> ...   (the profile's columns, left to right: column_key's words)
-//   panel <name> <shown: 0 or 1> <x> <y> <width> <height>   (back to front)
+//   split <share> ...     (the panels' columns' widths, in thousandths, from the left)
+//   panel <name> <shown: 0 or 1> <column> <share>   (a column's from its top; its share of the column's height, thousandths)
 // (A layout that can't be written is just not kept.)
 layout_save :: fun(ui: ^Ui) {
 	text : [1400]utf8
@@ -660,6 +995,11 @@ layout_save :: fun(ui: ^Ui) {
 		&text ++ " "
 		&text ++ column_key(title)
 	}
+	&text ++ "\nsplit"
+	for c in 0:MAX_COLS {
+		&text ++ " "
+		&text ++ int_text(i64(ui.col_weight[c] * 1000.0 + 0.5))
+	}
 	&text ++ "\n"
 	for pn in ui.panels {
 		&text ++ "panel "
@@ -667,29 +1007,28 @@ layout_save :: fun(ui: ^Ui) {
 		&text ++ " "
 		&text ++ int_text(i64(pn.shown))
 		&text ++ " "
-		&text ++ int_text(i64(floor_f32(pn.box.x + 0.5)))
+		&text ++ int_text(pn.column)
 		&text ++ " "
-		&text ++ int_text(i64(floor_f32(pn.box.y + 0.5)))
-		&text ++ " "
-		&text ++ int_text(i64(floor_f32(pn.box.w + 0.5)))
-		&text ++ " "
-		&text ++ int_text(i64(floor_f32(pn.box.h + 0.5)))
+		&text ++ int_text(i64(pn.weight * 1000.0 + 0.5))
 		&text ++ "\n"
 	}
 	_ = write_entire_file(ui.layout_path, text)
 }
 
-// The layout read from layout.txt: the theme, the panels it names, in its
-// order, and the window's size it had (ui.saved_width, saved_height); a
-// panel kind it doesn't name, as the default layout has it. False when
-// there's none — or it isn't one: the default layout then.
+// The layout read from layout.txt, over the default one: the theme, the
+// window's size it had (ui.saved_width, saved_height), the columns'
+// widths, and each panel it names — its column, its share, shown or not,
+// in its order. A panel line of the floating layouts before (six numbers)
+// says only whether it's shown. False when there's no layout.txt — or it
+// isn't one.
 layout_load :: fun(ui: ^Ui) -> bool {
 	buf : [4000]byte
 	data, re := read_entire_file(ui.layout_path, &buf)
 	if re do return false
 	text : []utf8 = data
-	ui.panels.len = 0
+	default_layout(ui)
 	first := true
+	tiled := false   // (it says where the panels are tiled: not a layout from before they were)
 	at : i64 = 0
 	for at < text.len {
 		stop := at
@@ -750,45 +1089,52 @@ layout_load :: fun(ui: ^Ui) -> bool {
 				if not has_title(ui, t) do &ui.columns ++ t
 			}
 		}
-		if head == "panel" and words.len == 7 {
+		if head == "split" {
+			tiled = true
+			for k in 1:words.len {
+				share, _ := parse_number(word_text(line, words[k]))
+				if k - 1 < MAX_COLS and share >= 1.0 do ui.col_weight[k - 1] = f32(share) / 1000.0
+			}
+		}
+		if head == "panel" and words.len >= 3 {
 			name := word_text(line, words[1])
-			kind : i64 = -1
-			for k in 0:PANEL_KINDS {
-				if name == panel_name(k) do kind = k
+			i : i64 = -1
+			for pn, k in ui.panels {
+				if name == panel_name(pn.kind) do i = k
 			}
-			if kind >= 0 and find_panel(ui, kind) < 0 and ui.panels.len < ui.panels.cap {
-				shown, _ := parse_number(word_text(line, words[2]))
-				x, _ := parse_number(word_text(line, words[3]))
-				y, _ := parse_number(word_text(line, words[4]))
-				bw, _ := parse_number(word_text(line, words[5]))
-				bh, _ := parse_number(word_text(line, words[6]))
-				&ui.panels ++ Panel{kind = kind, shown = shown > 0.5, box = Rect{x = f32(x), y = f32(y), w = f32(bw), h = f32(bh)}}
+			if i < 0 do continue
+			shown, _ := parse_number(word_text(line, words[2]))
+			pn := ui.panels[i]
+			pn.shown = shown > 0.5
+			if words.len == 5 {
+				tiled = true
+				column, _ := parse_number(word_text(line, words[3]))
+				share, _ := parse_number(word_text(line, words[4]))
+				pn.column = max_int(0, min_int(i64(column), MAX_COLS - 1))
+				pn.weight = max_f32(f32(share) / 1000.0, 0.01)
+				// (To the end: the panels come out in the file's order.)
+				for k in i : ui.panels.len - 1 {
+					ui.panels[k] = ui.panels[k + 1]
+				}
+				i = ui.panels.len - 1
 			}
+			ui.panels[i] = pn
 		}
 	}
-	if first or ui.panels.len == 0 do return false
-	// (Kinds it doesn't name — panels newer than it: where the default
-	// layout has them, in front, to be seen.)
-	saved : [8]Panel
-	for pn in ui.panels {
-		&saved ++ pn
-	}
-	default_layout(ui)
-	defaults : [8]Panel
-	for pn in ui.panels {
-		&defaults ++ pn
-	}
-	ui.panels.len = 0
-	for pn in saved {
-		&ui.panels ++ pn
-	}
-	for pn in defaults {
-		named := false
-		for s in saved {
-			if s.kind == pn.kind do named = true
+	if first do return false
+	if not tiled {
+		// (A layout of floating panels: the default tiling for the window's
+		// shape as it was, each panel shown or not as it was.)
+		were : [PANEL_KINDS!]bool
+		for pn in ui.panels {
+			were[pn.kind] = pn.shown
 		}
-		if not named do &ui.panels ++ pn
+		default_layout_for(ui, ui.saved_width >= ui.saved_height * 1.1)
+		for k in 0:ui.panels.len {
+			ui.panels[k].shown = were[ui.panels[k].kind]
+		}
 	}
+	compact_columns(ui)
 	return true
 }
 
