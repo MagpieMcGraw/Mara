@@ -25,6 +25,7 @@ Units :: struct {
     outer:   map[Token_Id]Token_Id,   // each definition written in another's: that one
     loose:   map[u16]bool,        // the files with an error in a statement of the module's own
     via:     map[Token_Id]Token_Id,   // each definition broken by naming a broken head: that one
+    met:     map[Token_Id]bool,       // the calls given the head they need (by the call's name's token)
 }
 
 // The definition an error at a token is in (0: none — a statement of its
@@ -64,11 +65,19 @@ units_find :: proc(k: ^TC, errors: []Token_Id) -> ^Units {
     User :: struct { def: Token_Id, in_body: bool }
     users := make(map[Token_Id][dynamic]User, context.temp_allocator)
     note :: proc(u: ^Units, users: ^map[Token_Id][dynamic]User, at, decl: Token_Id) {
-        if decl == 0 || int(decl) >= len(u.def) { return }
+        if decl == 0 || int(decl) >= len(u.def) || u.met[at] { return }
         target, user := u.def[decl], u.def[at]
         if target == 0 || user == 0 || target == user { return }
         if target not_in users { users[target] = make([dynamic]User, context.temp_allocator) }
         append(&users[target], User{user, u.in_body[at]})
+    }
+    // (A call checked against what it needs — requires.odin — names no head it depends on.)
+    for sid, ts in k.annot.callees {
+        if ts == nil { continue }
+        if _, needed := ts.origin.(Origin_Required); needed {
+            _, n := annot_split(sid)
+            u.met[t.main[n]] = true
+        }
     }
     // (As the name table found each name, as the checker settled it — a
     // field, a method — and each call's fun.)
@@ -205,11 +214,22 @@ units_report :: proc(k: ^TC, errors: []Diagnostic) -> string {
     for d in with { fmt.sbprintf(&b, "  %s  %s   (uses %s)\n", units_name(u, d), place(d), units_name(u, u.via[d])) }
     said(&b, u, groups[:], false, "\nerrors in scopes that answer all the same:\n")
     // (What calls need that nothing defines yet: requires.odin.)
-    if len(k.required) > 0 { strings.write_string(&b, "\nnot defined yet — needed as:\n") }
-    for r in k.required {
-        fmt.sbprintf(&b, "  %s   %s", required_text(r.name, r.ft), ask_loc(r.at))
-        if r.by != nil && r.by.source_name != "" { fmt.sbprintf(&b, ", in %s", r.by.source_name) }
-        strings.write_byte(&b, '\n')
+    // (Each call's own need: two callers that need a name two ways are both listed.)
+    needs :: proc(b: ^strings.Builder, k: ^TC, defined: bool, title: string) {
+        first := true
+        said := make(map[string]bool, context.temp_allocator)   // (two calls on a line that need the same: once)
+        for r in k.required {
+            if (r.ft.origin.(Origin_Required).of != nil) != defined { continue }
+            line := fmt.tprintf("  %s   %s", required_text(r.name, r.ft), ask_loc(r.at))
+            if r.by != nil && r.by.source_name != "" { line = fmt.tprintf("%s, in %s", line, r.by.source_name) }
+            if said[line] { continue }
+            said[line] = true
+            if first { strings.write_string(b, title); first = false }
+            strings.write_string(b, line)
+            strings.write_byte(b, '\n')
+        }
     }
+    needs(&b, k, false, "\nnot defined yet — needed as:\n")
+    needs(&b, k, true, "\ncalled before its head checks — as:\n")
     return strings.to_string(b)
 }

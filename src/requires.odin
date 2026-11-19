@@ -54,6 +54,48 @@ tc_required_fun :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id, span:
     return ft
 }
 
+// The head a call of `f` needs where f's own doesn't check — a param's
+// type, its result's, an error there: what checks taken as written, the rest
+// from the call as an undefined fun's is. nil when f's head checks, a
+// build's check is asked, or the call doesn't say what it needs (an unknown
+// result where nothing says its type; an unknown param the call leaves to
+// its default): then the call is checked against f as it is, and what
+// calls it is left out with it, as before.
+tc_required_head :: proc(k: ^TC, n: Tree_Id, f: ^Type_Scope, args: []Tree_Id, span: Span) -> ^Type_Scope {
+    if !k.run.partial || f.kind != .Fun || f.node == 0 { return nil }
+    failed :: proc(t: Type) -> bool {
+        _, is_error := t.(Type_Error)
+        return is_error
+    }
+    broken := false
+    for p in f.params { broken ||= failed(p.type_) }
+    for r in f.return_types { broken ||= failed(r) }
+    if !broken || len(args) > len(f.params) { return nil }
+    ft := new(Type_Scope)
+    ft.kind = .Fun
+    ft.name, ft.source_name, ft.home_package, ft.decl = f.name, f.source_name, f.home_package, f.decl
+    ft.origin = Origin_Required{of = f}
+    for r in f.return_types {
+        if !failed(r) { append(&ft.return_types, r); continue }
+        if len(f.return_types) != 1 || n == k.dropped || k.hint == nil || is_infer(k.hint) || is_any(k.hint) || failed(k.hint) { return nil }
+        append(&ft.return_types, k.hint)
+    }
+    hint := k.hint
+    defer k.hint = hint
+    for p, i in f.params {
+        p := p
+        if failed(p.type_) {
+            if i >= len(args) { return nil }
+            k.hint = nil
+            p.type_ = solidify_type(tc_check(k, args[i]))
+            if p.type_ == nil || failed(p.type_) { return nil }
+        }
+        append(&ft.params, p)
+    }
+    append(&k.required, Required{f.source_name, span, ft, k.body})
+    return ft
+}
+
 // A required fun as it would be written: `name :: fun(a1: T, a2: U) -> R`.
 required_text :: proc(name: string, ft: ^Type_Scope) -> string {
     b := strings.builder_make(context.temp_allocator)

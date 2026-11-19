@@ -102,6 +102,8 @@ build_call_graph :: proc(checked: ^Checked_Program) -> Call_Graph {
         // honest seam.)
         if a.forms[key] == .Value { continue }
         callee := a.callees[key]
+        // (A call checked against what it needs of a fun whose head doesn't check: that fun's.)
+        if needed, is_needed := callee.origin.(Origin_Required); is_needed && needed.of != nil { callee = needed.of }
         callers, implied := cg_runs_in(&rc, key)
         for caller in callers {
             from, to := cg_node(&g, caller), cg_node(&g, callee)

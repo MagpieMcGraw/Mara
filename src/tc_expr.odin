@@ -920,6 +920,8 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
         tc_unsupported(k, n, "a call of this")
         return Type_Error{}
     }
+    // (A tool's check: a fun whose head doesn't check, called as the call needs it — requires.odin.)
+    if needed := tc_required_head(k, n, ft, args, span); needed != nil { ft = needed }
     is_struct := ft.kind == .Struct
     // (`f(args) {x = v}`: the fields given written into what the call
     // gives — a struct's constructor's, any fun's that gives a struct.)
