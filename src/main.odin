@@ -2077,6 +2077,11 @@ parse_args :: proc() -> CLI_Args {
         args.x86 ||= spec.x86
         args.no_console ||= spec.no_console
         args.crt ||= spec.crt
+        args.profile ||= spec.profile == "time"
+        args.profile_memory ||= spec.profile == "memory"
+        // (Its profile_skip: what a time profile of it leaves untimed, however
+        // the profile is asked for — its `profile`, or `-profile time`.)
+        if args.profile { for name in spec.profile_skip { append(&args.profile_skip, name) } }
         // (Its icon: read now, a wrong one said before the build, not after.)
         if spec.icon != "" && subcmd == "build" {
             ico, err := os.read_entire_file_from_path(spec.icon, context.allocator)
@@ -2351,7 +2356,7 @@ main :: proc() {
             found := false
             for _, f in checked.functions { if f.home_package == name { found = true; break } }
             if !found {
-                fmt.printf("-skip %s: the program has no fun in a module of that name.\n", name)
+                fmt.printf("-skip %s: the program has no fun in a module of that name (-skip, or build.mara's profile_skip).\n", name)
                 os.exit(1)
             }
         }

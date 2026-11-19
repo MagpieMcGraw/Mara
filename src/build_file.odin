@@ -16,7 +16,8 @@ import "core:strings"
 // (`Build()` its defaults, then the fields written: Mara's construct and
 // override. `Build{...}`, a literal, is read the same.) Read as written, not
 // checked or run: each field's value is text in quotes, true or false, or a
-// list of text in square brackets. A build.mara that isn't `module build` is
+// list of text in square brackets. What a flag does a field does too
+// (release, x86, console, crt, profile, profile_skip): flags add to them. A build.mara that isn't `module build` is
 // a module's file like any other.
 
 // One build build.mara declares.
@@ -30,6 +31,8 @@ Build_Spec :: struct {
     x86:     bool,
     no_console: bool,           // console = false
     crt:        bool,           // crt = true
+    profile:    string,         // "time" or "memory": built as -profile builds it; "": not
+    profile_skip: [dynamic]string,   // modules a time profile doesn't time, as -skip's
 }
 
 // What Build's fields hold (code/build.mara): their rooms, checked here as
@@ -37,8 +40,10 @@ Build_Spec :: struct {
 BUILD_NAME_ROOM :: 64    // module_name, out: str64
 BUILD_DIRS_MAX  :: 6     // dirs: [6][96]utf8, icon: [96]utf8 (a whole Build under the stack's 1 KB)
 BUILD_PATH_ROOM :: 96
+BUILD_PROFILE_ROOM :: 8  // profile: [8]utf8
+BUILD_SKIP_MAX  :: 4     // profile_skip: [4][64]utf8
 
-BUILD_FIELDS :: "module_name, dirs, out, icon, release, x86, console, crt"
+BUILD_FIELDS :: "module_name, dirs, out, icon, release, x86, console, crt, profile, profile_skip"
 
 // The builds the build.mara in `dir` declares. found: there is one, `module
 // build`. problem: what's wrong in it, said where.
@@ -140,6 +145,24 @@ build_file_read :: proc(dir: string) -> (specs: [dynamic]Build_Spec, found: bool
                     if !filepath.is_abs(s) { full, _ = filepath.join({dir, s}) }
                     if !os.is_dir(full) { return specs, found, say(path, source, d, "no folder `%s` (from build.mara's folder).", s) }
                     append(&spec.dirs, full)
+                    i += 1
+                }
+            case "profile":
+                s, ok := text(v, BUILD_PROFILE_ROOM)
+                if !ok || (s != "" && s != "time" && s != "memory") { return specs, found, say(path, source, v, "`profile` is \"time\" or \"memory\", in quotes (\"\": neither).") }
+                spec.profile = s
+                i += 1
+            case "profile_skip":
+                if v.kind != .Left_Bracket { return specs, found, say(path, source, v, "`profile_skip` is a list of modules in square brackets: `profile_skip = [\"mara.math\"]`.") }
+                i += 1
+                for {
+                    for toks[i].kind == .Newline || toks[i].kind == .Comma { i += 1 }
+                    d := toks[i]
+                    if d.kind == .Right_Bracket { i += 1; break }
+                    s, ok := text(d, BUILD_NAME_ROOM)
+                    if !ok || s == "" { return specs, found, say(path, source, d, "each of `profile_skip` is a module's name of up to %d bytes, in quotes.", BUILD_NAME_ROOM) }
+                    if len(spec.profile_skip) == BUILD_SKIP_MAX { return specs, found, say(path, source, d, "`profile_skip` has room for %d modules.", BUILD_SKIP_MAX) }
+                    append(&spec.profile_skip, s)
                     i += 1
                 }
             case "icon":

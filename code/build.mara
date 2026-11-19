@@ -10,6 +10,7 @@ use mara.core
 //
 //     game :: Build(){dirs = ["../engine"], icon = "game.ico", release = true}
 //     tools :: Build(){dirs = ["../engine"]}
+//     timed :: Build(){module_name = "game", out = "game_timed", release = true, profile = "time", profile_skip = ["mara.math"]}
 //
 // `Build()` is a build with every field its default; the braces after it
 // set the fields written (Mara's construct and override). `mara build`
@@ -51,4 +52,14 @@ Build :: struct {
 	// Visual Studio's C library installed. A Windows program is otherwise
 	// built with none: its runtime is Mara's own.
 	crt: bool = false
+	// What the program measures of itself as it runs, as `-profile` does.
+	// "time": how long each fun takes, written to profile.txt beside the
+	// program when it ends. "memory": how full each partial array and arena
+	// gets, written to memory.txt. Empty: nothing.
+	profile: [8]utf8
+	// Modules whose funs a time profile doesn't time, as `-skip` does: up
+	// to 4 names of up to 64 bytes each. Their funs are optimized as in any
+	// build, and their time is their callers' own. It applies whenever the
+	// build is time profiled, by `profile` here or by `-profile time`.
+	profile_skip: [4][64]utf8
 }
