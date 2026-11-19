@@ -40,6 +40,7 @@ DRAG_NONE   :: 0
 DRAG_MOVE   :: 1
 DRAG_RESIZE :: 2
 DRAG_SELECT :: 3   // selecting its text (select.mara)
+DRAG_COLUMN :: 4   // moving a column of the profile's table (profile_view.mara)
 
 // The edges a resize moves (bits).
 EDGE_LEFT   :: 1
@@ -572,8 +573,10 @@ draw_menu :: fun(ui: ^Ui, m: i64) {
 
 // The Keys panel: what the mouse and keys do.
 draw_keys :: fun(ui: ^Ui, r: Rect) {
-	keys : [18!][]utf8
-	does : [18!][]utf8
+	keys : [19!][]utf8
+	does : [19!][]utf8
+	keys[18] = "Drag a column title"
+	does[18] = "move its column; the left ones are what a narrow panel shows"
 	keys[0] = "Click a column title"
 	does[0] = "sort the profile by it; again: the other way"
 	keys[17] = "Click a bar of the profile's chart"
@@ -629,10 +632,11 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 //   window <width> <height>
 //   theme <dark, light or sublime>
 //   own_crash <time>   (the window's own crash.txt's, when it last looked)
+//   columns <title> ...   (the profile's columns, left to right: column_key's words)
 //   panel <name> <shown: 0 or 1> <x> <y> <width> <height>   (back to front)
 // (A layout that can't be written is just not kept.)
 layout_save :: fun(ui: ^Ui) {
-	text : [1000]utf8
+	text : [1400]utf8
 	&text ++ "mara view layout\nwindow "
 	&text ++ int_text(i64(ui.width))
 	&text ++ " "
@@ -651,6 +655,12 @@ layout_save :: fun(ui: ^Ui) {
 		&text ++ ui.own_crash_seen
 		&text ++ "\n"
 	}
+	&text ++ "columns"
+	for title in ui.columns {
+		&text ++ " "
+		&text ++ column_key(title)
+	}
+	&text ++ "\n"
 	for pn in ui.panels {
 		&text ++ "panel "
 		&text ++ panel_name(pn.kind)
@@ -692,7 +702,7 @@ layout_load :: fun(ui: ^Ui) -> bool {
 		if line.len > 0 {
 			if line[line.len - 1] == '\r' do line = line[0 : line.len - 1]
 		}
-		words : [8]Field
+		words : [12]Field
 		w_at : i64 = 0
 		for w_at < line.len {
 			w := next_word(line, w_at)
@@ -720,6 +730,24 @@ layout_load :: fun(ui: ^Ui) -> bool {
 			name := word_text(line, words[1])
 			for theme in 0:3 {
 				if same_folded(name, theme_name(theme)) do theme_set(ui, theme)
+			}
+		}
+		if head == "columns" {
+			// (The titles it names, in its order; then any it doesn't, as
+			// they were: the default's.)
+			were : [KNOWN]i64
+			for t in ui.columns {
+				&were ++ t
+			}
+			ui.columns.len = 0
+			for k in 1:words.len {
+				name := word_text(line, words[k])
+				for t in 0:KNOWN {
+					if name == column_key(t) and not has_title(ui, t) do &ui.columns ++ t
+				}
+			}
+			for t in were {
+				if not has_title(ui, t) do &ui.columns ++ t
 			}
 		}
 		if head == "panel" and words.len == 7 {

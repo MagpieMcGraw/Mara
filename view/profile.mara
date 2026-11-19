@@ -98,6 +98,45 @@ column_title :: fun(k: i64) -> str64 {
 	return "where"
 }
 
+// A title's word in layout.txt, where the columns' order is kept.
+column_key :: fun(k: i64) -> str64 {
+	if k == 0 do return "total"
+	if k == 1 do return "self"
+	if k == 2 do return "calls"
+	if k == 3 do return "avg"
+	if k == 4 do return "min"
+	if k == 5 do return "median"
+	if k == 6 do return "max"
+	if k == 7 do return "probes"
+	if k == 8 do return "fun"
+	return "where"
+}
+
+// The columns' order when layout.txt names none: the fun and how much of
+// its time is the profiler's first — what a narrow panel shows — then its
+// times, where it's written last.
+columns_default :: fun(ui: ^Ui) {
+	ui.columns.len = 0
+	&ui.columns ++ 8
+	&ui.columns ++ 7
+	&ui.columns ++ 0
+	&ui.columns ++ 1
+	&ui.columns ++ 2
+	&ui.columns ++ 3
+	&ui.columns ++ 5
+	&ui.columns ++ 4
+	&ui.columns ++ 6
+	&ui.columns ++ 9
+}
+
+// Whether a title is among the window's columns.
+has_title :: fun(ui: ^Ui, title: i64) -> bool {
+	for t in ui.columns {
+		if t == title do return true
+	}
+	return false
+}
+
 // Whether the title's column holds numbers (all but fun and where).
 is_number :: fun(k: i64) -> bool {
 	return k < 8

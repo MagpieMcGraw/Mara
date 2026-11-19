@@ -69,6 +69,9 @@ Ui :: struct {
 
 	// The Profile panel's.
 	hover_row: i64 = -1      // the row under the mouse as last drawn; -1: none
+	columns:  [KNOWN]i64   // the table's columns left to right, by title: what a narrow panel shows first (layout.txt's)
+	drag_title: i64          // the title of the column dragged (DRAG_COLUMN)
+	drag_moved: bool         // ... it has moved: not a click
 	scroll:   i64            // the first row shown
 	scroll_x: f32            // pixels the table is scrolled sideways
 
@@ -134,6 +137,7 @@ main :: fun(args: [][]utf8) -> i64 {
 	p := Profile()
 	hub : Hub
 	theme_set(&ui, THEME_DARK)
+	columns_default(&ui)
 
 	// (Its font and its layout beside it: the directory of its own file —
 	// exe_path's, however it was started; args[0] is what its
@@ -318,7 +322,11 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 			// held now: the drag's over, its release missed or not.)
 			x, y, held := cursor_now(ui)
 			if held {
-				drag_to(ui, x, y)
+				if ui.drag == DRAG_COLUMN {
+					column_drag(ui, p, x)
+				else
+					drag_to(ui, x, y)
+				}
 			else
 				end_drag(ui)
 			}
@@ -354,6 +362,7 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 		}
 	MouseButtonUp
 		if e.button == 1 {
+			if ui.drag == DRAG_COLUMN do column_drop(ui, p)
 			end_drag(ui)
 		}
 	MouseWheel

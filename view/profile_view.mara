@@ -5,10 +5,13 @@ use mara.string
 use mara.math
 use mara.sdl
 
-// The Profile panel: profile.txt's header lines, the chart of its call tree,
-// its column titles, the rows that fit from the scroll on, a scroll bar, a
-// status line — drawn in the panel's content (r, a rectangle in the window,
-// pixels). A click on a column's title sorts by it.
+// The Profile panel: the chart of profile.txt's call tree, its column
+// titles, the rows that fit from the scroll on, a scroll bar, the file's
+// header lines wrapped to the panel, a status line — drawn in the panel's
+// content (r, a rectangle in the window, pixels). A click on a column's
+// title sorts by it. The columns are in the window's order (ui.columns),
+// the ones that matter most at the left, so a narrow panel still shows
+// them: a title dragged moves its column.
 //
 // The chart: bars within bars. The top bar is main, as wide as the chart:
 // the whole run. Under each bar are the funs it calls, each as wide as its
@@ -48,15 +51,16 @@ row_height :: fun(ui: ^Ui) -> f32 {
 	return ui.text.line + 2.0 * ROW_PAD
 }
 
-// Where the column titles' row begins: below the header lines and the chart.
+// Where the column titles' row begins: below the chart.
 table_top :: fun(ui: ^Ui, p: ^Profile, r: Rect) -> f32 {
 	return chart_top(ui, p, r) + chart_height(ui, p, r)
 }
 
-// How many rows fit between the titles and the status line.
+// How many rows fit between the titles and the header lines over the
+// status line.
 visible_rows :: fun(ui: ^Ui, p: ^Profile, r: Rect) -> i64 {
 	rows_top := table_top(ui, p, r) + row_height(ui)
-	rows_bottom := r.y + r.h - row_height(ui)
+	rows_bottom := r.y + r.h - row_height(ui) - notes_height(ui, p, r)
 	return max_int(i64((rows_bottom - rows_top) / row_height(ui)), 1)
 }
 
@@ -81,8 +85,9 @@ profile_hover :: fun(ui: ^Ui, p: ^Profile) -> i64 {
 	return row_at(ui, p, content_rect(ui, ui.panels[i]), ui.mouse_x, ui.mouse_y)
 }
 
-// A click in the panel: on a column's title, the rows sorted by it — a
-// number largest first, text A to Z; on the one sorted by, the other way.
+// A press in the panel: on a bar of the chart, its click; on a column's
+// title, a drag of it begun (column_drag) — let go where it was pressed,
+// that's a click: the rows sorted by it (column_drop).
 profile_click :: fun(ui: ^Ui, p: ^Profile, r: Rect, x: f32, y: f32) {
 	if p.problem.len > 0 do return
 	// (A bar: shown alone — the one that is: its caller instead. A caller
@@ -101,20 +106,110 @@ profile_click :: fun(ui: ^Ui, p: ^Profile, r: Rect, x: f32, y: f32) {
 	top := table_top(ui, p, r)
 	if y < top or y >= top + row_height(ui) do return
 	left := r.x + PAD - ui.scroll_x
-	for c in 0:p.columns.len {
+	for title in ui.columns {
+		c := column_of(p, title)
+		if c < 0 do continue
 		if x >= left and x < left + p.widths[c] {
-			if p.sort_by == c {
-				p.descending = not p.descending
-			else
-				p.sort_by = c
-				p.descending = is_number(p.columns[c])
-			}
-			ui.scroll = 0   // (the new order from its top)
-			profile_sort(p)
-			ui.dirty = true
+			ui.drag = DRAG_COLUMN
+			ui.drag_title = title
+			ui.drag_moved = false
 			return
 		}
 		left += p.widths[c]
+	}
+}
+
+// The mouse at x with a column's title held: once it has moved a little,
+// the column goes where the mouse is among the others — before the first
+// whose middle is right of it.
+column_drag :: fun(ui: ^Ui, p: ^Profile, x: f32) {
+	if abs_f32(x - ui.drag_x) > 6.0 do ui.drag_moved = true
+	if not ui.drag_moved do return
+	i := find_panel(ui, PROFILE_PANEL)
+	if i < 0 do return
+	r := content_rect(ui, ui.panels[i])
+	before : i64 = -1   // (the title it goes before; -1: after them all)
+	left := r.x + PAD - ui.scroll_x
+	for title in ui.columns {
+		if title == ui.drag_title do continue
+		c := column_of(p, title)
+		if c < 0 do continue
+		if x < left + p.widths[c] * 0.5 {
+			before = title
+			break
+		}
+		left += p.widths[c]
+	}
+	order : [KNOWN]i64
+	for title in ui.columns {
+		if title == ui.drag_title do continue
+		if title == before do &order ++ ui.drag_title
+		&order ++ title
+	}
+	if before < 0 do &order ++ ui.drag_title
+	for title, k in order {
+		ui.columns[k] = title
+	}
+	ui.dirty = true
+}
+
+// The title let go: where it was pressed, a click — the rows sorted by its
+// column, a number largest first, text A to Z; on the one sorted by, the
+// other way. Moved, its column stays where it was dragged.
+column_drop :: fun(ui: ^Ui, p: ^Profile) {
+	ui.dirty = true
+	if ui.drag_moved do return
+	c := column_of(p, ui.drag_title)
+	if c < 0 do return
+	if p.sort_by == c {
+		p.descending = not p.descending
+	else
+		p.sort_by = c
+		p.descending = is_number(ui.drag_title)
+	}
+	ui.scroll = 0   // (the new order from its top)
+	profile_sort(p)
+}
+
+// The header lines' height at the panel's bottom, wrapped to it: `lines`
+// of them. 0 for none.
+notes_size :: fun(ui: ^Ui, p: ^Profile, r: Rect, lines: i64) -> f32 {
+	if lines == 0 do return 0.0
+	count : i64 = 0
+	for k in 0:lines {
+		rows : [STATUS_ROWS]Line_Row
+		_ = wrap(ui, field_text(p, p.header[k]), STYLE_TEXT, r.w - 2.0 * PAD, 0, 0, &rows)
+		count += max_int(rows.len, 1)
+	}
+	return f32(count) * ui.text.line + 2.0 * ROW_PAD
+}
+
+// How many of the header lines the panel shows: all of them — only the
+// first, which profile it is, when all would take over a third of it.
+notes_lines :: fun(ui: ^Ui, p: ^Profile, r: Rect) -> i64 {
+	if notes_size(ui, p, r, p.header.len) <= r.h * 0.34 do return p.header.len
+	return min_int(p.header.len, 1)
+}
+
+// The height the header lines take at the panel's bottom.
+notes_height :: fun(ui: ^Ui, p: ^Profile, r: Rect) -> f32 {
+	return notes_size(ui, p, r, notes_lines(ui, p, r))
+}
+
+// The header lines drawn over the status line, a line above them: the
+// first, which profile it is, as text; the rest, what its numbers mean, dim.
+draw_notes :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
+	lines := notes_lines(ui, p, r)
+	if lines == 0 do return
+	h := notes_size(ui, p, r, lines)
+	top := r.y + r.h - row_height(ui) - h
+	fill(ui.renderer, r.x, top, r.w, h, ui.background)
+	fill(ui.renderer, r.x, top, r.w, 1.0, ui.border)
+	y := top + ROW_PAD
+	for k in 0:lines {
+		style := STYLE_DIM
+		if k == 0 do style = STYLE_TEXT
+		y = draw_wrapped(ui, field_text(p, p.header[k]), style, r.x + PAD, y, r.w - 2.0 * PAD)
 	}
 }
 
@@ -126,14 +221,6 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 		if p.missing do color = ui.dim
 		_ = text_draw(&ui.text, rd, p.problem, r.x + PAD, r.y + PAD, color)
 		return
-	}
-
-	y := r.y + PAD
-	for h, i in p.header {
-		color := ui.dim
-		if i == 0 do color = ui.ink
-		_ = text_draw(&ui.text, rd, field_text(p, h), r.x + PAD, y, color)
-		y += ui.text.line
 	}
 
 	// (What the mouse is over, the table's row or the chart's bar, before
@@ -150,16 +237,20 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 	fill(rd, r.x, top, r.w, row_h, ui.header)
 	ui.scroll_x = max_f32(0, min_f32(ui.scroll_x, table_width(p) - r.w))
 	left := r.x + PAD - ui.scroll_x
-	for c in 0:p.columns.len {
-		title := column_title(p.columns[c])
+	for title in ui.columns {
+		c := column_of(p, title)
+		if c < 0 do continue
+		// (The one being dragged: lit.)
+		if ui.drag == DRAG_COLUMN and ui.drag_moved and title == ui.drag_title do fill(rd, left, top, p.widths[c], row_h, ui.hover)
+		name := column_title(title)
 		color := ui.dim
 		if c == p.sort_by do color = ui.accent
 		x := left + PAD
-		if is_number(p.columns[c]) do x = left + p.widths[c] - PAD - text_width(&ui.text, title)
-		_ = text_draw(&ui.text, rd, title, x, top + ROW_PAD, color)
+		if is_number(title) do x = left + p.widths[c] - PAD - text_width(&ui.text, name)
+		_ = text_draw(&ui.text, rd, name, x, top + ROW_PAD, color)
 		if c == p.sort_by {
-			arrow_x := x + text_width(&ui.text, title) + 4.0
-			if is_number(p.columns[c]) do arrow_x = x - arrow_room(ui)
+			arrow_x := x + text_width(&ui.text, name) + 4.0
+			if is_number(title) do arrow_x = x - arrow_room(ui)
 			draw_arrow(ui, arrow_x, top + ROW_PAD, p.descending)
 		}
 		left += p.widths[c]
@@ -178,12 +269,14 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 		}
 		row := p.rows[p.order[at]]
 		left = r.x + PAD - ui.scroll_x
-		for c in 0:p.columns.len {
+		for title in ui.columns {
+			c := column_of(p, title)
+			if c < 0 do continue
 			s := field_text(p, row.fields[c])
 			color := ui.ink
-			if p.columns[c] == 9 do color = ui.dim   // (where: quieter)
+			if title == 9 do color = ui.dim   // (where: quieter)
 			x := left + PAD
-			if is_number(p.columns[c]) do x = left + p.widths[c] - PAD - text_width(&ui.text, s)
+			if is_number(title) do x = left + p.widths[c] - PAD - text_width(&ui.text, s)
 			_ = text_draw(&ui.text, rd, s, x, ry + ROW_PAD, color)
 			left += p.widths[c]
 		}
@@ -196,6 +289,8 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 		thumb_y := rows_top + (track - thumb) * f32(ui.scroll) / f32(p.rows.len - shown)
 		fill(rd, r.x + r.w - 8.0, thumb_y, 5.0, thumb, ui.dim)
 	}
+
+	draw_notes(ui, p, r)
 
 	// The status line.
 	status : [900]utf8
@@ -303,7 +398,7 @@ draw_arrow :: fun(ui: ^Ui, x: f32, y: f32, down: bool) {
 CHART_ROWS  :: 12     // the most rows of bars it has
 CHART_MIN   :: 3.0    // a bar narrower than this, in pixels, isn't shown alone
 BAR_PAD     :: 5.0    // room between a bar's edge and its words
-CHART_HINT  :: "Width: a fun's share of the run. Under a bar: what it calls. Click a bar to look closer."
+CHART_HINT  :: "Click a bar to look closer."
 CRUMB_ALL   :: "the whole run"
 CRUMB_ARROW :: "  →  "
 SELF_LABEL  :: "own code"
@@ -313,9 +408,9 @@ chart_bar_h :: fun(ui: ^Ui) -> f32 {
 	return ui.text.line + 4.0
 }
 
-// Where the chart begins: below the header lines.
+// Where the chart begins: the panel's top.
 chart_top :: fun(ui: ^Ui, p: ^Profile, r: Rect) -> f32 {
-	return r.y + PAD + f32(p.header.len) * ui.text.line + PAD
+	return r.y + ROW_PAD
 }
 
 // How many rows of bars the chart has: one for each depth of the tree,
