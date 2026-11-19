@@ -1,0 +1,91 @@
+// Laying out a user interface: mara.clay, a port of Nic Barker's Clay.
+//
+// You say what's on the screen as elements inside elements. Each says how
+// it sizes itself and how its children are set out; text goes in as text.
+// The layout then gives back a list of commands — rectangles, borders,
+// lines of text, where to clip — each with its box, in the order to draw
+// them. Drawing them is the program's: Clay knows no window or font.
+//
+// An element's size, each way, is one of:
+//   size_fixed(200.0)     exactly so many pixels
+//   size_fit()            as big as what's in it
+//   size_grow()           what's left of its parent, shared with the others
+//                         that grow
+//   size_percent(0.25)    a share of its parent
+// size_fit and size_grow take a least and a most: size_grow(0.0, 300.0).
+// Its children run across (Left_To_Right, as it is unless said) or down
+// (Top_To_Bottom), with padding around them and a gap between them.
+// When they don't fit, the biggest shrink first, text by wrapping.
+//
+// Clay asks the program how big text is: a measure fun, given a piece of
+// text and its config, returns its width and height on one line. Its third
+// param is the program's own data (measure_user): a font, usually.
+//
+// A layout is made every frame, between begin_layout and end_layout.
+// Before it, set_pointer says where the mouse is; then pointer_over(id)
+// says whether it's over an element, by the boxes of the frame before.
+// end_layout returns what went wrong, if anything did: more elements than
+// there's room for, an element never closed, an id used twice.
+//
+// The context is about 8 MB, so a program that makes one needs an arena.
+// See code/clay.mara for floating elements, clipping and scrolling,
+// borders, and the rest.
+module clay
+
+use mara.core
+use mara.memory
+use mara.clay
+
+#allocator Arena_Basic(32 * MB)
+
+// A font, as far as this example needs one: every character as wide.
+Font :: struct {
+	advance: f32
+	height:  f32
+}
+
+measure :: fun(s: []utf8, config: ^Text_Config, font: ^Font) -> Size {
+	return Size{w = f32(s.len) * font.advance, h = font.height}
+}
+
+main :: fun() {
+	font := Font{advance = 8.0, height = 16.0}
+	ui := Context()
+	ui.measure = measure
+	ui.measure_user = &font
+	set_layout_size(&ui, 640.0, 480.0)
+	set_pointer(&ui, 20.0, 20.0, false)
+
+	begin_layout(&ui)
+	// The window: a side bar 160 wide, and the rest.
+	open_element(&ui, Element{id = element_id("Window"), layout = Layout{sizing = Sizing{width = size_grow(), height = size_grow()}, padding = padding_all(8.0), gap = 8.0}})
+		side := Element{id = element_id("Side"), background = Color{r = 40.0, g = 44.0, b = 52.0, a = 255.0}}
+		side.layout = Layout{sizing = Sizing{width = size_fixed(160.0), height = size_grow()}, padding = padding_all(8.0), gap = 4.0, direction = Top_To_Bottom}
+		open_element(&ui, side)
+			text_element(&ui, "Files", Text_Config{font_size = 16})
+			text_element(&ui, "a long name that has to wrap", Text_Config{font_size = 16})
+		close_element(&ui)
+		open_element(&ui, Element{id = element_id("Main"), layout = Layout{sizing = Sizing{width = size_grow(), height = size_grow()}}, background = Color{r = 30.0, g = 31.0, b = 34.0, a = 255.0}})
+		close_element(&ui)
+	close_element(&ui)
+	problem := end_layout(&ui)
+	if problem do print("the layout failed:", problem)
+
+	for cmd in ui.commands {
+		if cmd.kind == Text_Line {
+			print(cmd.kind, cmd.box.x, cmd.box.y, cmd.box.w, cmd.box.h, command_text(&ui, cmd))
+		else
+			print(cmd.kind, cmd.box.x, cmd.box.y, cmd.box.w, cmd.box.h)
+		}
+	}
+	// Command_Kind.Rectangle 8 8 160 464
+	// Command_Kind.Text_Line 16 16 40 16 Files
+	// Command_Kind.Text_Line 16 36 128 16 a long name that
+	// Command_Kind.Text_Line 16 52 88 16 has to wrap
+	// Command_Kind.Rectangle 176 8 456 464
+
+	// Where an element ended up, and whether the mouse will be over it.
+	b, found := element_box(&ui, element_id("Main"))
+	set_pointer(&ui, 20.0, 20.0, false)
+	print(found, b.x, b.w, pointer_over(&ui, element_id("Side")), pointer_over(&ui, element_id("Main")))   // true 176 456 true false
+}

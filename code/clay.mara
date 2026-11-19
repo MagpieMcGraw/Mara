@@ -1,0 +1,1891 @@
+// Clay: layout for user interfaces. A program says what's on the screen as
+// elements inside elements — how each sizes itself, how its children are
+// set out — and gets back a list of things to draw: rectangles, borders,
+// lines of text, where to clip.
+//
+// This is a port to Mara of Clay, Nic Barker's C layout library
+// (github.com/nicbarker/clay, clay.h version 0.14). It is an altered
+// version, not the original software. Clay's license (zlib/libpng):
+//
+//     Copyright (c) 2024 Nic Barker
+//
+//     This software is provided 'as-is', without any express or implied
+//     warranty. In no event will the authors be held liable for any damages
+//     arising from the use of this software.
+//
+//     Permission is granted to anyone to use this software for any purpose,
+//     including commercial applications, and to alter it and redistribute it
+//     freely, subject to the following restrictions:
+//
+//     1. The origin of this software must not be misrepresented; you must not
+//     claim that you wrote the original software. If you use this software in
+//     a product, an acknowledgment in the product documentation would be
+//     appreciated but is not required.
+//
+//     2. Altered source versions must be plainly marked as such, and must not
+//     be misrepresented as being the original software.
+//
+//     3. This notice may not be removed or altered from any source
+//     distribution.
+//
+// A frame:
+//
+//     ui := Context()                    // once: it's big, on the program's arena
+//     ui.measure = my_measure            // how wide and high a piece of text is
+//     ...
+//     set_layout_size(&ui, width, height)
+//     set_pointer(&ui, mouse_x, mouse_y, mouse_down)
+//     begin_layout(&ui)
+//     open_element(&ui, Element{id = element_id("Side"), layout = Layout{sizing = Sizing{width = size_fixed(300.0), height = size_grow()}}})
+//         text_element(&ui, "Hello", Text_Config{font_size = 16})
+//     close_element(&ui)
+//     begin_element(&ui, element_id("List"))      // in two steps: what it looks like asks the context
+//         configure_element(&ui, Element{clip = Clip{vertical = true, child_offset = scroll_offset(&ui)}})
+//         ...
+//     close_element(&ui)
+//     problem := end_layout(&ui)
+//     for cmd in ui.commands { draw it }
+//
+// What's left out of Clay: transitions (its animation), overlay colors, the
+// debug view, hover callbacks (ask pointer_over or hovered), and text kept
+// by pointer — text_element copies its text into the context for the frame,
+// and a text command's is read with command_text.
+module mara.clay
+
+use mara.core
+use mara.math
+
+MAX_ELEMENTS :: 8192      // the elements of one layout
+MAX_WORDS    :: 16384     // the words the text measurements keep
+MAX_CHARS    :: 1048576   // the text of one layout, bytes
+TEXT_BUCKETS :: 512       // (MAX_WORDS / 32, as Clay has it)
+MAX_SCROLLS  :: 100       // the elements that scroll
+MAX_OVER     :: 1024      // the elements the pointer is over
+EPSILON      :: 0.01
+MAX_FLOAT    :: 3.4028235e38
+ROOT_ID      :: "Clay__RootContainer"
+
+// What a layout can fail with: end_layout returns the first met.
+Clay_Error :: error {
+	No_Measure                // text was declared and ui.measure isn't set
+	Capacity                  // more elements, text or words than there's room for
+	Duplicate_Id              // two elements of one layout with the same id
+	Floating_Parent_Missing   // a floating element attached to an id no element has
+	Percent_Over_1            // a percent size over 1.0: 20% is 0.2
+	Unbalanced                // elements still open at end_layout: an open_element with no close_element
+}
+
+Point :: struct {
+	x: f32
+	y: f32
+}
+
+Size :: struct {
+	w: f32
+	h: f32
+}
+
+Box :: struct {
+	x: f32
+	y: f32
+	w: f32
+	h: f32
+}
+
+// 0 to 255 each, as Clay has them; what they mean is the renderer's.
+Color :: struct {
+	r: f32
+	g: f32
+	b: f32
+	a: f32
+}
+
+// An element's id: a hash of its name (element_id, local_id). Elements
+// given none get one from their place among their parent's children.
+Id :: struct {
+	id:     u32   // the hash; 0: none
+	offset: u32   // the index it was made with
+	base:   u32   // the hash before the index
+}
+
+Corner_Radius :: struct {
+	top_left:     f32
+	top_right:    f32
+	bottom_left:  f32
+	bottom_right: f32
+}
+
+// Which way an element's children run.
+Direction :: union { Left_To_Right  Top_To_Bottom }
+
+Align_X :: union { Left  Right  Center }
+Align_Y :: union { Top  Bottom  Center }
+
+// How an element takes its size along one axis.
+Size_Kind :: union {
+	Fit       // as big as what's in it
+	Grow      // what's left of its parent, shared with the others that grow
+	Percent   // a share of its parent, 0 to 1
+	Fixed     // exactly so many pixels
+}
+
+// An element's size along one axis (size_fit, size_grow, size_fixed,
+// size_percent make them): min and max bound it in pixels; max 0 is none.
+Axis :: struct {
+	kind:    Size_Kind
+	min:     f32
+	max:     f32
+	percent: f32
+}
+
+Sizing :: struct {
+	width:  Axis
+	height: Axis
+}
+
+Padding :: struct {
+	left:   f32
+	right:  f32
+	top:    f32
+	bottom: f32
+}
+
+Child_Align :: struct {
+	x: Align_X
+	y: Align_Y
+}
+
+// How an element sizes itself and sets out its children.
+Layout :: struct {
+	sizing:    Sizing
+	padding:   Padding       // room between its edges and its children
+	gap:       f32           // room between its children
+	align:     Child_Align   // where its children sit in the room left over
+	direction: Direction
+}
+
+// How text breaks into lines.
+Wrap :: union {
+	Wrap_Words      // at spaces when it's wider than its parent, and at newlines
+	Wrap_Newlines   // at newlines only
+	Wrap_None       // never
+}
+
+Text_Align :: union { Left  Center  Right }
+
+// A text element's look. font_id, font_size and letter_spacing are the
+// renderer's and the measure fun's to read; line_height 0 is the measured
+// height.
+Text_Config :: struct {
+	user:           ^byte
+	color:          Color
+	font_id:        i64
+	font_size:      i64
+	letter_spacing: i64
+	line_height:    i64
+	wrap:           Wrap
+	align:          Text_Align
+}
+
+// Where on a box a floating element is pinned.
+Attach_Point :: union {
+	Left_Top  Left_Center  Left_Bottom
+	Center_Top  Center_Center  Center_Bottom
+	Right_Top  Right_Center  Right_Bottom
+}
+
+// What a floating element is attached to.
+Attach :: union {
+	Nowhere      // not floating
+	To_Parent    // the element it's declared in
+	To_Element   // the element with the id parent_id
+	To_Root      // the whole layout
+}
+
+// Whether a floating element hides what's under it from the pointer.
+Capture :: union { Captures  Passes }
+
+// Whether a floating element is clipped as what it's attached to is.
+Clip_To :: union { Unclipped  Attached_Parent }
+
+// A floating element: out of its parent's flow, over the other elements,
+// pinned by a point of its own (element) to a point of what it's attached
+// to (parent), moved by offset. The higher z is drawn later.
+Floating :: struct {
+	offset:    Point
+	expand:    Size
+	parent_id: u32
+	z:         i64
+	element:   Attach_Point
+	parent:    Attach_Point
+	capture:   Capture
+	attach:    Attach
+	clip_to:   Clip_To
+}
+
+// An element that clips its children to its box, each way set; they're
+// moved by child_offset — scroll_offset gives the context's own for it.
+Clip :: struct {
+	horizontal:   bool
+	vertical:     bool
+	child_offset: Point
+}
+
+Border_Width :: struct {
+	left:    f32
+	right:   f32
+	top:     f32
+	bottom:  f32
+	between: f32   // lines between its children
+}
+
+Border :: struct {
+	color: Color
+	width: Border_Width
+}
+
+// An element, as it's declared: every field has a default, set the ones
+// that matter.
+Element :: struct {
+	id:            Id
+	layout:        Layout
+	background:    Color   // drawn as a rectangle when its a is over 0
+	corner_radius: Corner_Radius
+	aspect_ratio:  f32     // width over height it keeps; 0: none
+	image:         ^byte   // an image command is made of it when it's set: the renderer's
+	floating:      Floating
+	custom:        ^byte   // ... a custom command
+	clip:          Clip
+	border:        Border
+	user:          ^byte   // passed on in its commands
+}
+
+// What a command draws.
+Command_Kind :: union {
+	Nothing
+	Rectangle       // box filled with color, corners by corner_radius
+	Border_Lines    // box's edges, each border wide, in color
+	Text_Line       // command_text at box, in color
+	Image           // image in box
+	Scissor_Start   // what follows is clipped to box, until its Scissor_End
+	Scissor_End
+	Custom          // custom, the renderer's own
+}
+
+// One thing to draw. Commands are in drawing order.
+Command :: struct {
+	kind:            Command_Kind
+	box:             Box
+	color:           Color
+	corner_radius:   Corner_Radius
+	border:          Border_Width
+	text_at:         i64     // a Text_Line's text, in the context (command_text)
+	text_len:        i64
+	font_id:         i64
+	font_size:       i64
+	letter_spacing:  i64
+	line_height:     i64
+	image:           ^byte
+	custom:          ^byte
+	clip_horizontal: bool
+	clip_vertical:   bool
+	user:            ^byte
+	id:              u32
+	z:               i64
+}
+
+// The pointer's button, over two calls of set_pointer. The order is Clay's: a
+// new context's is Pressed_This_Frame until set_pointer is called.
+Pointer_State :: union { Pressed_This_Frame  Pressed  Released_This_Frame  Released }
+
+Pointer :: struct {
+	position: Point
+	state:    Pointer_State
+}
+
+// What scroll_state says of a scrolling element.
+Scroll_State :: struct {
+	position:  Point   // how far its children are moved: 0 or less
+	container: Size    // its own size
+	content:   Size    // its children's, with its padding
+	found:     bool
+}
+
+// ---- What a context keeps ----
+
+// An element of the layout being made.
+Node :: struct {
+	decl:              Element
+	text_config:       Text_Config
+	is_text:           bool
+	text_at:           i64    // a text's: in chars
+	text_len:          i64
+	preferred:         Size   // ... its size unwrapped
+	lines_at:          i64    // ... its lines, in lines
+	lines_len:         i64
+	children_at:       i64    // in children, once it's closed
+	children_len:      i64
+	floating_children: i64
+	size:              Size
+	min_size:          Size
+	id:                u32
+}
+
+// A text's line, wrapped.
+Wrapped_Line :: struct {
+	size: Size
+	at:   i64   // in chars
+	len:  i64
+}
+
+// A tree of the layout: the root, and each floating element.
+Root :: struct {
+	node:      i64
+	parent_id: u32
+	clip_id:   u32
+	z:         i64
+}
+
+// An element's place in the walk that positions them.
+Visit :: struct {
+	node:       i64
+	position:   Point
+	next_child: Point
+}
+
+// An element by its id, kept from frame to frame: its box as last laid out.
+Map_Item :: struct {
+	box:        Box
+	id:         Id
+	node:       i64
+	next:       i64   // the next item of its bucket; 0: none
+	generation: u32
+	appeared:   bool
+}
+
+// A word of a measured text.
+Word :: struct {
+	start: i64
+	len:   i64
+	width: f32
+	next:  i64   // -1: the last
+}
+
+// A text measured, kept while it's used: its words, its size on one line.
+Text_Item :: struct {
+	unwrapped:  Size
+	words:      i64   // its first word; -1: none
+	min_width:  f32   // its widest word's
+	newlines:   bool
+	id:         u32
+	next:       i64   // the next item of its bucket; 0: none
+	generation: u32
+}
+
+// A scrolling element, kept from frame to frame.
+Scroll :: struct {
+	node:        i64
+	box:         Box
+	content:     Size
+	origin:      Point
+	pointer_origin: Point
+	momentum:    Point
+	position:    Point
+	momentum_time: f32
+	id:          u32
+	open:        bool   // declared this frame
+	dragging:    bool
+}
+
+// A layout's context: what it's told, what it makes, what it keeps between
+// frames. Big — megabytes — so one made once, in a program with an arena.
+Context :: struct {
+	// What text measures: its width and height on one line, for a config.
+	// user is passed back as its third param.
+	measure:      fun([]utf8, ^Text_Config, ^byte) -> Size
+	measure_user: ^byte
+	culling:      bool = true   // no commands for what's outside the layout
+	size:         Size          // the layout's (set_layout_size)
+	pointer:      Pointer       // (set_pointer)
+	commands:     [MAX_ELEMENTS]Command   // what end_layout made: what to draw, in order
+	over:         [MAX_OVER]Id            // the elements the pointer is over, the outermost first
+
+	problem:    err
+	exceeded:   bool
+	generation: u32
+	nodes:      [MAX_ELEMENTS]Node
+	open:       [MAX_ELEMENTS]i64     // the elements open, the innermost last
+	children:   [MAX_ELEMENTS]i64     // closed elements' children
+	child_buffer: [MAX_ELEMENTS]i64   // open elements' children so far
+	clip_ids:   [MAX_ELEMENTS]u32     // each node's clipping element's id; 0: none
+	clip_stack: [MAX_ELEMENTS]u32
+	lines:      [MAX_ELEMENTS]Wrapped_Line
+	roots:      [MAX_ELEMENTS]Root
+	chars:      [MAX_CHARS]utf8
+	bfs:        [MAX_ELEMENTS]i64
+	resizable:  [MAX_ELEMENTS]i64
+	texts:      [MAX_ELEMENTS]i64
+	aspects:    [MAX_ELEMENTS]i64
+	walk:       [MAX_ELEMENTS]Visit
+	stack:      [MAX_ELEMENTS]i64
+	visited:    [MAX_ELEMENTS!]bool
+	items:      [MAX_ELEMENTS]Map_Item   // (the first is no element's: what a missing id gives)
+	buckets:    [MAX_ELEMENTS!]i64
+	items_free: [MAX_ELEMENTS]i64
+	text_items: [MAX_ELEMENTS]Text_Item  // (the first likewise)
+	text_buckets: [TEXT_BUCKETS!]i64
+	text_free:  [MAX_ELEMENTS]i64
+	words:      [MAX_WORDS]Word
+	words_free: [MAX_WORDS]i64
+	scrolls:    [MAX_SCROLLS]Scroll
+}
+
+// ---- Sizes and ids ----
+
+// As big as what's in it, between least and most pixels (most 0: no limit).
+size_fit :: fun(least: f32 = 0.0, most: f32 = 0.0) -> Axis {
+	return Axis{kind = Fit, min = least, max = most}
+}
+
+// What's left of its parent, shared with the others that grow, between
+// least and most pixels (most 0: no limit).
+size_grow :: fun(least: f32 = 0.0, most: f32 = 0.0) -> Axis {
+	return Axis{kind = Grow, min = least, max = most}
+}
+
+// Exactly so many pixels.
+size_fixed :: fun(pixels: f32) -> Axis {
+	return Axis{kind = Fixed, min = pixels, max = pixels}
+}
+
+// A share of its parent's room, 0 to 1.
+size_percent :: fun(share: f32) -> Axis {
+	return Axis{kind = Percent, percent = share}
+}
+
+// The same padding on every side.
+padding_all :: fun(p: f32) -> Padding {
+	return Padding{left = p, right = p, top = p, bottom = p}
+}
+
+// The same radius at every corner.
+corner_radius_all :: fun(radius: f32) -> Corner_Radius {
+	return Corner_Radius{top_left = radius, top_right = radius, bottom_left = radius, bottom_right = radius}
+}
+
+// A border of one width on every side, none between children.
+border_outside :: fun(w: f32) -> Border_Width {
+	return Border_Width{left = w, right = w, top = w, bottom = w}
+}
+
+hash_mix :: fun(h: u32, v: u32) -> u32 {
+	r := h +% v
+	r +%= r << 10
+	return r ~ (r >> 6)
+}
+
+hash_end :: fun(h: u32) -> u32 {
+	r := h +% (h << 3)
+	r = r ~ (r >> 11)
+	return r +% (r << 15)
+}
+
+hash_number :: fun(offset: u32, seed: u32) -> Id {
+	return Id{id = hash_end(hash_mix(seed, offset +% 48)) +% 1, offset = offset, base = seed}
+}
+
+hash_text :: fun(label: []utf8, seed: u32) -> Id {
+	h := seed
+	for ch in label {
+		h = hash_mix(h, u32(ch))
+	}
+	h = hash_end(h) +% 1
+	return Id{id = h, offset = 0, base = h}
+}
+
+hash_text_at :: fun(label: []utf8, offset: u32, seed: u32) -> Id {
+	base := seed
+	for ch in label {
+		base = hash_mix(base, u32(ch))
+	}
+	h := hash_mix(base, offset)
+	return Id{id = hash_end(h) +% 1, offset = offset, base = hash_end(base) +% 1}
+}
+
+// The id of the element named label: the same from frame to frame, what
+// pointer_over and element_box ask by.
+element_id :: fun(label: []utf8) -> Id {
+	return hash_text(label, 0)
+}
+
+// The id of the index-th element named label: a list's rows.
+element_id_at :: fun(label: []utf8, index: i64) -> Id {
+	return hash_text_at(label, u32(index), 0)
+}
+
+// An id that's label's inside the open element only: the same label under
+// another parent is another id.
+local_id :: fun(c: ^Context, label: []utf8) -> Id {
+	return hash_text(label, open_element_id(c))
+}
+
+local_id_at :: fun(c: ^Context, label: []utf8, index: i64) -> Id {
+	return hash_text_at(label, u32(index), open_element_id(c))
+}
+
+// ---- Inside ----
+
+// A problem met: the first is what end_layout returns.
+fail :: fun(c: ^Context, e: err) {
+	if not c.problem do c.problem = e
+}
+
+float_equal :: fun(a: f32, b: f32) -> bool {
+	d := a - b
+	return d < EPSILON and d > -EPSILON
+}
+
+inside_box :: fun(p: Point, b: Box) -> bool {
+	return p.x >= b.x and p.x <= b.x + b.w and p.y >= b.y and p.y <= b.y + b.h
+}
+
+clamp_size :: fun(v: f32, a: Axis) -> f32 {
+	return min_f32(max_f32(v, a.min), a.max)
+}
+
+// A node's size along an axis.
+along :: fun(n: ^Node, x_axis: bool) -> f32 {
+	if x_axis do return n.size.w
+	return n.size.h
+}
+
+set_along :: fun(n: ^Node, x_axis: bool, v: f32) {
+	if x_axis {
+		n.size.w = v
+	else
+		n.size.h = v
+	}
+}
+
+min_along :: fun(n: ^Node, x_axis: bool) -> f32 {
+	if x_axis do return n.min_size.w
+	return n.min_size.h
+}
+
+// A node's sizing along an axis: a text's is fit, with no limits.
+sizing_along :: fun(n: ^Node, x_axis: bool) -> Axis {
+	if n.is_text do return Axis{kind = Fit}
+	if x_axis do return n.decl.layout.sizing.width
+	return n.decl.layout.sizing.height
+}
+
+border_has_width :: fun(b: Border_Width) -> bool {
+	return b.between > 0.0 or b.left > 0.0 or b.right > 0.0 or b.top > 0.0 or b.bottom > 0.0
+}
+
+// The item of the element with an id; 0, no element's, when none has it.
+map_item :: fun(c: ^Context, id: u32) -> i64 {
+	at := c.buckets[i64(id) % MAX_ELEMENTS]
+	for at != 0 {
+		if c.items[at].id.id == id do return at
+		at = c.items[at].next
+	}
+	return 0
+}
+
+// An element declared: its item made, or its last frame's found again.
+map_add :: fun(c: ^Context, id: Id, node: i64) -> i64 {
+	if c.items.len == c.items.cap - 1 {
+		fail(c, Capacity)
+		return 0
+	}
+	bucket := i64(id.id) % MAX_ELEMENTS
+	previous : i64 = 0
+	at := c.buckets[bucket]
+	for at != 0 {
+		it := &c.items[at]
+		if it.id.id == id.id {
+			if it.generation <= c.generation {
+				// (The same element as last frame.)
+				it.appeared = it.generation < c.generation
+				it.id = id
+				it.generation = c.generation +% 1
+				it.node = node
+			else
+				fail(c, Duplicate_Id)
+			}
+			return at
+		}
+		previous = at
+		at = it.next
+	}
+	item := Map_Item{id = id, node = node, generation = c.generation +% 1, appeared = true}
+	spot := c.items.len
+	if c.items_free.len > 0 {
+		spot = c.items_free[c.items_free.len - 1]
+		c.items_free.len -= 1
+		c.items[spot] = item
+	else
+		&c.items ++ item
+	}
+	if previous != 0 {
+		c.items[previous].next = spot
+	else
+		c.buckets[bucket] = spot
+	}
+	return spot
+}
+
+// A text's hash with what its config changes of its size.
+text_hash :: fun(s: []utf8, config: ^Text_Config) -> u32 {
+	long : u64 = 0
+	for ch in s {
+		long +%= u64(ch)
+		long +%= long << 10
+		long = long ~ (long >> 6)
+	}
+	h := u32(long % 0xFFFFFFFF)
+	h = hash_mix(h, u32(config.font_id))
+	h = hash_mix(h, u32(config.font_size))
+	h = hash_mix(h, u32(config.letter_spacing))
+	return hash_end(h) +% 1
+}
+
+// A word added after the word `previous` (-1: the first); its place.
+word_add :: fun(c: ^Context, w: Word, previous: i64) -> i64 {
+	spot := c.words.len
+	if c.words_free.len > 0 {
+		spot = c.words_free[c.words_free.len - 1]
+		c.words_free.len -= 1
+		c.words[spot] = w
+	else
+		&c.words ++ w
+	}
+	if previous >= 0 do c.words[previous].next = spot
+	return spot
+}
+
+// A text measured for a config: found among those kept, or measured word by
+// word and kept. Its item; 0, no text's, when it couldn't be.
+measure_cached :: fun(c: ^Context, s: []utf8, config: ^Text_Config) -> i64 {
+	if c.measure == void {
+		fail(c, No_Measure)
+		return 0
+	}
+	measure := c.measure
+	id := text_hash(s, config)
+	bucket := i64(id) % TEXT_BUCKETS
+	previous : i64 = 0
+	at := c.text_buckets[bucket]
+	for at != 0 {
+		entry := &c.text_items[at]
+		if entry.id == id {
+			entry.generation = c.generation
+			return at
+		}
+		if c.generation -% entry.generation > 2 {
+			// (Not used for two frames: its words and its place given back.)
+			w := entry.words
+			for w != -1 {
+				&c.words_free ++ w
+				w = c.words[w].next
+			}
+			following := entry.next
+			c.text_items[at] = Text_Item{words = -1}
+			&c.text_free ++ at
+			if previous == 0 {
+				c.text_buckets[bucket] = following
+			else
+				c.text_items[previous].next = following
+			}
+			at = following
+		else
+			previous = at
+			at = entry.next
+		}
+	}
+
+	fresh := Text_Item{words = -1, id = id, generation = c.generation}
+	spot := c.text_items.len
+	if c.text_free.len > 0 {
+		spot = c.text_free[c.text_free.len - 1]
+		c.text_free.len -= 1
+		c.text_items[spot] = fresh
+	else
+		if c.text_items.len == c.text_items.cap - 1 {
+			fail(c, Capacity)
+			return 0
+		}
+		&c.text_items ++ fresh
+	}
+	measured := &c.text_items[spot]
+
+	start : i64 = 0
+	stop : i64 = 0
+	line_width : f32 = 0.0
+	width : f32 = 0.0
+	height : f32 = 0.0
+	space := measure(" ", config, c.measure_user).w
+	first : i64 = -1
+	last : i64 = -1
+	for stop < s.len {
+		if c.words.len == c.words.cap - 1 and c.words_free.len == 0 {
+			fail(c, Capacity)
+			return 0
+		}
+		current := s[stop]
+		if current == ' ' or current == '\n' {
+			word_len := stop - start
+			d := Size{w = 0.0, h = 0.0}
+			if word_len > 0 do d = measure(s[start : stop], config, c.measure_user)
+			measured.min_width = max_f32(d.w, measured.min_width)
+			height = max_f32(height, d.h)
+			if current == ' ' {
+				d.w += space
+				last = word_add(c, Word{start = start, len = word_len + 1, width = d.w, next = -1}, last)
+				if first < 0 do first = last
+				line_width += d.w
+			}
+			if current == '\n' {
+				if word_len > 0 {
+					last = word_add(c, Word{start = start, len = word_len, width = d.w, next = -1}, last)
+					if first < 0 do first = last
+				}
+				last = word_add(c, Word{start = stop + 1, len = 0, width = 0.0, next = -1}, last)
+				if first < 0 do first = last
+				line_width += d.w
+				width = max_f32(line_width, width)
+				measured.newlines = true
+				line_width = 0.0
+			}
+			start = stop + 1
+		}
+		stop += 1
+	}
+	if stop - start > 0 {
+		d := measure(s[start : stop], config, c.measure_user)
+		last = word_add(c, Word{start = start, len = stop - start, width = d.w, next = -1}, last)
+		if first < 0 do first = last
+		line_width += d.w
+		height = max_f32(height, d.h)
+		measured.min_width = max_f32(d.w, measured.min_width)
+	}
+	measured.words = first
+	measured.unwrapped = Size{w = max_f32(line_width, width) - f32(config.letter_spacing), h = height}
+	if previous != 0 {
+		c.text_items[previous].next = spot
+	else
+		c.text_buckets[bucket] = spot
+	}
+	return spot
+}
+
+// A node's text.
+node_text :: fun(c: ^Context, n: ^Node) -> []utf8 {
+	s : []utf8 = c.chars[n.text_at : n.text_at + n.text_len]
+	return s
+}
+
+// A new node's clipping element: the innermost open one's.
+clip_note :: fun(c: ^Context) {
+	inner : u32 = 0
+	if c.clip_stack.len > 0 do inner = c.clip_stack[c.clip_stack.len - 1]
+	&c.clip_ids ++ inner
+}
+
+update_aspect :: fun(n: ^Node) {
+	ratio := n.decl.aspect_ratio
+	if ratio == 0.0 do return
+	if n.size.w == 0.0 and n.size.h != 0.0 {
+		n.size.w = n.size.h * ratio
+	elif n.size.w != 0.0 and n.size.h == 0.0
+		n.size.h = n.size.w * (1.0 / ratio)
+	}
+}
+
+// ---- Declaring a layout ----
+
+// The layout's size: the root element's, and what culling keeps to.
+set_layout_size :: fun(c: ^Context, w: f32, h: f32) {
+	c.size = Size{w = w, h = h}
+}
+
+// A layout begun: the last one's elements gone, the root open.
+begin_layout :: fun(c: ^Context) {
+	// (The first items are no element's and no text's: 0 says none.)
+	if c.items.len == 0 do c.items.len = 1
+	if c.text_items.len == 0 {
+		c.text_items.len = 1
+		c.text_items[0].words = -1
+	}
+	c.nodes.len = 0
+	c.open.len = 0
+	c.children.len = 0
+	c.child_buffer.len = 0
+	c.clip_ids.len = 0
+	c.clip_stack.len = 0
+	c.lines.len = 0
+	c.roots.len = 0
+	c.chars.len = 0
+	c.commands.len = 0
+	c.generation +%= 1
+	c.exceeded = false
+	no_problem : err
+	c.problem = no_problem
+	open_element(c, Element{id = element_id(ROOT_ID), layout = Layout{sizing = Sizing{width = size_fixed(c.size.w), height = size_fixed(c.size.h)}}})
+	&c.open ++ 0
+	&c.roots ++ Root{node = 0}
+}
+
+// An element opened: what's declared until its close_element is inside it.
+open_element :: fun(c: ^Context, e: Element) {
+	begin_element(c, e.id)
+	configure_element(c, e)
+}
+
+// open_element in two steps, as Clay's own CLAY() is, for an element whose
+// look depends on what the context knows of it: begin_element opens it by
+// its id (one with id 0 gets its place's), then hovered and scroll_offset
+// can be asked, and configure_element says the rest.
+begin_element :: fun(c: ^Context, given: Id) {
+	if c.nodes.len == c.nodes.cap - 1 or c.exceeded {
+		c.exceeded = true
+		fail(c, Capacity)
+		return
+	}
+	fresh : Node
+	&c.nodes ++ fresh
+	index := c.nodes.len - 1
+	&c.open ++ index
+	id := given
+	if id.id == 0 {
+		parent := &c.nodes[c.open[c.open.len - 2]]
+		id = hash_number(u32(parent.children_len + parent.floating_children), parent.id)
+	}
+	c.nodes[index].id = id.id
+	c.nodes[index].decl.id = id
+	_ = map_add(c, id, index)
+	clip_note(c)
+}
+
+// What the open element is: its id stays the one it was begun with.
+configure_element :: fun(c: ^Context, e: Element) {
+	if c.exceeded do return
+	index := c.open[c.open.len - 1]
+	node := &c.nodes[index]
+	id := node.decl.id
+	node.decl = e
+	node.decl.id = id
+	sizing := e.layout.sizing
+	if (sizing.width.kind == Percent and sizing.width.percent > 1.0) or (sizing.height.kind == Percent and sizing.height.percent > 1.0) do fail(c, Percent_Over_1)
+
+	if e.floating.attach != Nowhere {
+		parent_id := e.floating.parent_id
+		clip_id : u32 = 0
+		if e.floating.attach == To_Parent {
+			parent_id = c.nodes[c.open[c.open.len - 2]].id
+			if c.clip_stack.len > 0 do clip_id = c.clip_stack[c.clip_stack.len - 1]
+		elif e.floating.attach == To_Element
+			item := map_item(c, parent_id)
+			if item == 0 {
+				fail(c, Floating_Parent_Missing)
+			else
+				clip_id = c.clip_ids[c.items[item].node]
+			}
+		else
+			parent_id = element_id(ROOT_ID).id
+		}
+		if e.floating.clip_to == Unclipped do clip_id = 0
+		node.decl.floating.parent_id = parent_id
+		c.clip_ids[index] = clip_id
+		&c.clip_stack ++ clip_id
+		&c.roots ++ Root{node = index, parent_id = parent_id, clip_id = clip_id, z = e.floating.z}
+	}
+
+	if e.clip.horizontal or e.clip.vertical {
+		&c.clip_stack ++ node.id
+		found := false
+		for k in 0:c.scrolls.len {
+			if c.scrolls[k].id == node.id {
+				c.scrolls[k].node = index
+				c.scrolls[k].open = true
+				found = true
+			}
+		}
+		if not found and c.scrolls.len < c.scrolls.cap do &c.scrolls ++ Scroll{node = index, origin = Point{x = -1.0, y = -1.0}, id = node.id, open = true}
+	}
+}
+
+// The open element closed: its size, as far as its children say it.
+close_element :: fun(c: ^Context) {
+	if c.exceeded do return
+	if c.open.len == 0 {
+		fail(c, Unbalanced)
+		return
+	}
+	index := c.open[c.open.len - 1]
+	node := &c.nodes[index]
+	layout := node.decl.layout
+	clip_x := node.decl.clip.horizontal
+	clip_y := node.decl.clip.vertical
+	// (What it put on the clip stack comes off: Clay takes one off for an
+	// element that both floats and clips, which leaves the other on.)
+	if clip_x or clip_y do c.clip_stack.len -= 1
+	if node.decl.floating.attach != Nowhere do c.clip_stack.len -= 1
+
+	pad_x := layout.padding.left + layout.padding.right
+	pad_y := layout.padding.top + layout.padding.bottom
+	gaps := f32(max_int(node.children_len - 1, 0)) * layout.gap
+
+	// (Its children, the last of the buffer, go where they stay.)
+	node.children_at = c.children.len
+	first := c.child_buffer.len - node.children_len
+	if layout.direction == Left_To_Right {
+		node.size.w = pad_x
+		node.min_size.w = pad_x
+		for k in 0:node.children_len {
+			child_index := c.child_buffer[first + k]
+			child := &c.nodes[child_index]
+			node.size.w += child.size.w
+			node.size.h = max_f32(node.size.h, child.size.h + pad_y)
+			// (A clip's children don't hold it open: they scroll.)
+			if not clip_x do node.min_size.w += child.min_size.w
+			if not clip_y do node.min_size.h = max_f32(node.min_size.h, child.min_size.h + pad_y)
+			&c.children ++ child_index
+		}
+		node.size.w += gaps
+		if not clip_x do node.min_size.w += gaps
+	else
+		node.size.h = pad_y
+		node.min_size.h = pad_y
+		for k in 0:node.children_len {
+			child_index := c.child_buffer[first + k]
+			child := &c.nodes[child_index]
+			node.size.h += child.size.h
+			node.size.w = max_f32(node.size.w, child.size.w + pad_x)
+			if not clip_y do node.min_size.h += child.min_size.h
+			if not clip_x do node.min_size.w = max_f32(node.min_size.w, child.min_size.w + pad_x)
+			&c.children ++ child_index
+		}
+		node.size.h += gaps
+		if not clip_y do node.min_size.h += gaps
+	}
+	c.child_buffer.len -= node.children_len
+
+	// (No max said: none, which the sizing after this counts on.)
+	if layout.sizing.width.kind != Percent {
+		if node.decl.layout.sizing.width.max <= 0.0 do node.decl.layout.sizing.width.max = MAX_FLOAT
+		node.size.w = clamp_size(node.size.w, node.decl.layout.sizing.width)
+		node.min_size.w = clamp_size(node.min_size.w, node.decl.layout.sizing.width)
+	else
+		node.size.w = 0.0
+	}
+	if layout.sizing.height.kind != Percent {
+		if node.decl.layout.sizing.height.max <= 0.0 do node.decl.layout.sizing.height.max = MAX_FLOAT
+		node.size.h = clamp_size(node.size.h, node.decl.layout.sizing.height)
+		node.min_size.h = clamp_size(node.min_size.h, node.decl.layout.sizing.height)
+	else
+		node.size.h = 0.0
+	}
+	update_aspect(node)
+
+	floating := node.decl.floating.attach != Nowhere
+	c.open.len -= 1
+	// (Its parent's child now — the root has none to be one of; a floating
+	// element is counted apart.)
+	if c.open.len > 1 {
+		parent := &c.nodes[c.open[c.open.len - 1]]
+		if floating {
+			parent.floating_children += 1
+			return
+		}
+		parent.children_len += 1
+		&c.child_buffer ++ index
+	}
+}
+
+// Text, a child of the open element: copied, measured, wrapped when the
+// layout ends. One command a line.
+text_element :: fun(c: ^Context, s: []utf8, config: Text_Config) {
+	if c.nodes.len == c.nodes.cap - 1 or c.exceeded or c.chars.len + s.len > c.chars.cap {
+		c.exceeded = true
+		fail(c, Capacity)
+		return
+	}
+	parent := &c.nodes[c.open[c.open.len - 1]]
+	fresh : Node
+	fresh.is_text = true
+	fresh.text_config = config
+	fresh.text_at = c.chars.len
+	fresh.text_len = s.len
+	&c.chars ++ s
+	&c.nodes ++ fresh
+	index := c.nodes.len - 1
+	node := &c.nodes[index]
+	clip_note(c)
+	&c.child_buffer ++ index
+	measured := c.text_items[measure_cached(c, node_text(c, node), &node.text_config)]
+	id := hash_number(u32(parent.children_len + parent.floating_children), parent.id)
+	node.id = id.id
+	_ = map_add(c, id, index)
+	height := measured.unwrapped.h
+	if config.line_height > 0 do height = f32(config.line_height)
+	node.size = Size{w = measured.unwrapped.w, h = height}
+	node.min_size = Size{w = measured.min_width, h = height}
+	node.preferred = measured.unwrapped
+	parent.children_len += 1
+}
+
+// The open element's id.
+open_element_id :: fun(c: ^Context) -> u32 {
+	return c.nodes[c.open[c.open.len - 1]].id
+}
+
+// ---- Laying out ----
+
+// Every element's size along one axis, parents before children: percents
+// of their parent's room, then what's left over shared among those that
+// grow — or, too little room, taken from the biggest of those that can
+// shrink, down to their least — and across the axis, each as big as its
+// parent lets it. On the first pass (collect) the texts and the elements
+// with an aspect ratio are noted.
+size_along :: fun(c: ^Context, x_axis: bool, collect: bool) {
+	for root in c.roots {
+		c.bfs.len = 0
+		&c.bfs ++ root.node
+		top := &c.nodes[root.node]
+
+		// (A floating element's size by what it's attached to.)
+		if top.decl.floating.attach != Nowhere {
+			item := map_item(c, top.decl.floating.parent_id)
+			if item != 0 {
+				held := &c.nodes[c.items[item].node]
+				if top.decl.layout.sizing.width.kind == Grow do top.size.w = held.size.w
+				if top.decl.layout.sizing.width.kind == Percent do top.size.w = held.size.w * top.decl.layout.sizing.width.percent
+				if top.decl.layout.sizing.height.kind == Grow do top.size.h = held.size.h
+				if top.decl.layout.sizing.height.kind == Percent do top.size.h = held.size.h * top.decl.layout.sizing.height.percent
+			}
+		}
+		if top.decl.layout.sizing.width.kind != Percent do top.size.w = clamp_size(top.size.w, top.decl.layout.sizing.width)
+		if top.decl.layout.sizing.height.kind != Percent do top.size.h = clamp_size(top.size.h, top.decl.layout.sizing.height)
+
+		i := 0
+		for i < c.bfs.len {
+			parent := &c.nodes[c.bfs[i]]
+			i += 1
+			layout := parent.decl.layout
+			growing := 0
+			parent_size := along(parent, x_axis)
+			padding := layout.padding.top + layout.padding.bottom
+			if x_axis do padding = layout.padding.left + layout.padding.right
+			inner : f32 = 0.0
+			padding_and_gaps := padding
+			with_flow := (x_axis and layout.direction == Left_To_Right) or (not x_axis and layout.direction == Top_To_Bottom)
+			clipped := (x_axis and parent.decl.clip.horizontal) or (not x_axis and parent.decl.clip.vertical)
+			c.resizable.len = 0
+
+			for k in 0:parent.children_len {
+				child_index := c.children[parent.children_at + k]
+				child := &c.nodes[child_index]
+				sizing := sizing_along(child, x_axis)
+				child_size := along(child, x_axis)
+				if collect and child.is_text {
+					&c.texts ++ child_index
+				elif child.children_len > 0
+					&c.bfs ++ child_index
+				}
+				if collect and not child.is_text and child.decl.aspect_ratio != 0.0 do &c.aspects ++ child_index
+				if sizing.kind != Percent and sizing.kind != Fixed and (not child.is_text or child.text_config.wrap == Wrap_Words) do &c.resizable ++ child_index
+				if with_flow {
+					if sizing.kind != Percent do inner += child_size
+					if sizing.kind == Grow do growing += 1
+					if k > 0 {
+						inner += layout.gap
+						padding_and_gaps += layout.gap
+					}
+				else
+					inner = max_f32(child_size, inner)
+				}
+			}
+
+			// (Percents: of the parent's room without its padding and gaps.)
+			for k in 0:parent.children_len {
+				child := &c.nodes[c.children[parent.children_at + k]]
+				sizing := sizing_along(child, x_axis)
+				if sizing.kind == Percent {
+					share := (parent_size - padding_and_gaps) * sizing.percent
+					set_along(child, x_axis, share)
+					if with_flow do inner += share
+					update_aspect(child)
+				}
+			}
+
+			if with_flow {
+				left_over := parent_size - padding - inner
+				if left_over < 0.0 {
+					// (A clip's children aren't squeezed: they scroll.)
+					if clipped do continue
+					// (Too little room: the biggest give some up, to the next
+					// biggest's size, until it fits or none can shrink.)
+					for left_over < -EPSILON and c.resizable.len > 0 {
+						largest : f32 = 0.0
+						second : f32 = 0.0
+						change := left_over
+						for index in c.resizable {
+							size := along(&c.nodes[index], x_axis)
+							if float_equal(size, largest) do continue
+							if size > largest {
+								second = largest
+								largest = size
+							}
+							if size < largest {
+								second = max_f32(second, size)
+								change = second - largest
+							}
+						}
+						change = max_f32(change, left_over / f32(c.resizable.len))
+						k := 0
+						for k < c.resizable.len {
+							child := &c.nodes[c.resizable[k]]
+							before := along(child, x_axis)
+							step := 1
+							if float_equal(before, largest) {
+								after := before + change
+								least := min_along(child, x_axis)
+								if after <= least {
+									after = least
+									c.resizable[k] = c.resizable[c.resizable.len - 1]
+									c.resizable.len -= 1
+									step = 0
+								}
+								set_along(child, x_axis, after)
+								left_over -= after - before
+							}
+							k += step
+						}
+					}
+				elif left_over > 0.0 and growing > 0
+					k := 0
+					for k < c.resizable.len {
+						if sizing_along(&c.nodes[c.resizable[k]], x_axis).kind != Grow {
+							c.resizable[k] = c.resizable[c.resizable.len - 1]
+							c.resizable.len -= 1
+						else
+							k += 1
+						}
+					}
+					// (Room left: the smallest of those that grow get it, up
+					// to the next smallest's size, until it's gone.)
+					for left_over > EPSILON and c.resizable.len > 0 {
+						smallest : f32 = MAX_FLOAT
+						second : f32 = MAX_FLOAT
+						change := left_over
+						for index in c.resizable {
+							size := along(&c.nodes[index], x_axis)
+							if float_equal(size, smallest) do continue
+							if size < smallest {
+								second = smallest
+								smallest = size
+							}
+							if size > smallest {
+								second = min_f32(second, size)
+								change = second - smallest
+							}
+						}
+						change = min_f32(change, left_over / f32(c.resizable.len))
+						j := 0
+						for j < c.resizable.len {
+							child := &c.nodes[c.resizable[j]]
+							before := along(child, x_axis)
+							step := 1
+							if float_equal(before, smallest) {
+								after := before + change
+								most := sizing_along(child, x_axis).max
+								if after >= most {
+									after = most
+									c.resizable[j] = c.resizable[c.resizable.len - 1]
+									c.resizable.len -= 1
+									step = 0
+								}
+								set_along(child, x_axis, after)
+								left_over -= after - before
+							}
+							j += step
+						}
+					}
+				}
+			else
+				// (Across the flow: as big as the parent lets each be.)
+				for index in c.resizable {
+					child := &c.nodes[index]
+					sizing := sizing_along(child, x_axis)
+					room := parent_size - padding
+					if clipped do room = max_f32(room, inner)
+					size := along(child, x_axis)
+					if sizing.kind == Grow do size = min_f32(room, sizing.max)
+					set_along(child, x_axis, max_f32(min_along(child, x_axis), min_f32(size, room)))
+				}
+			}
+		}
+	}
+}
+
+// A command added to what's drawn.
+command_add :: fun(c: ^Context, cmd: Command) {
+	if c.commands.len < c.commands.cap - 1 {
+		&c.commands ++ cmd
+	else
+		fail(c, Capacity)
+	}
+}
+
+offscreen :: fun(c: ^Context, b: Box) -> bool {
+	if not c.culling do return false
+	return b.x > c.size.w or b.y > c.size.h or b.x + b.w < 0.0 or b.y + b.h < 0.0
+}
+
+// Where along a box an attach point is, each way: 0 its start, 1 its
+// middle, 2 its end.
+attach_x :: fun(p: Attach_Point) -> i64 {
+	return i64(p) / 3
+}
+
+attach_y :: fun(p: Attach_Point) -> i64 {
+	return i64(p) % 3
+}
+
+// A text's lines, wrapped to its width: its height then.
+wrap_text :: fun(c: ^Context, index: i64) {
+	node := &c.nodes[index]
+	node.lines_at = c.lines.len
+	node.lines_len = 0
+	measure := c.measure
+	if measure == void do return
+	item := c.text_items[measure_cached(c, node_text(c, node), &node.text_config)]
+	spacing := f32(node.text_config.letter_spacing)
+	line_height := node.preferred.h
+	if node.text_config.line_height > 0 do line_height = f32(node.text_config.line_height)
+	if not item.newlines and node.preferred.w <= node.size.w {
+		&c.lines ++ Wrapped_Line{size = node.size, at = node.text_at, len = node.text_len}
+		node.lines_len += 1
+		return
+	}
+	space := measure(" ", &node.text_config, c.measure_user).w
+	line_width : f32 = 0.0
+	line_chars : i64 = 0
+	line_start : i64 = 0
+	at := item.words
+	for at != -1 {
+		if c.lines.len == c.lines.cap do break
+		word := c.words[at]
+		if line_chars == 0 and line_width + word.width > node.size.w {
+			// (A word wider than the text's room: a line of its own.)
+			&c.lines ++ Wrapped_Line{size = Size{w = word.width, h = line_height}, at = node.text_at + word.start, len = word.len}
+			node.lines_len += 1
+			at = word.next
+			line_start = word.start + word.len
+		elif word.len == 0 or line_width + word.width > node.size.w
+			// (A newline, or the word doesn't fit: the line ends before it,
+			// its last space left off.)
+			final_space := c.chars[node.text_at + max_int(line_start + line_chars - 1, 0)] == ' '
+			line := Wrapped_Line{size = Size{w = line_width, h = line_height}, at = node.text_at + line_start, len = line_chars}
+			if final_space {
+				line.size.w -= space
+				line.len -= 1
+			}
+			&c.lines ++ line
+			node.lines_len += 1
+			if line_chars == 0 or word.len == 0 do at = word.next
+			line_width = 0.0
+			line_chars = 0
+			line_start = word.start
+		else
+			line_width += word.width + spacing
+			line_chars += word.len
+			at = word.next
+		}
+	}
+	if line_chars > 0 and c.lines.len < c.lines.cap {
+		&c.lines ++ Wrapped_Line{size = Size{w = line_width - spacing, h = line_height}, at = node.text_at + line_start, len = line_chars}
+		node.lines_len += 1
+	}
+	node.size.h = line_height * f32(node.lines_len)
+}
+
+// The layout made: widths, texts wrapped to them, heights, then every
+// element's place and the commands that draw it.
+final_layout :: fun(c: ^Context) {
+	c.texts.len = 0
+	c.aspects.len = 0
+	size_along(c, true, true)
+	for index in c.texts {
+		wrap_text(c, index)
+	}
+	// (Heights by aspect ratio, now the widths are known.)
+	for index in c.aspects {
+		node := &c.nodes[index]
+		node.size.h = (1.0 / node.decl.aspect_ratio) * node.size.w
+		node.decl.layout.sizing.height.max = node.size.h
+	}
+
+	// Heights go up the tree — wrapped text is taller: children before
+	// their parents.
+	c.walk.len = 0
+	for root in c.roots {
+		c.visited[c.walk.len] = false
+		&c.walk ++ Visit{node = root.node}
+	}
+	for c.walk.len > 0 {
+		top := c.walk.len - 1
+		node := &c.nodes[c.walk[top].node]
+		if not c.visited[top] {
+			c.visited[top] = true
+			if node.is_text or node.children_len == 0 {
+				c.walk.len -= 1
+				continue
+			}
+			for k in 0:node.children_len {
+				c.visited[c.walk.len] = false
+				&c.walk ++ Visit{node = c.children[node.children_at + k]}
+			}
+			continue
+		}
+		c.walk.len -= 1
+		layout := node.decl.layout
+		pad_y := layout.padding.top + layout.padding.bottom
+		if layout.direction == Left_To_Right {
+			for k in 0:node.children_len {
+				child := &c.nodes[c.children[node.children_at + k]]
+				node.size.h = clamp_size(max_f32(child.size.h + pad_y, node.size.h), layout.sizing.height)
+			}
+		else
+			content := pad_y + f32(max_int(node.children_len - 1, 0)) * layout.gap
+			for k in 0:node.children_len {
+				content += c.nodes[c.children[node.children_at + k]].size.h
+			}
+			node.size.h = clamp_size(content, layout.sizing.height)
+		}
+	}
+
+	size_along(c, false, false)
+	// (Widths by aspect ratio, now the heights are.)
+	for index in c.aspects {
+		node := &c.nodes[index]
+		node.size.w = node.decl.aspect_ratio * node.size.h
+	}
+
+	// The trees in z order, the lowest first.
+	sorted := c.roots.len - 1
+	for sorted > 0 {
+		for k in 0:sorted {
+			if c.roots[k + 1].z < c.roots[k].z {
+				swapped := c.roots[k]
+				c.roots[k] = c.roots[k + 1]
+				c.roots[k + 1] = swapped
+			}
+		}
+		sorted -= 1
+	}
+
+	c.commands.len = 0
+	for root in c.roots {
+		c.walk.len = 0
+		top := &c.nodes[root.node]
+		origin := Point{x = 0.0, y = 0.0}
+		held := map_item(c, root.parent_id)
+		if top.decl.floating.attach != Nowhere {
+			// (Pinned: its attach point on its parent's.)
+			f := top.decl.floating
+			parent_box := c.items[held].box
+			origin.x = parent_box.x + parent_box.w * f32(attach_x(f.parent)) / 2.0 - top.size.w * f32(attach_x(f.element)) / 2.0 + f.offset.x
+			origin.y = parent_box.y + parent_box.h * f32(attach_y(f.parent)) / 2.0 - top.size.h * f32(attach_y(f.element)) / 2.0 + f.offset.y
+		}
+		clip_item := map_item(c, root.clip_id)
+		clipping := root.clip_id != 0 and clip_item != 0
+		if clipping do clipping = not offscreen(c, c.items[clip_item].box)
+		if clipping {
+			start : Command
+			start.kind = Scissor_Start
+			start.box = c.items[clip_item].box
+			start.id = hash_number(top.id, u32(top.children_len + 10)).id
+			start.z = root.z
+			command_add(c, start)
+		}
+		&c.walk ++ Visit{node = root.node, position = origin, next_child = Point{x = top.decl.layout.padding.left, y = top.decl.layout.padding.top}}
+		c.visited[0] = false
+		for c.walk.len > 0 {
+			at := c.walk.len - 1
+			visit := c.walk[at]
+			node := &c.nodes[visit.node]
+			layout := node.decl.layout
+			scroll := Point{x = 0.0, y = 0.0}
+			scrolls := not node.is_text and (node.decl.clip.horizontal or node.decl.clip.vertical)
+
+			if c.visited[at] {
+				// On the way back up: what's drawn over its children.
+				c.walk.len -= 1
+				if node.is_text do continue
+				box := c.items[map_item(c, node.id)].box
+				if offscreen(c, box) do continue
+				if scrolls do scroll = node.decl.clip.child_offset
+				if border_has_width(node.decl.border.width) {
+					border := node.decl.border
+					edge : Command
+					edge.kind = Border_Lines
+					edge.box = box
+					edge.color = border.color
+					edge.corner_radius = node.decl.corner_radius
+					edge.border = border.width
+					edge.user = node.decl.user
+					edge.id = hash_number(node.id, u32(node.children_len)).id
+					command_add(c, edge)
+					if border.width.between > 0.0 and border.color.a > 0.0 {
+						half_gap := layout.gap / 2.0
+						half_width := border.width.between / 2.0
+						offset := Point{x = layout.padding.left - half_gap, y = layout.padding.top - half_gap}
+						for k in 0:node.children_len {
+							child := &c.nodes[c.children[node.children_at + k]]
+							if k > 0 {
+								between : Command
+								between.kind = Rectangle
+								between.color = border.color
+								between.user = node.decl.user
+								between.id = hash_number(node.id, u32(node.children_len + 1 + k)).id
+								if layout.direction == Left_To_Right {
+									between.box = Box{x = box.x + offset.x + scroll.x - half_width, y = box.y + scroll.y, w = border.width.between, h = node.size.h}
+								else
+									between.box = Box{x = box.x + scroll.x, y = box.y + offset.y + scroll.y - half_width, w = node.size.w, h = border.width.between}
+								}
+								command_add(c, between)
+							}
+							if layout.direction == Left_To_Right {
+								offset.x += child.size.w + layout.gap
+							else
+								offset.y += child.size.h + layout.gap
+							}
+						}
+					}
+				}
+				if scrolls {
+					stop : Command
+					stop.kind = Scissor_End
+					stop.id = hash_number(node.id, u32(top.children_len + 11)).id
+					command_add(c, stop)
+				}
+				continue
+			}
+
+			// On the way down: its box, its commands, its children's places.
+			c.visited[at] = true
+			box := Box{x = visit.position.x, y = visit.position.y, w = node.size.w, h = node.size.h}
+			scroll_at : i64 = -1
+			if not node.is_text {
+				if node.decl.floating.attach != Nowhere {
+					expand := node.decl.floating.expand
+					box.x -= expand.w
+					box.w += expand.w * 2.0
+					box.y -= expand.h
+					box.h += expand.h * 2.0
+				}
+				if scrolls {
+					for k in 0:c.scrolls.len {
+						if c.scrolls[k].id == node.id {
+							scroll_at = k
+							c.scrolls[k].box = box
+							scroll = node.decl.clip.child_offset
+							break
+						}
+					}
+				}
+			}
+
+			if not offscreen(c, box) {
+				if node.is_text {
+					config := node.text_config
+					natural := node.preferred.h
+					line_height := natural
+					if config.line_height > 0 do line_height = f32(config.line_height)
+					y := (line_height - natural) / 2.0
+					for k in 0:node.lines_len {
+						line := c.lines[node.lines_at + k]
+						if line.len == 0 {
+							y += line_height
+							continue
+						}
+						offset := box.w - line.size.w
+						if config.align == Text_Align.Left do offset = 0.0
+						if config.align == Text_Align.Center do offset /= 2.0
+						words : Command
+						words.kind = Text_Line
+						words.box = Box{x = box.x + offset, y = box.y + y, w = line.size.w, h = line.size.h}
+						words.color = config.color
+						words.text_at = line.at
+						words.text_len = line.len
+						words.font_id = config.font_id
+						words.font_size = config.font_size
+						words.letter_spacing = config.letter_spacing
+						words.line_height = config.line_height
+						words.user = config.user
+						words.id = hash_number(u32(k), node.id).id
+						words.z = root.z
+						command_add(c, words)
+						y += line_height
+						if c.culling and box.y + y > c.size.h do break
+					}
+				else
+					if node.decl.image != void {
+						picture : Command
+						picture.kind = Image
+						picture.box = box
+						picture.color = node.decl.background
+						picture.corner_radius = node.decl.corner_radius
+						picture.image = node.decl.image
+						picture.user = node.decl.user
+						picture.id = node.id
+						picture.z = root.z
+						command_add(c, picture)
+					}
+					if node.decl.custom != void {
+						own : Command
+						own.kind = Custom
+						own.box = box
+						own.color = node.decl.background
+						own.corner_radius = node.decl.corner_radius
+						own.custom = node.decl.custom
+						own.user = node.decl.user
+						own.id = node.id
+						own.z = root.z
+						command_add(c, own)
+					}
+					if scrolls {
+						scissor : Command
+						scissor.kind = Scissor_Start
+						scissor.box = box
+						scissor.clip_horizontal = node.decl.clip.horizontal
+						scissor.clip_vertical = node.decl.clip.vertical
+						scissor.user = node.decl.user
+						scissor.id = node.id
+						scissor.z = root.z
+						command_add(c, scissor)
+					}
+					if node.decl.background.a > 0.0 {
+						fill : Command
+						fill.kind = Rectangle
+						fill.box = box
+						fill.color = node.decl.background
+						fill.corner_radius = node.decl.corner_radius
+						fill.user = node.decl.user
+						fill.id = node.id
+						fill.z = root.z
+						command_add(c, fill)
+					}
+				}
+			}
+
+			c.items[map_item(c, node.id)].box = box
+			if node.is_text do continue
+
+			// Its children's sizes together, and where the first goes: the
+			// room left over, by its alignment along the flow.
+			content := Size{w = 0.0, h = 0.0}
+			next := visit.next_child
+			gaps := f32(max_int(node.children_len - 1, 0)) * layout.gap
+			if layout.direction == Left_To_Right {
+				for k in 0:node.children_len {
+					child := &c.nodes[c.children[node.children_at + k]]
+					content.w += child.size.w
+					content.h = max_f32(content.h, child.size.h)
+				}
+				content.w += gaps
+				extra := node.size.w - (layout.padding.left + layout.padding.right) - content.w
+				if layout.align.x == Align_X.Left do extra = 0.0
+				if layout.align.x == Align_X.Center do extra /= 2.0
+				next.x += max_f32(0.0, extra)
+			else
+				for k in 0:node.children_len {
+					child := &c.nodes[c.children[node.children_at + k]]
+					content.w = max_f32(content.w, child.size.w)
+					content.h += child.size.h
+				}
+				content.h += gaps
+				extra := node.size.h - (layout.padding.top + layout.padding.bottom) - content.h
+				if layout.align.y == Align_Y.Top do extra = 0.0
+				if layout.align.y == Align_Y.Center do extra /= 2.0
+				next.y += max_f32(0.0, extra)
+			}
+			if scroll_at >= 0 do c.scrolls[scroll_at].content = Size{w = content.w + layout.padding.left + layout.padding.right, h = content.h + layout.padding.top + layout.padding.bottom}
+
+			// (Onto the walk, the first child last: the next one visited.)
+			base := c.walk.len
+			c.walk.len += node.children_len
+			for k in 0:node.children_len {
+				child := &c.nodes[c.children[node.children_at + k]]
+				// (Across the flow: by its alignment that way.)
+				if layout.direction == Left_To_Right {
+					next.y = layout.padding.top
+					white := node.size.h - (layout.padding.top + layout.padding.bottom) - child.size.h
+					if layout.align.y == Align_Y.Center do next.y += white / 2.0
+					if layout.align.y == Align_Y.Bottom do next.y += white
+				else
+					next.x = layout.padding.left
+					white := node.size.w - (layout.padding.left + layout.padding.right) - child.size.w
+					if layout.align.x == Align_X.Center do next.x += white / 2.0
+					if layout.align.x == Align_X.Right do next.x += white
+				}
+				spot := base + node.children_len - 1 - k
+				c.walk[spot] = Visit{node = c.children[node.children_at + k], position = Point{x = box.x + next.x + scroll.x, y = box.y + next.y + scroll.y}, next_child = Point{x = child.decl.layout.padding.left, y = child.decl.layout.padding.top}}
+				c.visited[spot] = false
+				if layout.direction == Left_To_Right {
+					next.x += child.size.w + layout.gap
+				else
+					next.y += child.size.h + layout.gap
+				}
+			}
+		}
+		if clipping {
+			stop : Command
+			stop.kind = Scissor_End
+			stop.id = hash_number(top.id, u32(top.children_len + 11)).id
+			command_add(c, stop)
+		}
+	}
+}
+
+// The layout ended: every element sized and placed, c.commands what to
+// draw. The first problem met since begin_layout, if any.
+end_layout :: fun(c: ^Context) -> err {
+	close_element(c)
+	if c.open.len > 1 do fail(c, Unbalanced)
+	if not c.exceeded do final_layout(c)
+
+	// (Elements not declared this frame are forgotten.)
+	for bucket in 0:MAX_ELEMENTS {
+		at := c.buckets[bucket]
+		previous : i64 = 0
+		for at != 0 {
+			following := c.items[at].next
+			if c.items[at].generation <= c.generation {
+				gone : Map_Item
+				c.items[at] = gone
+				&c.items_free ++ at
+				if previous == 0 {
+					c.buckets[bucket] = following
+				else
+					c.items[previous].next = following
+				}
+			else
+				previous = at
+			}
+			at = following
+		}
+	}
+	if c.problem do return c.problem
+}
+
+// A text command's text. Good until the next begin_layout.
+command_text :: fun(c: ^Context, cmd: Command) -> []utf8 {
+	s : []utf8 = c.chars[cmd.text_at : cmd.text_at + cmd.text_len]
+	return s
+}
+
+// ---- The pointer, scrolling, asking ----
+
+// Where the pointer is, and whether its button is down: c.over is made, the
+// elements of the last layout it's over. Called before begin_layout, so the
+// layout can ask (hovered, pointer_over).
+set_pointer :: fun(c: ^Context, x: f32, y: f32, down: bool) {
+	if c.exceeded do return
+	position := Point{x = x, y = y}
+	c.pointer.position = position
+	c.over.len = 0
+	// (The trees from the top one down: what's over hides what's under.)
+	for r in 0:c.roots.len {
+		root := c.roots[c.roots.len - 1 - r]
+		c.stack.len = 0
+		&c.stack ++ root.node
+		c.visited[0] = false
+		found := false
+		for c.stack.len > 0 {
+			at := c.stack.len - 1
+			if c.visited[at] {
+				c.stack.len -= 1
+				continue
+			}
+			c.visited[at] = true
+			index := c.stack[at]
+			node := &c.nodes[index]
+			item := map_item(c, node.id)
+			if item == 0 or c.items[item].generation <= c.generation {
+				c.stack.len -= 1
+				continue
+			}
+			clip_id := c.clip_ids[index]
+			unclipped := clip_id == 0
+			if not unclipped do unclipped = inside_box(position, c.items[map_item(c, clip_id)].box)
+			if inside_box(position, c.items[item].box) and unclipped {
+				if c.over.len < c.over.cap do &c.over ++ c.items[item].id
+				found = true
+			}
+			for k in 0:node.children_len {
+				&c.stack ++ c.children[node.children_at + node.children_len - 1 - k]
+				c.visited[c.stack.len - 1] = false
+			}
+		}
+		top := &c.nodes[root.node]
+		if found and top.decl.floating.attach != Nowhere and top.decl.floating.capture == Captures do break
+	}
+
+	if down {
+		if c.pointer.state == Pressed_This_Frame {
+			c.pointer.state = Pressed
+		elif c.pointer.state != Pressed
+			c.pointer.state = Pressed_This_Frame
+		}
+	else
+		if c.pointer.state == Released_This_Frame {
+			c.pointer.state = Released
+		elif c.pointer.state != Released
+			c.pointer.state = Released_This_Frame
+		}
+	}
+}
+
+// Whether the pointer is over the open element.
+hovered :: fun(c: ^Context) -> bool {
+	if c.exceeded do return false
+	open_id := open_element_id(c)
+	for o in c.over {
+		if o.id == open_id do return true
+	}
+	return false
+}
+
+// Whether the pointer is over the element with an id.
+pointer_over :: fun(c: ^Context, id: Id) -> bool {
+	for o in c.over {
+		if o.id == id.id do return true
+	}
+	return false
+}
+
+// The box of the element with an id, as last laid out, and whether there
+// is one.
+element_box :: fun(c: ^Context, id: Id) -> Box, bool {
+	item := map_item(c, id.id)
+	return c.items[item].box, item != 0
+}
+
+// How far the open element's children are scrolled: its clip's
+// child_offset, for one the context scrolls (update_scroll).
+scroll_offset :: fun(c: ^Context) -> Point {
+	if c.exceeded do return Point{x = 0.0, y = 0.0}
+	open_id := open_element_id(c)
+	for s in c.scrolls {
+		if s.id == open_id do return s.position
+	}
+	return Point{x = 0.0, y = 0.0}
+}
+
+// A scrolling element's state, by its id.
+scroll_state :: fun(c: ^Context, id: Id) -> Scroll_State {
+	for s in c.scrolls {
+		if s.id == id.id do return Scroll_State{position = s.position, container = Size{w = s.box.w, h = s.box.h}, content = s.content, found = true}
+	}
+	return Scroll_State{found = false}
+}
+
+// A scrolling element's position set: 0 or less each way.
+set_scroll :: fun(c: ^Context, id: Id, position: Point) {
+	for k in 0:c.scrolls.len {
+		if c.scrolls[k].id == id.id do c.scrolls[k].position = position
+	}
+}
+
+// The scrolling elements moved: the one the pointer is over by the wheel
+// (dx, dy) — and, with drag set, by the pointer dragged over it, gliding on
+// after it's let go. dt is the frame's time, seconds. Called once a frame,
+// after set_pointer.
+update_scroll :: fun(c: ^Context, drag: bool, dx: f32, dy: f32, dt: f32) {
+	active := drag and (c.pointer.state == Pressed or c.pointer.state == Pressed_This_Frame)
+	wheeled := dx != 0.0 or dy != 0.0
+	chosen : i64 = -1
+	k := 0
+	for k < c.scrolls.len {
+		s := &c.scrolls[k]
+		// (Not declared last frame: forgotten.)
+		if not s.open or map_item(c, s.id) == 0 {
+			c.scrolls[k] = c.scrolls[c.scrolls.len - 1]
+			c.scrolls.len -= 1
+			continue
+		}
+		s.open = false
+		node := &c.nodes[s.node]
+
+		// (Let go: it glides by how fast it was dragged.)
+		if not active and s.dragging {
+			x_moved := s.position.x - s.origin.x
+			if x_moved < -10.0 or x_moved > 10.0 do s.momentum.x = x_moved / (s.momentum_time * 25.0)
+			y_moved := s.position.y - s.origin.y
+			if y_moved < -10.0 or y_moved > 10.0 do s.momentum.y = y_moved / (s.momentum_time * 25.0)
+			s.dragging = false
+			s.pointer_origin = Point{x = 0.0, y = 0.0}
+			s.origin = Point{x = 0.0, y = 0.0}
+			s.momentum_time = 0.0
+		}
+
+		s.position.x += s.momentum.x
+		s.momentum.x *= 0.95
+		if (s.momentum.x > -0.1 and s.momentum.x < 0.1) or wheeled do s.momentum.x = 0.0
+		s.position.x = min_f32(max_f32(s.position.x, -max_f32(s.content.w - node.size.w, 0.0)), 0.0)
+		s.position.y += s.momentum.y
+		s.momentum.y *= 0.95
+		if (s.momentum.y > -0.1 and s.momentum.y < 0.1) or wheeled do s.momentum.y = 0.0
+		s.position.y = min_f32(max_f32(s.position.y, -max_f32(s.content.h - node.size.h, 0.0)), 0.0)
+
+		// (The innermost one the pointer is over is the one that moves.)
+		for o in c.over {
+			if o.id == s.id do chosen = k
+		}
+		k += 1
+	}
+	if chosen < 0 do return
+
+	s := &c.scrolls[chosen]
+	node := &c.nodes[s.node]
+	can_y := node.decl.clip.vertical and s.content.h > node.size.h
+	can_x := node.decl.clip.horizontal and s.content.w > node.size.w
+	if can_y do s.position.y += dy * 10.0
+	if can_x do s.position.x += dx * 10.0
+	if active {
+		s.momentum = Point{x = 0.0, y = 0.0}
+		if not s.dragging {
+			s.pointer_origin = c.pointer.position
+			s.origin = s.position
+			s.dragging = true
+		else
+			moved_x : f32 = 0.0
+			moved_y : f32 = 0.0
+			if can_x {
+				before := s.position.x
+				s.position.x = s.origin.x + (c.pointer.position.x - s.pointer_origin.x)
+				s.position.x = max_f32(min_f32(s.position.x, 0.0), -(s.content.w - s.box.w))
+				moved_x = s.position.x - before
+			}
+			if can_y {
+				before := s.position.y
+				s.position.y = s.origin.y + (c.pointer.position.y - s.pointer_origin.y)
+				s.position.y = max_f32(min_f32(s.position.y, 0.0), -(s.content.h - s.box.h))
+				moved_y = s.position.y - before
+			}
+			if moved_x > -0.1 and moved_x < 0.1 and moved_y > -0.1 and moved_y < 0.1 and s.momentum_time > 0.15 {
+				s.momentum_time = 0.0
+				s.pointer_origin = c.pointer.position
+				s.origin = s.position
+			else
+				s.momentum_time += dt
+			}
+		}
+	}
+	if can_y do s.position.y = max_f32(min_f32(s.position.y, 0.0), -(s.content.h - node.size.h))
+	if can_x do s.position.x = max_f32(min_f32(s.position.x, 0.0), -(s.content.w - node.size.w))
+}
