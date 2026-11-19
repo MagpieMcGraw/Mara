@@ -29,8 +29,44 @@ tc_template_owner :: proc(k: ^TC, tmpl: TC_Template) -> ^Type_Scope {
 // A generic's instance name: its name and the types it's made at, named
 // for its owner (`main_twice__i64`, `mara_core_swap__i64`) as its plain funs
 // are.
+// Types are spelled in it as they're written, so two modules' types of one
+// name (each its own `Node`) would spell one instance, and the second
+// module's lists would get the first's append: a name already made at other
+// types gets a number after it (`mara_core_append__Node__2`), in the order
+// they're met.
 tc_instance_name :: proc(k: ^TC, tmpl: TC_Template, name: string, type_args: []Type) -> string {
-    return mangle_generic_name(make_flat_name(tmpl.owner.name, tc_def_name(k, tmpl.def)), type_args)
+    base := mangle_generic_name(make_flat_name(tmpl.owner.name, tc_def_name(k, tmpl.def)), type_args)
+    mangled := base
+    for n := 2; ; n += 1 {
+        made, known := k.instance_args[mangled]
+        if !known {
+            kept := make([]Type, len(type_args))
+            copy(kept, type_args)
+            k.instance_args[mangled] = kept
+            return mangled
+        }
+        same := len(made) == len(type_args)
+        if same { for a, i in made { if !type_same_named(a, type_args[i]) { same = false; break } } }
+        if same { return mangled }
+        mangled = fmt.aprintf("%s__%d", base, n)
+    }
+}
+
+// Whether two types that spell alike are one type: each named type in them
+// the same definition (its flat name: its module's too).
+type_same_named :: proc(a, b: Type) -> bool {
+    a, b := resolve_infer(a), resolve_infer(b)
+    #partial switch va in a {
+    case ^Type_Ptr:           vb, ok := b.(^Type_Ptr);           return ok && type_same_named(va.elem, vb.elem)
+    case ^Type_Fixed_Array:   vb, ok := b.(^Type_Fixed_Array);   return ok && type_same_named(va.elem, vb.elem)
+    case ^Type_Slice:         vb, ok := b.(^Type_Slice);         return ok && type_same_named(va.elem, vb.elem)
+    case ^Type_Partial_Array: vb, ok := b.(^Type_Partial_Array); return ok && type_same_named(va.elem, vb.elem)
+    case ^Type_Scope:         vb, ok := b.(^Type_Scope);         return ok && va.name == vb.name
+    case ^Type_Enum:          vb, ok := b.(^Type_Enum);          return ok && va.name == vb.name
+    case ^Type_Union:         vb, ok := b.(^Type_Union);         return ok && va.name == vb.name
+    case ^Type_Distinct:      vb, ok := b.(^Type_Distinct);      return ok && va.name == vb.name
+    }
+    return true
 }
 
 // What a body's generic sees its owners' type params bound to: each
