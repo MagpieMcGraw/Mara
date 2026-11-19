@@ -418,12 +418,16 @@ hit_find_file :: proc(all_files: map[string][dynamic]^Source_File, file: string)
     return
 }
 
+// What to say of a file the build found but never read: no module it built uses the file's.
+@(private="file")
+hit_unbuilt :: proc(src: ^Source_File, want: string) -> string {
+    return fmt.tprintf("mara ask: '%s' isn't part of this build: nothing in it uses module '%s'\n", want, src.module)
+}
+
 // The point at a line and a column of a file, `want` the file's name.
 @(private="file")
 hit_point_in :: proc(t: ^Tree, src_file: ^Source_File, want: string, line, col: int) -> (p: Hit_Point, msg: string, ok: bool) {
-    if src_file.end_token <= src_file.first_token {
-        return p, fmt.tprintf("mara ask: '%s' has no tokens (not part of this build?)\n", want), false
-    }
+    if src_file.end_token <= src_file.first_token { return p, hit_unbuilt(src_file, want), false }
     tokens := build_tokens[src_file.first_token:src_file.end_token]
     tok_i, found := token_index_at(tokens, line, col)
     if !found {
@@ -494,6 +498,8 @@ hit_byte_spec :: proc(spec: string) -> (file: string, lo, hi: int, ok: bool) {
 // a fun's params' brackets and commas: the fun.
 @(private="file")
 hit_point_bytes :: proc(t: ^Tree, src: ^Source_File, want: string, lo, hi: int) -> (p: Hit_Point, msg: string, ok: bool) {
+    if src.end_token <= src.first_token { return p, hit_unbuilt(src, want), false }
+    if lo > len(src.source) { return p, fmt.tprintf("mara ask: nothing at %s@%d: the file as read is %d bytes\n", want, lo, len(src.source)), false }
     tokens := build_tokens[src.first_token:src.end_token]
     real :: proc(k: Token_Kind) -> bool { return k != .Newline && k != .EOF }
     end_of :: proc(tk: Token) -> int { return int(tk.offset + tk.len) }
