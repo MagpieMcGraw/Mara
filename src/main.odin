@@ -2318,7 +2318,7 @@ main :: proc() {
 
     // `ask` stops here — the checked program is the query substrate; no codegen.
     if args.ask {
-        flush_diagnostics()
+        reset_diagnostics()   // (a check's warnings: about the code, not the query — no answer's, as serve's aren't; a failed check said them above)
         s := Ask_Session{checked, all_files, files, args.compiler_dir, args.pkg_name}
         out, found := ask_run(&s, args.ask_query, ask_in)
         fmt.print(out)
