@@ -370,9 +370,12 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 		if i >= 0 {
 			if ui.panels[i].kind == PROFILE_PANEL {
 				// (Shift held: the wheel moves the table sideways; a wheel
-				// that tilts, or a touchpad, moves it sideways anyway.)
+				// that tilts, or a touchpad, moves it sideways anyway. Held
+				// as the system says too: SDL knows the keys only of a
+				// window that has the keyboard, and the wheel turns over
+				// one that hasn't.)
 				sideways := e.x
-				if (GetModState() & KMOD_SHIFT) != 0 {
+				if (GetModState() & KMOD_SHIFT) != 0 or os.shift_held() {
 					sideways = -e.y
 				else
 					ui.scroll -= i64(e.y * 3.0)

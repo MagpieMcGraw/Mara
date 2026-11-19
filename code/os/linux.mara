@@ -906,6 +906,13 @@ use mara.string
 		return No_Compositor
 	}
 
+	// Whether a Shift key is held now, whichever window has the keyboard:
+	// not on Linux yet (X11 and Wayland each tell it their own way, to a
+	// window), so always false.
+	shift_held :: fun() -> bool {
+		return false
+	}
+
 	// clock_gettime's and nanosleep's time.
 	Timespec :: struct {
 		seconds:     i64

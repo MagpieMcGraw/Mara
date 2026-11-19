@@ -1016,6 +1016,17 @@ use mara.string
 		fun DwmFlush() -> i32   // (0 when it waited)
 	}
 
+	// Whether a Shift key is held now, whichever window has the keyboard. A
+	// window that hasn't it gets no key events, but still gets the mouse's
+	// wheel: this is how it tells a Shift+wheel.
+	shift_held :: fun() -> bool {
+		return GetAsyncKeyState(0x10) < 0   // (VK_SHIFT; the top bit: down)
+	}
+
+	foreign static_lib "user32" {
+		fun GetAsyncKeyState(key: i32) -> i16
+	}
+
 	foreign static_lib "kernel32" {
 		fun Sleep(ms: u32)
 		// Clocks and timers

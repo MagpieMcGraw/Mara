@@ -64,6 +64,7 @@ Bar :: struct {
 Profile :: struct {
 	text:    [8 * MB]byte          // the file
 	header:  [8]Field              // its lines before the columns
+	exit_note: i64 = -1              // the header line saying calls were running at exit: its place; -1: none were
 	columns: [MAX_COLUMNS]i64      // the columns it has, in order: which title each is
 	rows:    [MAX_ROWS]Row
 	order:   [MAX_ROWS]i64         // the rows as shown: sorted
@@ -152,6 +153,7 @@ field_text :: fun(p: ^Profile, f: Field) -> []utf8 {
 // sorted as they were. When it can't be shown, why: p.problem.
 profile_read :: fun(p: ^Profile, path: []utf8) {
 	p.header.len = 0
+	p.exit_note = -1
 	p.columns.len = 0
 	p.rows.len = 0
 	p.order.len = 0
@@ -192,7 +194,10 @@ profile_read :: fun(p: ^Profile, path: []utf8) {
 		}
 		if line.len == 0 do continue
 		if p.columns.len == 0 {
-			if not read_columns(p, line) and p.header.len < p.header.cap do &p.header ++ line
+			if not read_columns(p, line) and p.header.len < p.header.cap {
+				if p.exit_note < 0 and contains(field_text(p, line), "running at exit") do p.exit_note = p.header.len
+				&p.header ++ line
+			}
 			if p.problem.len > 0 do return
 			continue
 		}
