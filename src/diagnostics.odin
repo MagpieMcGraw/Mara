@@ -66,6 +66,11 @@ emit_diagnostic :: proc(kind: Diagnostic_Kind, location: string, msg: string, ar
     append(&g_diagnostics, Diagnostic{kind = kind, location = strings.clone(location), message = body})
 }
 
+// ... one at a token, its location said: a parser's (the token: what it breaks — units.odin).
+emit_diagnostic_token :: proc(kind: Diagnostic_Kind, location: string, at: Token_Id, msg: string, args: ..any) {
+    append(&g_diagnostics, Diagnostic{kind = kind, location = strings.clone(location), message = fmt.aprintf(msg, ..args), at = at})
+}
+
 // Queue a diagnostic at a place unless the same one is queued there already;
 // whether it was queued.
 emit_diagnostic_once :: proc(kind: Diagnostic_Kind, span: Span, msg: string, args: ..any) -> bool {

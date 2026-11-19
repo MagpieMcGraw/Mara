@@ -100,7 +100,7 @@ tp_error :: proc(p: ^Tree_Parser, at: Token_Id, msg: string, args: ..any) {
     p.errors += 1
     tok := build_tokens[at]
     if p.boundary_error < 0 && tp_is_boundary(tok.kind) { p.boundary_error = int(at) }
-    emit_diagnostic(.Parse_Error, format_location(p.file, token_line(tok), token_col(tok)), msg, ..args)
+    emit_diagnostic_token(.Parse_Error, format_location(p.file, token_line(tok), token_col(tok)), at, msg, ..args)
 }
 
 tp_skip_newlines :: proc(p: ^Tree_Parser) {

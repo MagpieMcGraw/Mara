@@ -475,7 +475,7 @@ tc_is_call :: proc(k: ^TC, n: Tree_Id) -> bool {
 tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: string,
                          shared: bool = false, web: bool = false, target_os: Target_OS = .Windows, profile_memory := false,
                          analysis_only: bool = false, no_assert: bool = false, perf: ^Performance_Timer = nil,
-                         lower := true, no_crt := false, also: []string = nil, partial := false) -> ^Checked_Program {
+                         lower := true, no_crt := false, also: []string = nil, partial := false, parse_errors := false) -> ^Checked_Program {
     table := new(SymbolTable)
     table.allocator = context.allocator
     main_mod := new(Type_Scope)
@@ -589,11 +589,12 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     mid: Middle
     // (A tool's check with errors, `partial`: what they break is left out,
     // the rest lowered as ever — units.odin. A build's stops here.)
-    if c.errors > 0 && lower && partial {
-        k.units = units_find(k, diagnostics_error_tokens(diagnosed))
+    // (`parse_errors`: the parser's are among them, each at a token.)
+    if (c.errors > 0 || parse_errors) && lower && partial {
+        k.units = units_find(k, diagnostics_error_tokens(0))
         checked.holes = true
     }
-    if (c.errors == 0 || k.units != nil) && lower {
+    if (c.errors == 0 && !parse_errors || k.units != nil) && lower {
         // The checker only checks: each code is lowered from the annotated
         // tree once it is done, and analysed (middle.odin).
         if perf != nil { perf_timer_mark(perf, "lower") }
@@ -618,10 +619,10 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
         middle_report(c, checked, &mid, fns, void_defaults)
         middle_free(&mid)
     }
-    annot_check(k.annot, t, &checked.code, c.errors)
+    annot_check(k.annot, t, &checked.code, c.errors + int(parse_errors))
     checked.names, checked.bound, checked.binds = k.names, k.bound, k.binds[:]
     checked.errors = c.errors
-    checked.partial = partial && lower && c.errors > 0 && (mid.on || len(checked.code.codes) > 0)
+    checked.partial = partial && lower && (c.errors > 0 || parse_errors) && mid.on
     return checked
 }
 

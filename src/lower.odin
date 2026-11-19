@@ -150,6 +150,7 @@ lw_place_decl :: proc(k: ^TC, codes: ^LW_Codes, d: Graph_Decl, owner: ^Type_Scop
         list := lw_decl_scopes(k, d, owner)
         if len(list) == 0 {
             if d.generic { return }   // a generic nothing instantiates: syntax only
+            if k.units != nil { return }   // (lowered around errors: one of them left it unregistered)
             graph_fatal(d.span, "'%s' reached the graph unchecked", d.name)
         }
         for ts in list { lw_place_scope(k, codes, ts, d.name, d.span, .Synthetic if d.generic else .Explicit) }

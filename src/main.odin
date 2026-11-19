@@ -1448,7 +1448,14 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
     // errored. (mara lsp goes on: an editor's files are mid-edit, and what
     // does parse is checked — the checker's notes on the rest are what
     // hover and the like answer from; no code is made from it.)
-    if len(parse_errors) > 0 && !args.lsp {
+    // A query's check, a server's, goes on past them too when each is at a
+    // token (the parser's; a lexer's is at none): what they break is left
+    // out, and the rest checked, lowered and answered from (units.odin).
+    partial := args.ask || args.serve
+    parse_total := 0
+    for _, n in parse_errors { parse_total += n }
+    around := partial && parse_total > 0 && len(diagnostics_error_tokens(0)) == parse_total
+    if len(parse_errors) > 0 && !args.lsp && !around {
         b := strings.builder_make()
         strings.write_string(&b, take_diagnostics())
         total_errs := 0
@@ -1490,8 +1497,9 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
                                no_crt        = args.no_crt,
                                perf          = perf,
                                also          = args.also,
-                               partial       = args.ask || args.serve,   // (a query's check, a server's: answered around its errors)
-                               lower         = !args.edit && len(parse_errors) == 0)   // (mara lsp's too: what the flow finds, a missing return, its errors)
+                               partial       = partial,   // (answered around its errors)
+                               parse_errors  = around,
+                               lower         = !args.edit && (len(parse_errors) == 0 || around))   // (mara lsp's too: what the flow finds, a missing return, its errors)
     if checked.errors > 0 || len(parse_errors) > 0 {
         return checked, shared, strings.concatenate({take_diagnostics(), fmt.aprintf(BUILD_TYPE_ERRORS_ABORT, checked.errors)})
     }

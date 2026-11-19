@@ -71,8 +71,14 @@ units_find :: proc(k: ^TC, errors: []Token_Id) -> ^Units {
     for tok in errors {
         if tok == 0 || int(tok) >= len(u.def) { continue }
         d := u.def[tok]
+        // (In a statement of its file's own, as the parser read it — one it
+        // took for a definition's can be within that definition's tokens.)
+        file := build_tokens[tok].file
+        for s in tree_list(t, t.a[t.files[file]]) {
+            if t.tag[s] != .Define && tok >= t.first[s] && tok < t.end[s] { d = 0 }
+        }
         switch {
-        case d == 0:          u.loose[build_tokens[tok].file] = true
+        case d == 0:          u.loose[file] = true
         case u.in_body[tok]:  u.body[d] = true
         case !u.head[d]:      u.head[d] = true; append(&broken, d)
         }
