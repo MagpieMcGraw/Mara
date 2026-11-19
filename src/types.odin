@@ -169,6 +169,25 @@ types_put :: proc(h: Types_Held) {
     g_type_shapes, g_infer_arrays = h.shapes, h.arrays
 }
 
+// The tables as they are, copied (a check's kept part's), and back to that:
+// the shapes made since forgotten, the array bindings since dropped. (The
+// copy stays the caller's, to go back to again.)
+types_copy :: proc() -> (h: Types_Held) {
+    heap := runtime.heap_allocator()
+    h.shapes = make(map[Type_Shape]rawptr, max(len(g_type_shapes), 16), heap)
+    for shape, made in g_type_shapes { h.shapes[shape] = made }
+    h.arrays = make([dynamic]^Infer_Cell, len(g_infer_arrays), heap)
+    copy(h.arrays[:], g_infer_arrays[:])
+    return
+}
+
+types_back_to :: proc(h: Types_Held) {
+    clear(&g_type_shapes)
+    for shape, made in h.shapes { g_type_shapes[shape] = made }
+    resize(&g_infer_arrays, len(h.arrays))
+    copy(g_infer_arrays[:], h.arrays[:])
+}
+
 // The shapes made forgotten: a check of serve's, after another.
 types_forget_shapes :: proc() {
     delete(g_infer_arrays)

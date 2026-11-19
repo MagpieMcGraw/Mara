@@ -276,6 +276,25 @@ tree_reserve :: proc(t: ^Tree, tokens: int) {
 }
 
 // The tree's columns let go of (a check of serve's, before the next).
+// How far the tree has got, and back to there: what was parsed since gone
+// (a check's kept part, when serve checks the rest again — serve.odin). The
+// columns are the heap's and cut; its files' roots are the check's arena's,
+// as they were; the parents are found again when asked for.
+Tree_Mark :: struct {
+    nodes, extra: int,
+    files:        [dynamic]Tree_Id,
+}
+
+tree_mark :: proc(t: ^Tree) -> Tree_Mark {
+    return {len(t.tag), len(t.extra), t.files}
+}
+
+tree_reset_to :: proc(t: ^Tree, m: Tree_Mark) {
+    resize(&t.tag, m.nodes); resize(&t.main, m.nodes); resize(&t.first, m.nodes); resize(&t.end, m.nodes)
+    resize(&t.a, m.nodes); resize(&t.b, m.nodes); resize(&t.extra, m.extra)
+    t.files, t.parent = m.files, {}
+}
+
 tree_free :: proc(t: ^Tree) {
     delete(t.tag); delete(t.main); delete(t.first); delete(t.end)
     delete(t.a); delete(t.b); delete(t.extra)

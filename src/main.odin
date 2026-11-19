@@ -281,13 +281,13 @@ compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target:
 // Every file the build reads, parsed into the flat tree (build_tree: a root
 // per file, in build_files' order); each module's parse errors, its lexer's
 // counted as its files'.
-parse_target_files :: proc() -> (errors: map[string]int) {
+parse_target_files :: proc(from := 0) -> (errors: map[string]int) {
     // (The parser's scratch — the lists it builds each node's from — let go
     // of after each file: what it makes is the tree's.)
     scratch: Bump
     defer bump_destroy(&scratch)
     tree_reserve(&build_tree, len(build_tokens))
-    for f in build_files {
+    for f in build_files[from:] {   // (`from`: the files read since a check's first stage)
         context.temp_allocator = bump_allocator(&scratch)
         _, n := tree_parse_file(f)
         if n += f.lex_errors; n > 0 { errors[f.module] += n }
@@ -1425,6 +1425,26 @@ run_view :: proc(args: CLI_Args) {
 // checked. On a failure, what to say about it — the diagnostics, then a
 // summary — for build and ask to print and exit on, and serve to answer
 // with. `shared`: the module builds a DLL (no main, or -shared).
+// What a check that stops at its parse errors says: the queued diagnostics,
+// then how many, by module.
+parse_errors_said :: proc(parse_errors: map[string]int) -> string {
+    b := strings.builder_make()
+    strings.write_string(&b, take_diagnostics())
+    total_errs := 0
+    for _, n in parse_errors { total_errs += n }
+    if len(parse_errors) == 1 {
+        for pkg, n in parse_errors {
+            fmt.sbprintf(&b, BUILD_PARSE_ERRORS_ABORT, n, pkg)
+        }
+    } else {
+        fmt.sbprintf(&b, "Found %d parse error(s) across %d module(s). Aborting.\n", total_errs, len(parse_errors))
+        for pkg, n in parse_errors {
+            fmt.sbprintf(&b, "  - %s: %d error(s)\n", pkg, n)
+        }
+    }
+    return strings.to_string(b)
+}
+
 check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, perf: ^Performance_Timer) -> (checked: ^Checked_Program, shared: bool, failure: string) {
     analysis := args.ask || args.serve || args.edit || os.get_env("MARA_CHECK_ONLY", context.temp_allocator) != ""   // (read-only: no code, no entry point needed)
 
@@ -1454,24 +1474,8 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
     partial := args.ask || args.serve
     parse_total := 0
     for _, n in parse_errors { parse_total += n }
-    around := partial && parse_total > 0 && len(diagnostics_error_tokens(0)) == parse_total
-    if len(parse_errors) > 0 && !args.lsp && !around {
-        b := strings.builder_make()
-        strings.write_string(&b, take_diagnostics())
-        total_errs := 0
-        for _, n in parse_errors { total_errs += n }
-        if len(parse_errors) == 1 {
-            for pkg, n in parse_errors {
-                fmt.sbprintf(&b, BUILD_PARSE_ERRORS_ABORT, n, pkg)
-            }
-        } else {
-            fmt.sbprintf(&b, "Found %d parse error(s) across %d module(s). Aborting.\n", total_errs, len(parse_errors))
-            for pkg, n in parse_errors {
-                fmt.sbprintf(&b, "  - %s: %d error(s)\n", pkg, n)
-            }
-        }
-        return nil, false, strings.to_string(b)
-    }
+    around := partial && parse_total > 0 && diagnostics_parse_placed() == parse_total
+    if len(parse_errors) > 0 && !args.lsp && !around { return nil, false, parse_errors_said(parse_errors) }
 
     // A build needs an entry point — `main` for an exe or an `#expose`
     // function for a DLL. A package with neither is typically a user

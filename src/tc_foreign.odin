@@ -171,14 +171,19 @@ tc_extract_foreign :: proc(k: ^TC, s: Tree_Id, owner: string) {
         // (Another module may bind a C function one has: as that one does — a
         // symbol has one C signature, its one `declare`. Its Mara types may
         // differ, a distinct File_Id for an i64, the C ones not.)
+        // (Of several that bind it, the first as written: the same one
+        // whatever order the functions come in.)
+        bound: ^Type_Scope
         for _, existing in k.checked.functions {
             fo, is_foreign := existing.origin.(Origin_Foreign)
             if !is_foreign || fo.link_name != link { continue }
+            if bound == nil || existing.body_span.at < bound.body_span.at { bound = existing }
+        }
+        if bound != nil {
             os := k.checked.target_os
-            if build_c_declare(existing, link, os) != build_c_declare(ft, link, os) {
-                tc_error(k, span, TYPE_FOREIGN_SYMBOL_ALREADY_DECLARED_LIBRARY, link, fo.library, span_loc(existing.body_span))
+            if build_c_declare(bound, link, os) != build_c_declare(ft, link, os) {
+                tc_error(k, span, TYPE_FOREIGN_SYMBOL_ALREADY_DECLARED_LIBRARY, link, bound.origin.(Origin_Foreign).library, span_loc(bound.body_span))
             }
-            break
         }
         ft.body_span = span
         // (Its params: its variables, though it has no body to bind them.)

@@ -34,7 +34,37 @@ Serve_Check :: struct {
     failure: string,   // what every answer is instead, when it didn't check
     stamp:   string,   // the sources it read (serve_stamp)
     diagnostics: [dynamic]Diagnostic,   // its errors and warnings, each at its place
+    kept:    ^Serve_Kept,   // what serve keeps of it for the next (nil: nothing — a check made once)
 }
+
+// What serve keeps of a check for the next, on the heap. Of the last check:
+// the sources it read, each module's uses, each file's module — what a
+// change is told by. And a check as it was between its stages (modules.odin),
+// the modules a change didn't touch checked and nothing else read: the
+// arena's bytes, and what of the build's state isn't in it. A change that
+// touches none of those modules puts all that back and checks only the rest.
+Serve_Kept :: struct {
+    stamp:       string,
+    pkg:         string,
+    graph:       map[string][]string,
+    file_module: map[string]string,   // (by its path's key)
+    on:          bool,
+    modules:     []string,
+    bytes:       []byte,
+    st:          Staged,
+    all_files:   map[string][dynamic]^Source_File,
+    files:       [dynamic]^Source_File,
+    literals:    map[Token_Id]string,
+    diagnostics: [dynamic]Diagnostic,
+    tokens:      int,
+    tree:        Tree_Mark,
+    types:       Types_Held,
+    atoms:       int,
+}
+
+// The room a kept check's arena has: one block, never moved, so its bytes
+// can be put back where they were.
+SERVE_ARENA_RESERVE :: 64 << 30
 
 // One folder's set of modules, held: where it is, the module first asked
 // about there and those added beside it since (args.pkg_name, args.also),
@@ -80,7 +110,7 @@ serve :: proc(args: CLI_Args) {
     here := new_clone(Serve_Here{args = args})
     here.dir, _ = os.get_working_directory(context.allocator)
     append(&sets, here)
-    serve_check(&here.check, args, serve_stamp(args.compiler_dir, args.search_dirs))
+    serve_check(&here.check, args, serve_stamp(args.compiler_dir, args.search_dirs), keeping = true)
     r: bufio.Reader
     bufio.reader_init(&r, os.to_stream(os.stdin))
     defer bufio.reader_destroy(&r)
@@ -159,7 +189,7 @@ serve_ready :: proc(sets: ^[dynamic]^Serve_Here, here: ^^Serve_Here, base: CLI_A
         }
         stamp = serve_stamp(h.args.compiler_dir, h.args.search_dirs)
     }
-    serve_check(check, h.args, stamp)
+    serve_check(check, h.args, stamp, keeping = true)
     // (A module asked for that isn't here: said, and not kept in the set.)
     if grown && check.session.all_files != nil && module not_in check.session.all_files {
         h.args.also = h.args.also[:len(h.args.also) - 1]
@@ -195,19 +225,177 @@ compiler_rebuilt :: proc(c: Compiler_File) -> bool {
 
 COMPILER_REBUILT_EXIT :: 3
 
-// The module as it is on disk now, checked in a new arena — the last check's
-// freed first, whole. (The build's globals, its tokens, tree and diagnostics,
-// pointed into it: emptied, they fill with this check's.)
-serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string, overlays: ^map[string]string = nil) {
+// A file's key: its whole path's, however it's written from here.
+@(private="file")
+serve_file_key :: proc(path: string) -> string {
+    whole := path
+    if !filepath.is_abs(whole) {
+        cwd, _ := os.get_working_directory(context.temp_allocator)
+        whole, _ = filepath.join({cwd, whole}, context.temp_allocator)
+    }
+    return path_key(whole)
+}
+
+// A stamp's files: each one's line, by its path's key.
+@(private="file")
+serve_stamp_files :: proc(stamp: string) -> map[string]string {
+    out := make(map[string]string, context.temp_allocator)
+    for line in strings.split_lines(stamp, context.temp_allocator) {
+        // (`<path> <size> <written>`: the path may have spaces, the two numbers none.)
+        cut := strings.last_index_byte(line, ' ')
+        if cut > 0 { cut = strings.last_index_byte(line[:cut], ' ') }
+        if cut > 0 { out[serve_file_key(line[:cut])] = line }
+    }
+    return out
+}
+
+// The modules a change of sources touches, from the last check's stamp to
+// this one: each file changed, come or gone — its module then, its module
+// now. `known` false: there's no telling (no check before, or of another
+// module).
+@(private="file")
+serve_changed :: proc(kept: ^Serve_Kept, stamp: string, pkg: string) -> (changed: []string, known: bool) {
+    if kept.stamp == "" || kept.pkg != pkg { return nil, false }
+    out := make([dynamic]string, context.temp_allocator)
+    was, now := serve_stamp_files(kept.stamp), serve_stamp_files(stamp)
+    touch :: proc(kept: ^Serve_Kept, out: ^[dynamic]string, key, line: string, there: bool) {
+        if m := kept.file_module[key] or_else ""; m != "" && !slice.contains(out[:], m) { append(out, m) }
+        if !there { return }
+        cut := strings.last_index_byte(line, ' ')
+        cut = strings.last_index_byte(line[:cut], ' ')
+        data, err := os.read_entire_file_from_path(line[:cut], context.temp_allocator)
+        if err != nil { return }
+        if m := extract_package_name(string(data)); m != "" && !slice.contains(out[:], m) { append(out, m) }
+    }
+    for key, line in now { if (was[key] or_else "") != line { touch(kept, &out, key, line, true) } }
+    for key, line in was { if key not_in now { touch(kept, &out, key, line, false) } }
+    return out[:], true
+}
+
+// The modules read that use one of `changed`, through any number of uses,
+// and those themselves: what a change makes of the last check's graph.
+@(private="file")
+serve_redo :: proc(kept: ^Serve_Kept, changed: []string) -> map[string]bool {
+    redo := make(map[string]bool, context.temp_allocator)
+    for m in changed { redo[m] = true }
+    for grew := true; grew; {
+        grew = false
+        for m, uses in kept.graph {
+            if redo[m] { continue }
+            for u in uses { if redo[u] { redo[m], grew = true, true; break } }
+        }
+    }
+    return redo
+}
+
+// What the next check is told a change by: this check's sources, each module's
+// uses, each file's module.
+@(private="file")
+serve_note :: proc(kept: ^Serve_Kept, stamp, pkg: string, all_files, files: map[string][dynamic]^Source_File) {
+    heap := runtime.heap_allocator()
+    context.allocator = heap
+    delete(kept.stamp); delete(kept.pkg)
+    for m, uses in kept.graph { delete(m); for u in uses { delete(u) }; delete(uses) }
+    for key, m in kept.file_module { delete(key); delete(m) }
+    clear(&kept.graph); clear(&kept.file_module)
+    kept.stamp, kept.pkg = strings.clone(stamp), strings.clone(pkg)
+    for m, fs in files {
+        uses := make([dynamic]string)
+        for f in fs { for path in f.imports { if path in files && !slice.contains(uses[:], path) { append(&uses, strings.clone(path)) } } }
+        kept.graph[strings.clone(m)] = uses[:]
+    }
+    for m, fs in all_files {
+        for f in fs { kept.file_module[strings.clone(serve_file_key(f.path))] = strings.clone(m) }
+    }
+}
+
+// The check as it is between its stages, kept: the arena's bytes, and what
+// of the build's state isn't in them.
+@(private="file")
+serve_keep :: proc(c: ^Serve_Check, st: Staged, all_files: map[string][dynamic]^Source_File, modules: []string) {
+    kept := c.kept
+    heap := runtime.heap_allocator()
+    serve_unkeep(kept)
+    block := c.arena.curr_block
+    kept.bytes = make([]byte, block.used, heap)
+    copy(kept.bytes, block.base[:block.used])
+    kept.st, kept.all_files = st, all_files
+    kept.files, kept.literals, kept.diagnostics = build_files, build_literals, diagnostics_held()
+    kept.tokens, kept.tree = len(build_tokens), tree_mark(&build_tree)
+    kept.types = types_copy()
+    kept.atoms = len(st.k.checked.atoms)
+    names := make([]string, len(modules), heap)
+    for m, i in modules { names[i] = strings.clone(m, heap) }
+    kept.modules = names
+    kept.on = true
+}
+
+@(private="file")
+serve_unkeep :: proc(kept: ^Serve_Kept) {
+    if !kept.on { return }
+    heap := runtime.heap_allocator()
+    delete(kept.bytes, heap)
+    delete(kept.types.shapes); delete(kept.types.arrays)
+    for m in kept.modules { delete(m, heap) }
+    delete(kept.modules, heap)
+    kept.on, kept.bytes, kept.modules, kept.types = false, nil, nil, {}
+}
+
+// The kept check put back: the arena as it was between the stages, the
+// build's state cut back to it. What the last check made after is gone.
+@(private="file")
+serve_put_back :: proc(c: ^Serve_Check) {
+    kept := c.kept
     if c.session.checked != nil { program_code_free(&c.session.checked.code) }   // (its own memory)
-    virtual.arena_destroy(&c.arena)
-    c^ = {}
-    delete(build_tokens)   // (the tokens and the tree are on the heap)
-    tree_free(&build_tree)
-    build_tokens, build_files, build_literals, build_tree = {}, {}, {}, {}
-    reset_diagnostics()
-    if err := virtual.arena_init_growing(&c.arena); err != nil {
-        fmt.panicf("mara serve: no arena for a check (%v)", err)
+    checked := kept.st.k.checked
+    // (The atoms are the heap's, their table's place in the arena: the
+    // table as it is now, cut to those the kept part had.)
+    atoms, ids := checked.atoms, checked.atom_ids
+    virtual.arena_static_reset_to(&c.arena, uint(len(kept.bytes)))
+    copy(c.arena.curr_block.base[:len(kept.bytes)], kept.bytes)
+    checked.atoms, checked.atom_ids = atoms, ids
+    checked_atoms_cut(checked, kept.atoms)
+    resize(&build_tokens, kept.tokens)
+    tree_reset_to(&build_tree, kept.tree)
+    build_files, build_literals = kept.files, kept.literals
+    diagnostics_hold(kept.diagnostics)
+    types_back_to(kept.types)
+    ir_types_forget()
+    c.session, c.failure, c.stamp, c.diagnostics = {}, "", "", {}
+}
+
+// The module as it is on disk now, checked — the last check's freed first,
+// whole. (The build's globals, its tokens, tree and diagnostics, pointed
+// into it: emptied, they fill with this check's.) `keeping`: a server's own
+// check, of saved files — the modules a change doesn't touch are kept from
+// one check to the next (Serve_Kept), and only the rest checked again.
+serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string, overlays: ^map[string]string = nil, keeping := false) {
+    heap := runtime.heap_allocator()
+    kept := c.kept
+    changed: []string
+    known, put_back := false, false
+    if keeping && os.get_env("MARA_KEEP", context.temp_allocator) != "off" {
+        if kept == nil { kept = new(Serve_Kept, heap); kept.graph.allocator, kept.file_module.allocator = heap, heap }
+        changed, known = serve_changed(kept, stamp, args.pkg_name)
+        put_back = known && kept.on
+        if put_back { for m in changed { if slice.contains(kept.modules, m) { put_back = false } } }
+    } else {
+        kept = nil
+    }
+    if put_back {
+        serve_put_back(c)
+    } else {
+        if c.session.checked != nil { program_code_free(&c.session.checked.code) }   // (its own memory)
+        virtual.arena_destroy(&c.arena)
+        c^ = {}
+        c.kept = kept
+        if kept != nil { serve_unkeep(kept) }
+        delete(build_tokens)   // (the tokens and the tree are on the heap)
+        tree_free(&build_tree)
+        build_tokens, build_files, build_literals, build_tree = {}, {}, {}, {}
+        reset_diagnostics()
+        err := virtual.arena_init_static(&c.arena, SERVE_ARENA_RESERVE) if kept != nil else virtual.arena_init_growing(&c.arena)
+        if err != nil { fmt.panicf("mara serve: no arena for a check (%v)", err) }
     }
     context.allocator = virtual.arena_allocator(&c.arena)
     c.stamp = strings.clone(stamp)
@@ -226,8 +414,45 @@ serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string, overlays: ^m
         c.failure = module_missing(all_files, args.pkg_name)
         return
     }
-    files := compute_use_closure(all_files, args.pkg_name, &perf, args.also)
-    checked, _, failure := check_module(args, files, &perf)
+    files: map[string][dynamic]^Source_File
+    checked: ^Checked_Program
+    failure: string
+    switch {
+    case put_back:
+        // (The kept modules' files are the kept check's: read, lexed, parsed.)
+        for m in kept.modules { if fs := kept.all_files[m] or_else nil; len(fs) > 0 { all_files[fs[0].module] = fs } }
+        st := kept.st
+        checked, failure = check_staged_rest(args, all_files, &st, &perf)
+        files = st.files
+    case known:
+        // (What the change doesn't touch first, kept; then the rest.)
+        redo := serve_redo(kept, changed)
+        keep := make([dynamic]string, context.temp_allocator)
+        // (Each by its files' own name for it: the check's, in its arena — the graph's are the heap's, and go.)
+        for m in kept.graph { if fs := all_files[m] or_else nil; !redo[m] && len(fs) > 0 { append(&keep, fs[0].module) } }
+        slice.sort(keep[:])
+        st := check_staged_kept(args, all_files, keep[:], &perf)
+        serve_keep(c, st, all_files, keep[:])
+        checked, failure = check_staged_rest(args, all_files, &st, &perf)
+        files = st.files
+    case:
+        files = compute_use_closure(all_files, args.pkg_name, &perf, args.also)
+        if os.get_env("MARA_STAGED", context.temp_allocator) == "stdlib" {
+            // (A test's: the same check in two stages — the compiler's own modules
+            // first, then the project's. What was read to find them is forgotten.)
+            keep := modules_closed(files, proc(f: ^Source_File) -> bool { return f.stdlib })
+            delete(build_tokens)
+            build_tokens, build_files, build_literals = {}, {}, {}
+            for _, fs in files { for f in fs { f.lines, f.imports, f.first_token, f.end_token, f.lex_errors = {}, {}, 0, 0, 0 } }
+            reset_diagnostics()
+            st := check_staged_kept(args, all_files, keep, &perf)
+            checked, failure = check_staged_rest(args, all_files, &st, &perf)
+            files = st.files
+        } else {
+            checked, _, failure = check_module(args, files, &perf)
+        }
+    }
+    if kept != nil { serve_note(kept, stamp, args.pkg_name, all_files, files) }
     c.session = Ask_Session{checked, all_files, files, args.compiler_dir, args.pkg_name}
     c.failure = failure
     diagnostics_keep_end()
@@ -275,7 +500,7 @@ serve_answer :: proc(c: ^Serve_Check, words: []string, args: ^CLI_Args = nil, mo
             append(&also, ..args.also)
             append(&also, strings.clone(m, heap))
             args.also = also[:]
-            serve_check(c, args^, strings.clone(c.stamp, context.temp_allocator))
+            serve_check(c, args^, strings.clone(c.stamp, context.temp_allocator), keeping = c.kept != nil)
         }
     }
     // (A check with errors answers from what they don't break, and says

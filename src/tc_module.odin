@@ -57,6 +57,7 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
         tc_error(k, span, TYPE_CIRCULAR_INCLUDE_MODULE_ALREADY_CHECKED, name)
         return nil
     }
+    tc_builtin_void(k)
     files := k.modules[name]
     k.in_progress[name] = true
     m := new(Type_Scope)

@@ -83,9 +83,11 @@ units_find :: proc(k: ^TC, errors: []Token_Id) -> ^Units {
     }
     // The errors' own, then on from each broken head.
     broken := make([dynamic]Token_Id, context.temp_allocator)
+    own := make(map[Token_Id]bool, context.temp_allocator)   // (those with an error of their own)
     for tok in errors {
         if tok == 0 || int(tok) >= len(u.def) { continue }
         d := units_home(u, t, tok)
+        own[d] = true
         switch {
         case d == 0:          u.loose[build_tokens[tok].file] = true
         case u.in_body[tok]:  u.body[d] = true
@@ -95,7 +97,10 @@ units_find :: proc(k: ^TC, errors: []Token_Id) -> ^Units {
     for i := 0; i < len(broken); i += 1 {
         named := users[broken[i]] or_else nil   // (bound first: a loop over a map's missing entry crashes)
         for x in named {
-            if !u.head[x.def] && !u.body[x.def] { u.via[x.def] = broken[i] }
+            // (Of several it names, the first by place: the same one every check.)
+            if !own[x.def] {
+                if first, has := u.via[x.def]; !has || units_before(broken[i], first) { u.via[x.def] = broken[i] }
+            }
             if x.in_body { u.body[x.def] = true; continue }
             if !u.head[x.def] { u.head[x.def] = true; append(&broken, x.def) }
         }
@@ -125,6 +130,16 @@ units_broken_const :: proc(u: ^Units, t: ^Tree, kc: ^TC_Const) -> bool {
     return u != nil && units_broken_at(u, t.main[kc.def])
 }
 
+// Whether a token comes before another as the report lists them: by its
+// file's path, then its place in it; one at no token last.
+@(private="file")
+units_before :: proc(a, b: Token_Id) -> bool {
+    if a == 0 || b == 0 { return a != 0 && b == 0 }
+    fa, fb := build_tokens[a].file, build_tokens[b].file
+    if fa != fb { return build_files[fa].path < build_files[fb].path }
+    return a < b
+}
+
 // A definition's name, with those it's written in: `main.step`.
 @(private="file")
 units_name :: proc(u: ^Units, d: Token_Id) -> string {
@@ -146,6 +161,9 @@ units_report :: proc(k: ^TC, errors: []Diagnostic) -> string {
     if u == nil { u = units_find(k, nil) }   // (only lowering found errors: nothing is left out)
     Group :: struct { home: Token_Id, file: u16, out: bool, errors: [dynamic]Diagnostic }
     groups := make([dynamic]Group, context.temp_allocator)
+    // (By file and place, whatever order the files were read in or the errors found.)
+    errors := slice.clone(errors, context.temp_allocator)
+    slice.stable_sort_by(errors, proc(x, y: Diagnostic) -> bool { return units_before(x.at, y.at) })
     for d in errors {
         home, file, out := Token_Id(0), u16(0), true
         if d.at != 0 {
@@ -182,7 +200,7 @@ units_report :: proc(k: ^TC, errors: []Diagnostic) -> string {
     said(&b, u, groups[:], true, "\nscopes with errors — no answers from them:\n")
     with := make([dynamic]Token_Id, context.temp_allocator)
     for d in u.via { append(&with, d) }
-    slice.sort(with[:])
+    slice.sort_by(with[:], units_before)
     if len(with) > 0 { strings.write_string(&b, "left out with them — each uses one:\n") }
     for d in with { fmt.sbprintf(&b, "  %s  %s   (uses %s)\n", units_name(u, d), place(d), units_name(u, u.via[d])) }
     said(&b, u, groups[:], false, "\nerrors in scopes that answer all the same:\n")

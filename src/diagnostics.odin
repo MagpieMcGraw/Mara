@@ -51,6 +51,20 @@ diagnostics_keep_end :: proc() {
     g_keep = nil
 }
 
+// Those queued from `mid` on moved to before those from `from`: a second
+// stage's parse errors, before the first stage's check's — where one check
+// of it all queues them (modules.odin).
+diagnostics_move_before :: proc(from, mid: int) {
+    if from >= mid || mid >= len(g_diagnostics) { return }
+    late := slice.clone(g_diagnostics[mid:], context.temp_allocator)
+    copy(g_diagnostics[from + len(late):], g_diagnostics[from:mid])
+    copy(g_diagnostics[from:], late)
+}
+
+// The queue as it is, and put back so: a check's kept part's (serve.odin).
+diagnostics_held :: proc() -> [dynamic]Diagnostic { return g_diagnostics }
+diagnostics_hold :: proc(q: [dynamic]Diagnostic) { g_diagnostics = q }
+
 // The queue let go of, unread: a new check's (mara serve) starts its own.
 reset_diagnostics :: proc() {
     g_diagnostics = {}
@@ -124,6 +138,12 @@ diagnostic_line :: proc(d: Diagnostic) -> string {
     }
     if d.location == "" { return fmt.tprintf("%s: %s", label, d.message) }
     return fmt.tprintf("[%s] %s: %s", d.location, label, d.message)
+}
+
+// How many parse errors queued are at a token (the parser's; a lexer's is at none).
+diagnostics_parse_placed :: proc() -> (n: int) {
+    for d in g_diagnostics { if d.kind == .Parse_Error && d.at != 0 { n += 1 } }
+    return
 }
 
 // How many diagnostics are queued: where a phase's begin (diagnostics_sort).

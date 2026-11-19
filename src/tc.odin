@@ -104,6 +104,7 @@ TC :: struct {
     binds:         [dynamic]Type,       // (dense, in the order they're bound: a map's inserts miss the cache)
     bound_log:     [dynamic]TC_Bound,   // each binding's before, for an instance to give back (tc_instance_end)
     beside:        []string,            // the modules checked beside the main one (a tool's set of them)
+    run:           TC_Run,              // what the check was asked for, and where it's at
     units:         ^Units,              // a check with errors, lowered around them: what they break (nil: nothing, or nothing lowered)
     bodies_reversed: bool,              // MARA_BODY_ORDER=reverse, a test's: each scope's funs checked last first
     pending:       [dynamic]^TC_Scope,  // the scopes whose definitions' bodies wait to be checked, each on its own (tc_bodies)
@@ -305,10 +306,17 @@ tc_bind :: proc(k: ^TC, name: string, t: Type, ref: Ref) {
     }
 }
 
+// The check's scratch, its blocks' declarations (TC.blocks): made.
+tc_blocks_begin :: proc(k: ^TC) {
+    k.blocks = new(virtual.Arena, runtime.heap_allocator())
+    if err := virtual.arena_init_growing(k.blocks); err != nil { fmt.panicf("no arena for the block scopes (%v)", err) }
+}
+
 // The check done: its scratch goes (TC.blocks: its blocks' declarations).
 tc_blocks_end :: proc(k: ^TC) {
+    if k.blocks == nil { return }
     virtual.arena_destroy(k.blocks)
-    free(k.blocks)
+    free(k.blocks, runtime.heap_allocator())
     k.blocks = nil
 }
 
@@ -473,10 +481,39 @@ tc_is_call :: proc(k: ^TC, n: Tree_Id) -> bool {
 
 // --- the program --------------------------------------------------------------
 
+// What a check was asked for, and where it's at: kept from its start to its end.
+TC_Run :: struct {
+    main_mod:  ^Type_Scope,
+    diagnosed: int,                 // the diagnostics queued before it: its own are sorted (diagnostics_sort)
+    perf:      ^Performance_Timer,
+    lower, partial, parse_errors, no_crt: bool,
+}
+
+// A program checked: its main module and what it uses, the modules beside
+// it, each one's bodies, then what's found of the whole. In stages
+// (tc_check_begin … tc_check_finish), so that a tool can check some modules,
+// keep that, and check others after — modules.odin.
 tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: string,
                          shared: bool = false, web: bool = false, target_os: Target_OS = .Windows, profile_memory := false,
                          analysis_only: bool = false, no_assert: bool = false, perf: ^Performance_Timer = nil,
                          lower := true, no_crt := false, also: []string = nil, partial := false, parse_errors := false) -> ^Checked_Program {
+    k := tc_check_begin(t, modules, main_package, shared, web, target_os, profile_memory, analysis_only, no_assert, perf, lower, no_crt, partial, parse_errors)
+    if main_package not_in modules {
+        tc_error(k, {}, "no parsed program for main module '%s'", main_package)
+        k.checked.errors = k.c.errors
+        return k.checked
+    }
+    tc_check_main(k)
+    tc_check_beside(k, also)
+    tc_bodies(k)
+    return tc_check_finish(k)
+}
+
+// A check begun: its tables, and what's sized by the tokens and the tree as
+// they are now (tc_check_grow: more read since).
+tc_check_begin :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: string,
+                       shared, web: bool, target_os: Target_OS, profile_memory, analysis_only, no_assert: bool, perf: ^Performance_Timer,
+                       lower, no_crt, partial, parse_errors: bool) -> ^TC {
     table := new(SymbolTable)
     table.allocator = context.allocator
     main_mod := new(Type_Scope)
@@ -499,34 +536,23 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     c.target_web, c.target_os, c.analysis_only = web, target_os, analysis_only
     c.profile_memory = profile_memory
 
-    k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, main_package = main_package, shared = shared, no_assert = no_assert, module_scopes = k_module_scopes}
+    k := new(TC)
+    k^ = TC{t = t, c = c, table = table, checked = checked, modules = modules, main_package = main_package, shared = shared, no_assert = no_assert, module_scopes = k_module_scopes}
+    k.run = {main_mod = main_mod, perf = perf, lower = lower, partial = partial, parse_errors = parse_errors, no_crt = no_crt}
     k.bodies_reversed = os.get_env("MARA_BODY_ORDER", context.temp_allocator) == "reverse"
     // (What the check finds, reported in source order: diagnostics_sort.)
-    diagnosed := diagnostics_count()
+    k.run.diagnosed = diagnostics_count()
     ir_types_forget()   // (a check of serve's, after another: its types are new)
     types_forget_shapes()
     // (Each module's body's node, before anything is sized by the tree.)
-    {
-        names := make([dynamic]string, 0, len(modules), context.temp_allocator)
-        for name in modules { append(&names, name) }
-        slice.sort(names[:])
-        for name in names { k.module_nodes[name] = tree_module_scope(t, modules[name]) }
-    }
+    tc_module_nodes(k)
     k.names = names_new(k)
     k.bound = make([]u32, len(build_tokens))
     k.lists = make([]List_Flags, len(build_tokens))
     append(&k.binds, nil)   // (place 0: none)
     k.annot = annot_new(t)
     checked.annot = k.annot
-    k.blocks = new(virtual.Arena)
-    if err := virtual.arena_init_growing(k.blocks); err != nil { fmt.panicf("no arena for the block scopes (%v)", err) }
-
-    files, ok := modules[main_package]
-    if !ok {
-        tc_error(k, {}, "no parsed program for main module '%s'", main_package)
-        checked.errors = c.errors
-        return checked
-    }
+    tc_blocks_begin(k)
 
     std_fun := new(Type_Scope)
     std_fun.name = "std"
@@ -534,35 +560,64 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     std_fun.kind = .Struct
     table.builtins["std"] = std_fun
     k.std = std_fun
-    k.checked_modules[main_package] = main_mod
+    return k
+}
+
+// Each module's body's node (tree_module_scope), for those that have none yet.
+tc_module_nodes :: proc(k: ^TC) {
+    names := make([dynamic]string, 0, len(k.modules), context.temp_allocator)
+    for name in k.modules { if name not_in k.module_nodes { append(&names, name) } }
+    slice.sort(names[:])
+    for name in names { k.module_nodes[name] = tree_module_scope(k.t, k.modules[name]) }
+}
+
+// `void`, the builtin: made once, where the first module is about to be checked.
+tc_builtin_void :: proc(k: ^TC) {
+    if "void" in k.table.builtins { return }
+    k.table.builtins["void"] = type_ptr(Type_Any{})
+}
+
+// The main module: what it uses checked, then its own definitions registered.
+tc_check_main :: proc(k: ^TC) {
+    t, table, main_package := k.t, k.table, k.main_package
+    files := k.modules[main_package]
+    k.checked_modules[main_package] = k.run.main_mod
 
     names_module_begin(k.names, main_package)
     tc_scan_allocator(k)
     // (A DLL with an entry `#expose` marks: its host passes the context.)
-    if shared {
+    if k.shared {
         for f in files {
             for s in tc_live(k, tree_list(t, t.a[f])) { if k.exposed[s] { table.context_expected_at_runtime = true } }
         }
     }
 
-    void_type := type_ptr(Type_Any{})
-    table.builtins["void"] = void_type
+    tc_builtin_void(k)
 
     tc_check_uses(k, main_package)
     // (A program built with no C library: its runtime is a module of it,
     // runtime/runtime.mara — the compiler calls its funs, no `use` names it.)
-    if no_crt && RUNTIME_MODULE in modules { tc_check_module(k, RUNTIME_MODULE, {}) }
+    if k.run.no_crt && RUNTIME_MODULE in k.modules { tc_check_module(k, RUNTIME_MODULE, {}) }
     tc_module_names_ready(k, main_package)
     k.pkg = main_package
-    main := tc_check_module_body(k)
-    // (The modules checked beside it, which it doesn't use: a tool's.)
+    tc_check_module_body(k)
+}
+
+// The modules checked beside the main one, which it doesn't use: a tool's.
+tc_check_beside :: proc(k: ^TC, also: []string) {
     k.beside = also
     for name in also {
-        if name in modules && name not_in k.checked_modules { tc_check_module(k, name, {}) }
+        if name in k.modules && name not_in k.checked_modules { tc_check_module(k, name, {}) }
     }
-    k.pkg = main_package
-    tc_bodies(k)
-    main = k.scopes[k.scope_of[main_mod]].nested[:]
+    k.pkg = k.main_package
+}
+
+// The check's end, every module's bodies checked: its funs extracted, what's
+// asked of the whole program, then the checked code lowered and analysed.
+tc_check_finish :: proc(k: ^TC) -> ^Checked_Program {
+    t, c, checked, main_package := k.t, k.c, k.checked, k.main_package
+    perf, lower, partial, parse_errors, diagnosed := k.run.perf, k.run.lower, k.run.partial, k.run.parse_errors, k.run.diagnosed
+    main := k.scopes[k.scope_of[k.run.main_mod]].nested[:]
 
     // (Generic structs' instances: their methods, their inits — before the
     // main module's.)
@@ -1091,6 +1146,18 @@ checked_atom :: proc(checked: ^Checked_Program, text: string) -> u32 {
     append(&checked.atoms, kept)
     checked.atom_ids[kept] = id
     return id
+}
+
+// The atoms cut back to the first n: those handed out since, gone (a check's
+// kept part put back — serve.odin).
+checked_atoms_cut :: proc(checked: ^Checked_Program, n: int) {
+    heap := runtime.heap_allocator()
+    for i := len(checked.atoms) - 1; i >= n; i -= 1 {
+        text := checked.atoms[i]
+        delete_key(&checked.atom_ids, text)
+        delete(text, heap)
+    }
+    if len(checked.atoms) > n { resize(&checked.atoms, n) }
 }
 
 // One of an err's trace's funs (Origin_Err_Runtime): no body — its code is
