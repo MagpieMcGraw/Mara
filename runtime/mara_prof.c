@@ -19,6 +19,11 @@
 // Times are TSC ticks (rdtsc), turned into seconds at the end by the rate
 // measured against the OS clock over the run.
 //
+// And the call tree: a node per fun per caller — main, game_run under main,
+// game_draw under game_run — with the time in the fun and its calls when
+// called along that path. A fun that calls itself, however far down, counts
+// in the node it's already running in: the tree's paths name no fun twice.
+//
 // A probed call costs its caller the probes' time (measured at the end: an
 // empty call's), and a fun's total has its inner calls' — for a fun that
 // makes millions of tiny calls, most of it. That isn't taken off (in place,
@@ -32,7 +37,11 @@
 // first. The file, for readers like
 // `mara view`: header lines, then a line starting `total ms` naming the
 // columns, then one row per fun — eight numbers, the fun's name, its
-// file:line — separated by spaces (no field has one).
+// file:line — separated by spaces (no field has one). After the table, a
+// line starting `call tree:`, a line naming its columns (`depth`), then a row
+// per node, callers before their callees, the callees with the most time
+// first: its depth (0: called by nothing), its total ms, its calls, its
+// fun's row in the table (from 0), the fun's name.
 //
 // One thread: Mara programs have one. An exit whose fun isn't the call
 // running is a compiler bug — reported, and the process ends without a
@@ -72,8 +81,23 @@ typedef struct Mara_Prof_Fun {
     uint64_t inner;
     uint64_t min, max;
     uint32_t running;   // its calls running now: >1 while it recurses
+    uint32_t row;       // its row in the table written
+    struct Mara_Prof_Node* last;   // the node of its last call: the next is likely the same
     uint64_t hist[HIST_BUCKETS];
 } Mara_Prof_Fun;
+
+// A fun as called along one path: under its caller's node.
+typedef struct Mara_Prof_Node {
+    Mara_Prof_Fun* fun;
+    struct Mara_Prof_Node* parent;
+    struct Mara_Prof_Node* child;   // its first callee's
+    struct Mara_Prof_Node* next;    // its caller's next callee's
+    uint64_t total;                 // the time in it (outermost calls only), callees included
+    uint64_t calls;
+    uint32_t running;
+} Mara_Prof_Node;
+
+#define MARA_PROF_NODES 32768   // the most the tree keeps: calls past them count in their caller's
 
 // What the compiler writes per probed fun: `{ ptr, ptr, ptr }` in the IR.
 typedef struct Mara_Prof_Slot {
@@ -82,13 +106,16 @@ typedef struct Mara_Prof_Slot {
     Mara_Prof_Fun* fun;   // null until its first call
 } Mara_Prof_Slot;
 
-// A call running: whose, when it began, how much of it its callees took, and
-// how many probed calls ended inside it.
+// A call running: whose, its node in the call tree (and whether the call
+// counts there: not when the tree was full), when it began, how much of it
+// its callees took, and how many probed calls ended inside it.
 typedef struct Mara_Prof_Frame {
     Mara_Prof_Fun* fun;
+    Mara_Prof_Node* node;
     uint64_t start;
     uint64_t callees;
     uint64_t inner;
+    uint32_t counts;
 } Mara_Prof_Frame;
 
 static struct {
@@ -100,6 +127,10 @@ static struct {
     size_t           nfuns, capfuns;
     Mara_Prof_Frame* stack;
     size_t           depth, capstack;
+    Mara_Prof_Node   root;         // the call tree: its callees are the calls nothing called (main)
+    Mara_Prof_Node*  nodes;        // room for MARA_PROF_NODES
+    size_t           nnodes;
+    uint64_t         untreed;      // calls the full tree had no node for
 } prof;
 
 // Directory of the running executable (runtime/mara_crash.c).
@@ -178,9 +209,39 @@ static double prof_bucket_mid(int b) {
     return ldexp(1.0, e) + sub * width + width / 2;
 }
 
+// The node of fun f called from the node `at`: made on the first such call.
+// NULL when the tree is full.
+static Mara_Prof_Node* prof_node(Mara_Prof_Node* at, Mara_Prof_Fun* f) {
+    for (Mara_Prof_Node* n = at->child; n; n = n->next) if (n->fun == f) return n;
+    if (!prof.nodes) {
+        prof.nodes = (Mara_Prof_Node*)calloc(MARA_PROF_NODES, sizeof *prof.nodes);
+        if (!prof.nodes) prof_fail("out of memory");
+    }
+    if (prof.nnodes == MARA_PROF_NODES) return NULL;
+    Mara_Prof_Node* n = &prof.nodes[prof.nnodes++];
+    n->fun = f;
+    n->parent = at;
+    n->next = at->child;
+    at->child = n;
+    return n;
+}
+
 void __mara_prof_enter(Mara_Prof_Slot* slot) {
     Mara_Prof_Fun* f = slot->fun;
     if (!f) f = prof_register(slot);
+    // Its node: its last call's when the caller's the same; a call of a fun
+    // that's running, the node it runs in up the path; else found among the
+    // caller's, or made.
+    Mara_Prof_Node* at = prof.depth ? prof.stack[prof.depth - 1].node : &prof.root;
+    Mara_Prof_Node* n = f->last;
+    uint32_t counts = 1;
+    if (!n || n->parent != at) {
+        n = NULL;
+        if (f->running) for (n = at; n && n->fun != f; n = n->parent) {}
+        if (!n) n = prof_node(at, f);
+        if (n) f->last = n;
+        else { n = at; counts = 0; prof.untreed += 1; }
+    }
     if (prof.depth == prof.capstack) {
         prof.capstack = prof.capstack ? prof.capstack * 2 : 1024;
         prof.stack = (Mara_Prof_Frame*)realloc(prof.stack, prof.capstack * sizeof *prof.stack);
@@ -188,9 +249,12 @@ void __mara_prof_enter(Mara_Prof_Slot* slot) {
     }
     Mara_Prof_Frame* fr = &prof.stack[prof.depth++];
     fr->fun = f;
+    fr->node = n;
+    fr->counts = counts;
     fr->callees = 0;
     fr->inner = 0;
     f->running += 1;
+    n->running += counts;
     fr->start = prof_ticks();   // last: the probe's own work isn't the fun's
 }
 
@@ -210,6 +274,12 @@ static void prof_end_call(uint64_t t) {
     if (f->calls == 1 || d < f->min) f->min = d;
     if (d > f->max) f->max = d;
     f->hist[prof_bucket(d)] += 1;
+    if (fr->counts) {
+        Mara_Prof_Node* n = fr->node;
+        n->calls += 1;
+        n->running -= 1;
+        if (n->running == 0) n->total += d;
+    }
     if (prof.depth > 0) {
         Mara_Prof_Frame* caller = &prof.stack[prof.depth - 1];
         caller->callees += d;
@@ -245,12 +315,20 @@ static double prof_probe_ticks(void) {
     static Mara_Prof_Fun empty;
     static Mara_Prof_Slot slot = { "", "", &empty };
     enum { N = 100000 };
+    // (Its node isn't the tree's: taken off again.)
+    Mara_Prof_Node* was_child = prof.root.child;
+    size_t was_nodes = prof.nnodes;
+    uint64_t was_untreed = prof.untreed;
     uint64_t t0 = prof_ticks();
     for (int i = 0; i < N; i++) {
         __mara_prof_enter(&slot);
         __mara_prof_exit(&slot);
     }
-    return (double)(prof_ticks() - t0) / N;
+    double each = (double)(prof_ticks() - t0) / N;
+    prof.root.child = was_child;
+    prof.nnodes = was_nodes;
+    prof.untreed = was_untreed;
+    return each;
 }
 
 // The running executable's file name: "" when it can't be told.
@@ -289,6 +367,32 @@ static int prof_by_total(const void* a, const void* b) {
     const Mara_Prof_Fun* y = *(Mara_Prof_Fun* const*)b;
     if (x->total != y->total) return x->total > y->total ? -1 : 1;
     return strcmp(x->name, y->name);
+}
+
+static int prof_node_by_total(const void* a, const void* b) {
+    const Mara_Prof_Node* x = *(Mara_Prof_Node* const*)a;
+    const Mara_Prof_Node* y = *(Mara_Prof_Node* const*)b;
+    if (x->total != y->total) return x->total > y->total ? -1 : 1;
+    return strcmp(x->fun->name, y->fun->name);
+}
+
+// The callees of a node written, each before its own: the most time first.
+static void prof_dump_nodes(FILE* out, const Mara_Prof_Node* at, int depth, double ms) {
+    size_t n = 0;
+    for (Mara_Prof_Node* c = at->child; c; c = c->next) n++;
+    if (n == 0) return;
+    Mara_Prof_Node** sorted = (Mara_Prof_Node**)malloc(n * sizeof *sorted);
+    if (!sorted) return;
+    n = 0;
+    for (Mara_Prof_Node* c = at->child; c; c = c->next) sorted[n++] = c;
+    qsort(sorted, n, sizeof *sorted, prof_node_by_total);
+    for (size_t i = 0; i < n; i++) {
+        const Mara_Prof_Node* c = sorted[i];
+        fprintf(out, "%12d %12.3f %10llu %6u  %*s%s\n", depth, c->total * ms,
+                (unsigned long long)c->calls, c->fun->row, depth * 2, "", c->fun->name);
+        prof_dump_nodes(out, c, depth + 1, ms);
+    }
+    free(sorted);
 }
 
 static void prof_dump(void) {
@@ -353,15 +457,22 @@ static void prof_dump(void) {
     }
     fprintf(out, "%12s %12s %10s %12s %12s %12s %12s %8s  %-*s  %s\n",
             "total ms", "self ms", "calls", "avg us", "min us", "median us", "max us", "probes %", wname, "fun", "where");
+    uint32_t rows = 0;
     for (size_t i = 0; i < prof.nfuns; i++) {
         Mara_Prof_Fun* f = prof.funs[i];
         if (f->calls == 0) continue;
+        f->row = rows++;
         double probes = f->total ? f->inner * probe / f->total * 100 : 0;
         fprintf(out, "%12.3f %12.3f %10llu %12.3f %12.3f %12.3f %12.3f %8.0f  %-*s  %s\n",
                 f->total * ms, f->self * ms, (unsigned long long)f->calls,
                 (double)f->sum / f->calls * us, f->min * us, prof_median(f) * us, f->max * us,
                 probes > 100 ? 100 : probes, wname, f->name, f->where);
     }
+
+    fprintf(out, "\ncall tree: each fun under its caller, with its time when called from there. row: the fun's line in the table above, from 0.");
+    if (prof.untreed) fprintf(out, " The tree was full (%d nodes): %llu calls count in their callers only.", MARA_PROF_NODES, (unsigned long long)prof.untreed);
+    fprintf(out, "\n%12s %12s %10s %6s  %s\n", "depth", "total ms", "calls", "row", "fun");
+    prof_dump_nodes(out, &prof.root, 0, ms);
     fclose(out);
     fflush(stdout);   // (the program's output first)
     fprintf(stderr, "profile: %s\n", path);

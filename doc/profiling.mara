@@ -19,6 +19,11 @@
 //               making millions of tiny calls is mostly that, and its
 //               numbers say more about the profiler than about it.
 //
+// Under the table is the call tree: each fun under the fun that called it,
+// with its time when called from there. `mara view` draws it as a chart of
+// bars within bars: main as wide as the run, under each bar the funs it
+// calls, each as wide as its share of the time. Click a bar to look closer.
+//
 // A fun that calls nothing and doesn't loop (`wrap` below) isn't timed: it's
 // over too quickly for the timing to be worth its cost. Its time is its
 // caller's self time.

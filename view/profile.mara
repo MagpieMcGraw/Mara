@@ -11,10 +11,18 @@ use mara.string
 // numbers, the fun's name, its file:line (runtime/mara_prof.c says so).
 // The columns are the ones the file names, of the titles this window knows
 // (column_title): a profile from before a column was added reads too.
+// After the rows, the call tree: a line starting `call tree:`, one naming
+// its columns, then a row per node — a fun as called along one path from
+// main — callers before their callees: its depth, its total ms, its calls,
+// its fun's row in the table (from 0), the name. A profile from before the
+// tree was written has none, and no chart.
 
 KNOWN       :: 10   // the titles this window knows
 MAX_COLUMNS :: 16
 MAX_ROWS    :: 20000
+MAX_NODES   :: 40000   // (the profiler writes 32768 at most)
+MAX_BARS    :: 6000
+MAX_FILES   :: 64
 
 // A stretch of the file's text: where it begins, how long.
 Field :: struct {
@@ -25,6 +33,32 @@ Field :: struct {
 Row :: struct {
 	fields: [MAX_COLUMNS!]Field   // each as written
 	values: [MAX_COLUMNS!]f64     // a number column's number
+	file:   i64                   // the file it's written in: which of the profile's, the most time first
+}
+
+// A fun as called along one path from main: a row of the call tree.
+Node :: struct {
+	row:    i64   // its fun's row
+	parent: i64   // its caller's node; -1: nothing called it
+	depth:  i64   // how many callers are above it
+	stop:   i64   // the node after its last callee's: its callees' are the ones from the next to there
+	total:  f64   // ms in it called this way, its callees included
+	self:   f64   // ... its callees left out: its own code
+	calls:  f64
+}
+
+// What a bar of the chart is.
+BAR_FUN   :: 0   // a node: a fun, called along one path
+BAR_SELF  :: 1   // a fun's own code, under its bar beside its callees'
+BAR_REST  :: 2   // a fun's callees too narrow to show each, together
+BAR_CRUMB :: 3   // a caller named above the chart, when it shows one bar alone
+
+// A bar of the chart as last drawn (profile_view.mara).
+Bar :: struct {
+	kind: i64
+	node: i64    // its node; a BAR_SELF's or _REST's, the fun's they're under; a BAR_CRUMB's -1: the whole run
+	box:  Rect   // where, in the window, pixels
+	more: bool   // it has callees the chart had no row left for
 }
 
 Profile :: struct {
@@ -37,6 +71,14 @@ Profile :: struct {
 	widths:  [MAX_COLUMNS!]f32        // each column's, in pixels: its widest text, room around it
 	sort_by: i64 = -1                // the column (its place) it's sorted by; -1: as in the file
 	descending: bool
+	nodes:   [MAX_NODES]Node       // the call tree, callers before their callees: none in an older profile
+	files:   [MAX_FILES]Field      // the files the funs are written in, the most time first (a bar's color)
+	run_ms:  f64                     // the time in the calls nothing called: main's
+	deepest: i64                     // the tree's deepest node's depth
+	in_tree: bool                    // (reading: past the line `call tree:`)
+	zoom:    i64 = -1                // the node the chart shows alone; -1: the whole run
+	bars:    [MAX_BARS]Bar         // the chart as last drawn
+	hover_bar: i64 = -1              // the bar under the mouse as last drawn
 	problem: [400]utf8             // why there's nothing to show, when there isn't
 	missing: bool                    // (that why: no file yet — the usual, not a fault)
 	stamp:   i64                     // the file's time when it was read
@@ -74,6 +116,14 @@ profile_read :: fun(p: ^Profile, path: []utf8) {
 	p.columns.len = 0
 	p.rows.len = 0
 	p.order.len = 0
+	p.nodes.len = 0
+	p.files.len = 0
+	p.bars.len = 0
+	p.run_ms = 0.0
+	p.deepest = 0
+	p.in_tree = false
+	p.zoom = -1
+	p.hover_bar = -1
 	p.problem.len = 0
 	p.missing = false
 	p.stamp = file_mtime(path)
@@ -107,11 +157,35 @@ profile_read :: fun(p: ^Profile, path: []utf8) {
 			if p.problem.len > 0 do return
 			continue
 		}
+		if p.in_tree {
+			if not profile_node(p, line) do return
+			continue
+		}
+		if line.len >= 10 {
+			if text[line.at : line.at + 10] == "call tree:" {
+				p.in_tree = true
+				continue
+			}
+		}
 		if not profile_row(p, line) do return
 	}
 	if p.columns.len == 0 {
 		&p.problem ++ "profile.txt has no line naming its columns: not a profile this window knows."
 		return
+	}
+	// (Each node's callees end where its last one's do; its own code is its
+	// time less theirs. Callees are after their callers: last to first.)
+	for k in 0:p.nodes.len {
+		i := p.nodes.len - 1 - k
+		if p.nodes[i].self < 0.0 do p.nodes[i].self = 0.0
+		up := p.nodes[i].parent
+		if up >= 0 {
+			p.nodes[up].stop = max_int(p.nodes[up].stop, p.nodes[i].stop)
+			p.nodes[up].self -= p.nodes[i].total
+		else
+			p.run_ms += p.nodes[i].total
+		}
+		p.deepest = max_int(p.deepest, p.nodes[i].depth)
 	}
 	if p.sort_by >= p.columns.len do p.sort_by = -1
 	profile_sort(p)
@@ -195,7 +269,83 @@ profile_row :: fun(p: ^Profile, line: Field) -> bool {
 		&p.problem ++ text[0 : min_int(text.len, 200)]
 		return false
 	}
+	// (Its file: the `where` up to its colon; one of the first MAX_FILES
+	// named, else the last of them.)
+	c := column_of(p, 9)
+	if c >= 0 {
+		file := row.fields[c]
+		for k in 0:file.len {
+			if text[file.at - line.at + k] == ':' {
+				file.len = k
+				break
+			}
+		}
+		row.file = -1
+		for f, k in p.files {
+			if field_text(p, f) == field_text(p, file) {
+				row.file = k
+				break
+			}
+		}
+		if row.file < 0 {
+			if p.files.len < p.files.cap do &p.files ++ file
+			row.file = p.files.len - 1
+		}
+	}
 	&p.rows ++ row
+	return true
+}
+
+// The place of the column with title k among the profile's; -1: it has none.
+column_of :: fun(p: ^Profile, k: i64) -> i64 {
+	for title, c in p.columns {
+		if title == k do return c
+	}
+	return -1
+}
+
+// A node read off its line of the call tree: its depth, total ms, calls and
+// fun's row, then the name. False when it isn't one (p.problem says).
+profile_node :: fun(p: ^Profile, line: Field) -> bool {
+	text := field_text(p, line)
+	values : [4!]f64
+	n := 0
+	at : i64 = 0
+	for n < 4 {
+		w := next_word(text, at)
+		if w.len == 0 do break
+		word := text[w.at : w.at + w.len]
+		if n == 0 and word == "depth" do return true   // (the line naming the columns)
+		v, number := parse_number(word)
+		if not number do break
+		values[n] = v
+		n += 1
+		at = w.at + w.len
+	}
+	depth := i64(values[0])
+	row := i64(values[3])
+	ok := n == 4 and depth >= 0 and row >= 0 and row < p.rows.len and p.nodes.len < MAX_NODES
+	if ok {
+		// (No deeper than a callee of the node before.)
+		last := -1
+		if p.nodes.len > 0 do last = p.nodes[p.nodes.len - 1].depth
+		ok = depth <= last + 1
+	}
+	if not ok {
+		&p.problem ++ "A row of profile.txt's call tree isn't one this window knows: "
+		&p.problem ++ text[0 : min_int(text.len, 200)]
+		return false
+	}
+	node := Node{row = row, parent = -1, depth = depth, stop = p.nodes.len + 1, total = values[1], self = values[1], calls = values[2]}
+	if depth > 0 {
+		// (Its caller: the nearest node before it that's less deep.)
+		up := p.nodes.len - 1
+		for p.nodes[up].depth >= depth {
+			up = p.nodes[up].parent
+		}
+		node.parent = up
+	}
+	&p.nodes ++ node
 	return true
 }
 

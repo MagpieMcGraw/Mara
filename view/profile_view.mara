@@ -5,10 +5,18 @@ use mara.string
 use mara.math
 use mara.sdl
 
-// The Profile panel: profile.txt's header lines, its column titles, the
-// rows that fit from the scroll on, a scroll bar, a status line — drawn in
-// the panel's content (r, a rectangle in the window, pixels). A click on a
-// column's title sorts by it.
+// The Profile panel: profile.txt's header lines, the chart of its call tree,
+// its column titles, the rows that fit from the scroll on, a scroll bar, a
+// status line — drawn in the panel's content (r, a rectangle in the window,
+// pixels). A click on a column's title sorts by it.
+//
+// The chart: bars within bars. The top bar is main, as wide as the chart:
+// the whole run. Under each bar are the funs it calls, each as wide as its
+// share of the time, the most first; what's left of the width is the fun's
+// own code. A bar's color is its file's, its shade its fun's. A click on a bar shows it alone,
+// as wide as the chart; a click on that top bar, or on a caller named above
+// it, backs out. The fun under the mouse lights up in the table too, and a
+// row of the table lights its bars.
 
 // Each column's width: its widest text, title included, room around it.
 measure_columns :: fun(ui: ^Ui, p: ^Profile) {
@@ -40,9 +48,9 @@ row_height :: fun(ui: ^Ui) -> f32 {
 	return ui.text.line + 2.0 * ROW_PAD
 }
 
-// Where the column titles' row begins: below the header lines.
+// Where the column titles' row begins: below the header lines and the chart.
 table_top :: fun(ui: ^Ui, p: ^Profile, r: Rect) -> f32 {
-	return r.y + PAD + f32(p.header.len) * ui.text.line + PAD
+	return chart_top(ui, p, r) + chart_height(ui, p, r)
 }
 
 // How many rows fit between the titles and the status line.
@@ -77,6 +85,19 @@ profile_hover :: fun(ui: ^Ui, p: ^Profile) -> i64 {
 // number largest first, text A to Z; on the one sorted by, the other way.
 profile_click :: fun(ui: ^Ui, p: ^Profile, r: Rect, x: f32, y: f32) {
 	if p.problem.len > 0 do return
+	// (A bar: shown alone — the one that is: its caller instead. A caller
+	// named above the chart: that one, or the whole run.)
+	b := bar_at(p, x, y)
+	if b >= 0 {
+		bar := p.bars[b]
+		if bar.kind == BAR_FUN and bar.node == p.zoom {
+			p.zoom = p.nodes[bar.node].parent
+		else
+			p.zoom = bar.node
+		}
+		ui.dirty = true
+		return
+	}
 	top := table_top(ui, p, r)
 	if y < top or y >= top + row_height(ui) do return
 	left := r.x + PAD - ui.scroll_x
@@ -115,6 +136,14 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 		y += ui.text.line
 	}
 
+	// (What the mouse is over, the table's row or the chart's bar, before
+	// either is drawn: each lights the other's.)
+	shown := visible_rows(ui, p, r)
+	ui.scroll = max_int(0, min_int(ui.scroll, p.rows.len - shown))
+	ui.hover_row = profile_hover(ui, p)
+	draw_chart(ui, p, r)
+	lit := lit_row(ui, p)
+
 	// The column titles.
 	top := table_top(ui, p, r)
 	row_h := row_height(ui)
@@ -137,15 +166,12 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 	}
 
 	// The rows: from the scroll, as many as fit.
-	shown := visible_rows(ui, p, r)
-	ui.scroll = max_int(0, min_int(ui.scroll, p.rows.len - shown))
-	ui.hover_row = profile_hover(ui, p)
 	rows_top := top + row_h
 	for k in 0:shown {
 		at := ui.scroll + k
 		if at >= p.rows.len do break
 		ry := rows_top + f32(k) * row_h
-		if at == ui.hover_row {
+		if p.order[at] == lit {
 			fill(rd, r.x, ry, r.w, row_h, ui.hover)
 		elif at % 2 == 1
 			fill(rd, r.x, ry, r.w, row_h, ui.stripe)
@@ -172,7 +198,64 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 	}
 
 	// The status line.
-	status : [300]utf8
+	status : [900]utf8
+	if p.hover_bar >= 0 {
+		// (The bar under the mouse: what it is, its time.)
+		bar := p.bars[p.hover_bar]
+		if bar.kind == BAR_CRUMB {
+			if bar.node < 0 {
+				&status ++ "Click: the chart shows the whole run again."
+			else
+				&status ++ "Click: the chart shows "
+				&status ++ short_name(p, bar.node)
+				&status ++ " alone."
+			}
+		elif bar.kind == BAR_REST
+			&status ++ "The rest of what "
+			&status ++ short_name(p, bar.node)
+			&status ++ " calls, each too narrow to show. Click: the chart shows it alone."
+		elif bar.kind == BAR_SELF
+			node := p.nodes[bar.node]
+			&status ++ short_name(p, bar.node)
+			&status ++ "'s own code, called this way: "
+			&status ++ float_text(node.self, 3)
+			&status ++ " ms, "
+			&status ++ float_text(node.self / p.run_ms * 100.0, 1)
+			&status ++ "% of the run"
+			if node.total > 0.0 {
+				&status ++ ", "
+				&status ++ float_text(node.self / node.total * 100.0, 1)
+				&status ++ "% of its time"
+			}
+			&status ++ "."
+		else
+			node := p.nodes[bar.node]
+			&status ++ short_name(p, bar.node)
+			&status ++ "  "
+			&status ++ row_field(p, node.row, 9)
+			&status ++ ":  "
+			&status ++ float_text(node.total, 3)
+			&status ++ " ms, "
+			&status ++ float_text(node.total / p.run_ms * 100.0, 1)
+			&status ++ "% of the run"
+			if node.parent >= 0 {
+				if p.nodes[node.parent].total > 0.0 {
+					&status ++ ", "
+					&status ++ float_text(node.total / p.nodes[node.parent].total * 100.0, 1)
+					&status ++ "% of "
+					&status ++ short_name(p, node.parent)
+				}
+			}
+			&status ++ ", "
+			&status ++ int_text(i64(node.calls))
+			&status ++ " calls, own code "
+			&status ++ float_text(node.self, 3)
+			&status ++ " ms."
+		}
+		fill(rd, r.x, r.y + r.h - row_h, r.w, row_h, ui.header)
+		_ = text_draw(&ui.text, rd, status, r.x + PAD, r.y + r.h - row_h + ROW_PAD, ui.ink)
+		return
+	}
 	&status ++ "profile.txt: "
 	&status ++ int_text(p.rows.len)
 	&status ++ " funs"
@@ -212,4 +295,292 @@ draw_arrow :: fun(ui: ^Ui, x: f32, y: f32, down: bool) {
 		if not down do row_y = top + half - 1.0 - f32(k)
 		fill(ui.renderer, x + inset, row_y, size - 2.0 * inset, 1.0, ui.accent)
 	}
+}
+
+// The chart.
+
+CHART_ROWS  :: 12     // the most rows of bars it has
+CHART_MIN   :: 3.0    // a bar narrower than this, in pixels, isn't shown alone
+BAR_PAD     :: 5.0    // room between a bar's edge and its words
+CHART_HINT  :: "Width: a fun's share of the run. Under a bar: what it calls. Click a bar to look closer."
+CRUMB_ALL   :: "the whole run"
+CRUMB_ARROW :: "  →  "
+SELF_LABEL  :: "own code"
+
+// A chart bar's height, in pixels.
+chart_bar_h :: fun(ui: ^Ui) -> f32 {
+	return ui.text.line + 4.0
+}
+
+// Where the chart begins: below the header lines.
+chart_top :: fun(ui: ^Ui, p: ^Profile, r: Rect) -> f32 {
+	return r.y + PAD + f32(p.header.len) * ui.text.line + PAD
+}
+
+// How many rows of bars the chart has: one for each depth of the tree,
+// CHART_ROWS at most, and no more than fit in under half the panel.
+chart_rows :: fun(ui: ^Ui, p: ^Profile, r: Rect) -> i64 {
+	fit := i64(r.h * 0.45 / chart_bar_h(ui))
+	return max_int(min_int(min_int(p.deepest + 1, CHART_ROWS), fit), 1)
+}
+
+// The chart's height, the room under it included: a line above the bars
+// (what the chart is; the callers of the bar shown alone), then the rows.
+// 0 for a profile with no call tree.
+chart_height :: fun(ui: ^Ui, p: ^Profile, r: Rect) -> f32 {
+	if p.nodes.len == 0 or p.run_ms <= 0.0 do return 0.0
+	return row_height(ui) + f32(chart_rows(ui, p, r)) * chart_bar_h(ui) + PAD
+}
+
+// A field of a row, by its column's title: empty when the profile has no
+// such column.
+row_field :: fun(p: ^Profile, row: i64, title: i64) -> []utf8 {
+	f := Field{at = 0, len = 0}
+	c := column_of(p, title)
+	if c >= 0 do f = p.rows[row].fields[c]
+	return field_text(p, f)
+}
+
+// The name of a node's fun.
+node_name :: fun(p: ^Profile, n: i64) -> []utf8 {
+	return row_field(p, p.nodes[n].row, 8)
+}
+
+// ... its first 100 bytes: what a status line has room for.
+short_name :: fun(p: ^Profile, n: i64) -> []utf8 {
+	name := node_name(p, n)
+	return name[0 : min_int(name.len, 100)]
+}
+
+// The color of the bars of the profile's k-th file, before it's blended
+// toward the panel's.
+file_color :: fun(k: i64) -> Color {
+	h := k % 8
+	if h == 0 do return Color{r = 86, g = 156, b = 214}
+	if h == 1 do return Color{r = 220, g = 130, b = 80}
+	if h == 2 do return Color{r = 78, g = 180, b = 160}
+	if h == 3 do return Color{r = 170, g = 120, b = 220}
+	if h == 4 do return Color{r = 214, g = 170, b = 70}
+	if h == 5 do return Color{r = 130, g = 180, b = 90}
+	if h == 6 do return Color{r = 214, g = 100, b = 110}
+	return Color{r = 120, g = 140, b = 170}
+}
+
+// A bar's box: from x, w wide, in the row whose top is y — its sides on
+// whole pixels, a pixel left free at its right and under it.
+bar_box :: fun(ui: ^Ui, x: f32, y: f32, w: f32) -> Rect {
+	x0 := floor_f32(x + 0.5)
+	x1 := floor_f32(x + w + 0.5)
+	bw := x1 - x0
+	if bw >= 3.0 do bw -= 1.0
+	return Rect{x = x0, y = y, w = bw, h = chart_bar_h(ui) - 1.0}
+}
+
+// A bar added to the chart's, when it's a pixel wide at least and there's
+// room for one more. Whether it was.
+chart_add :: fun(p: ^Profile, bar: Bar) -> bool {
+	if bar.box.w < 1.0 or p.bars.len == p.bars.cap do return false
+	&p.bars ++ bar
+	return true
+}
+
+// The chart's bars, p.bars, for the panel's content r: the calls nothing
+// called side by side, the run's width together — or the node shown alone,
+// as wide as the chart, its callers named in the line above.
+chart_layout :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
+	p.bars.len = 0
+	left := r.x + PAD
+	width := r.w - 2.0 * PAD
+	if width < 20.0 do return
+	rows := chart_rows(ui, p, r)
+	line_y := chart_top(ui, p, r)
+	top := line_y + row_height(ui)
+	if p.zoom < 0 {
+		x := left
+		at := 0
+		for at < p.nodes.len {
+			w := width * f32(p.nodes[at].total / p.run_ms)
+			chart_bar(ui, p, at, x, w, top, 0, rows)
+			x += w
+			at = p.nodes[at].stop
+		}
+		return
+	}
+	// (Its callers, the nearest first; named the outermost first, after
+	// the whole run.)
+	chain : [64]i64
+	up := p.nodes[p.zoom].parent
+	for up >= 0 and chain.len < chain.cap {
+		&chain ++ up
+		up = p.nodes[up].parent
+	}
+	arrow := text_width(&ui.text, CRUMB_ARROW)
+	x := left
+	w := text_width(&ui.text, CRUMB_ALL)
+	_ = chart_add(p, Bar{kind = BAR_CRUMB, node = -1, box = Rect{x = x, y = line_y, w = w, h = row_height(ui)}})
+	x += w + arrow
+	for k in 0:chain.len {
+		n := chain[chain.len - 1 - k]
+		w = text_width(&ui.text, node_name(p, n))
+		_ = chart_add(p, Bar{kind = BAR_CRUMB, node = n, box = Rect{x = x, y = line_y, w = w, h = row_height(ui)}})
+		x += w + arrow
+	}
+	chart_bar(ui, p, p.zoom, left, width, top, 0, rows)
+}
+
+// Node n's bar, from x, w wide, in the chart's row `row` (the rows begin
+// at top; there are `rows`), and in the row under it its callees' bars,
+// each as wide as its share of n's time. The first callee too narrow to
+// show stands for the rest too, as one bar; what's left of n's width is
+// its own code's bar.
+chart_bar :: fun(ui: ^Ui, p: ^Profile, n: i64, x: f32, w: f32, top: f32, row: i64, rows: i64) {
+	node := p.nodes[n]
+	h := chart_bar_h(ui)
+	y := top + f32(row) * h
+	has_callees := node.stop > n + 1
+	bar := Bar{kind = BAR_FUN, node = n, box = bar_box(ui, x, y, w)}
+	bar.more = has_callees and row + 1 >= rows
+	if not chart_add(p, bar) do return
+	if not has_callees or row + 1 >= rows or node.total <= 0.0 do return
+	scale := w / f32(node.total)
+	right := x + w
+	cx := x
+	c := n + 1
+	for c < node.stop {
+		cw := min_f32(f32(p.nodes[c].total) * scale, right - cx)
+		if cw < CHART_MIN {
+			rest : f64 = 0.0
+			for c < node.stop {
+				rest += p.nodes[c].total
+				c = p.nodes[c].stop
+			}
+			rw := min_f32(f32(rest) * scale, right - cx)
+			_ = chart_add(p, Bar{kind = BAR_REST, node = n, box = bar_box(ui, cx, y + h, rw)})
+			cx += rw
+			break
+		}
+		chart_bar(ui, p, c, cx, cw, top, row + 1, rows)
+		cx += cw
+		c = p.nodes[c].stop
+	}
+	if right - cx >= CHART_MIN do _ = chart_add(p, Bar{kind = BAR_SELF, node = n, box = bar_box(ui, cx, y + h, right - cx)})
+}
+
+// The chart's bar under (x, y), a place in the window in pixels; -1 for none.
+bar_at :: fun(p: ^Profile, x: f32, y: f32) -> i64 {
+	for bar, i in p.bars {
+		if inside(bar.box, x, y) do return i
+	}
+	return -1
+}
+
+// The bar the mouse is over, when the Profile panel is the one under it.
+chart_hover :: fun(ui: ^Ui, p: ^Profile) -> i64 {
+	i := panel_at(ui, ui.mouse_x, ui.mouse_y)
+	if i < 0 do return -1
+	if ui.panels[i].kind != PROFILE_PANEL do return -1
+	return bar_at(p, ui.mouse_x, ui.mouse_y)
+}
+
+// The fun to light up, its row of the file: the one whose bar the mouse is
+// over, or whose row of the table; -1 for none.
+lit_row :: fun(ui: ^Ui, p: ^Profile) -> i64 {
+	if p.hover_bar >= 0 {
+		bar := p.bars[p.hover_bar]
+		if bar.kind == BAR_FUN or bar.kind == BAR_SELF do return p.nodes[bar.node].row
+		return -1
+	}
+	if ui.hover_row >= 0 do return p.order[ui.hover_row]
+	return -1
+}
+
+// The chart drawn in the panel's content r, under the header lines: its
+// bars laid out again, the one under the mouse found.
+draw_chart :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
+	p.bars.len = 0
+	p.hover_bar = -1
+	if chart_height(ui, p, r) == 0.0 do return
+	rd := ui.renderer
+	chart_layout(ui, p, r)
+	p.hover_bar = chart_hover(ui, p)
+	lit := lit_row(ui, p)
+	if p.zoom < 0 do _ = text_draw(&ui.text, rd, CHART_HINT, r.x + PAD, chart_top(ui, p, r) + ROW_PAD, ui.dim)
+	for bar, i in p.bars {
+		b := bar.box
+		hovered := i == p.hover_bar
+		if bar.kind == BAR_CRUMB {
+			color := ui.dim
+			if hovered do color = ui.accent
+			pen := b.x
+			if bar.node < 0 {
+				pen = text_draw(&ui.text, rd, CRUMB_ALL, b.x, b.y + ROW_PAD, color)
+			else
+				pen = text_draw(&ui.text, rd, node_name(p, bar.node), b.x, b.y + ROW_PAD, color)
+			}
+			_ = text_draw(&ui.text, rd, CRUMB_ARROW, pen, b.y + ROW_PAD, ui.dim)
+			continue
+		}
+		node := p.nodes[bar.node]
+		// (Its file's color, a shade of it by the fun: neighbours tell apart.)
+		color := mix(file_color(p.rows[node.row].file), ui.background, 0.28 + 0.08 * f32(node.row * 5 % 4))
+		if bar.kind == BAR_SELF do color = mix(color, ui.background, 0.6)
+		if bar.kind == BAR_REST do color = ui.header
+		if hovered {
+			color = mix(color, ui.ink, 0.25)
+		elif bar.kind == BAR_FUN and node.row == lit
+			color = mix(color, ui.ink, 0.14)
+		}
+		fill(rd, b.x, b.y, b.w, b.h, color)
+		// (Callees the chart has no row for: a line along its bottom.)
+		if bar.more do fill(rd, b.x, b.y + b.h - 2.0, b.w, 2.0, mix(color, ui.ink, 0.55))
+		room := b.w - 2.0 * BAR_PAD
+		text_y := b.y + 1.0
+		if bar.kind == BAR_FUN {
+			draw_bar_label(ui, p, bar.node, b.x + BAR_PAD, text_y, room)
+		elif bar.kind == BAR_SELF
+			if text_width(&ui.text, SELF_LABEL) <= room do _ = text_draw(&ui.text, rd, SELF_LABEL, b.x + BAR_PAD, text_y, ui.dim)
+		else
+			if text_width(&ui.text, "…") <= room do _ = text_draw(&ui.text, rd, "…", b.x + BAR_PAD, text_y, ui.dim)
+		}
+	}
+}
+
+// A fun's bar's words, from x, in `room` pixels: its name and its share of
+// the run; the name alone, or cut short with "…", when that's all there's
+// room for; nothing in a bar too narrow for two letters.
+draw_bar_label :: fun(ui: ^Ui, p: ^Profile, n: i64, x: f32, y: f32, room: f32) {
+	rd := ui.renderer
+	full := node_name(p, n)
+	name := full[0 : min_int(full.len, 120)]
+	share : [80]utf8
+	&share ++ float_text(p.nodes[n].total / p.run_ms * 100.0, 1)
+	&share ++ "%"
+	gap := text_width(&ui.text, "  ")
+	name_w := text_width(&ui.text, name)
+	if name_w + gap + text_width(&ui.text, share) <= room {
+		pen := text_draw(&ui.text, rd, name, x, y, ui.ink)
+		_ = text_draw(&ui.text, rd, share, pen + gap, y, ui.ink)
+		return
+	}
+	if name_w <= room {
+		_ = text_draw(&ui.text, rd, name, x, y, ui.ink)
+		return
+	}
+	k := text_fit(&ui.text, name, room - text_width(&ui.text, "…"))
+	if k < 2 do return
+	pen := text_draw(&ui.text, rd, name[0 : k], x, y, ui.ink)
+	_ = text_draw(&ui.text, rd, "…", pen, y, ui.ink)
+}
+
+// How many of the text's bytes fit in `room` pixels: whole characters.
+text_fit :: fun(t: ^Text, s: []utf8, room: f32) -> i64 {
+	w : f32 = 0
+	at : i64 = 0
+	for at < s.len {
+		c, n := char_at(s, at)
+		w += char_width(t, c)
+		if w > room do return at
+		at += n
+	}
+	return at
 }
