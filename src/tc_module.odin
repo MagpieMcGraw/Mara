@@ -50,7 +50,7 @@ tc_path :: proc(k: ^TC, imp: Tree_Id) -> string {
 }
 
 // A module checked: its scope (its names), its body — its files' — checked,
-// its functions extracted. Once; a module that needs itself is a cycle.
+// its functions extracted once its bodies are (tc_bodies). Once; a module that needs itself is a cycle.
 tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     if m, done := k.checked_modules[name]; done { return m }
     if name in k.in_progress {
@@ -69,10 +69,9 @@ tc_check_module :: proc(k: ^TC, name: string, span: Span) -> ^Type_Scope {
     tc_module_names_ready(k, name)
     saved_pkg, saved_hint := k.pkg, k.hint
     k.pkg = name
-    list := tc_check_module_body(k)
+    tc_check_module_body(k)
     k.pkg, k.hint = saved_pkg, saved_hint
     delete_key(&k.in_progress, name)
-    tc_extract(k, list, name, is_main = false)
     k.checked_modules[name] = m
     k.table.funs[name] = m
     // (A stdlib module is `std`'s member by its last name: `math.sin`.)

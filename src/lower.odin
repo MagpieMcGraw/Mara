@@ -123,9 +123,10 @@ lw_code :: proc(k: ^TC, codes: ^LW_Codes, i: int) {
     e := k.events[i]
     tc_salt_set(k, e.salt)
     k.pkg = e.pkg
+    // (One an error breaks has no code: units.odin.)
     #partial switch e.kind {
-    case .Const:          codes.code[i] = lw_const(k, e.kc)
-    case .Body:           codes.code[i] = lw_body(k, e.sc)
+    case .Const:          if !units_broken_const(k.units, k.t, e.kc) { codes.code[i] = lw_const(k, e.kc) }
+    case .Body:           if !units_broken(k.units, k.t, e.sc) { codes.code[i] = lw_body(k, e.sc) }
     }
 }
 
@@ -181,6 +182,7 @@ lw_place_scope :: proc(k: ^TC, codes: ^LW_Codes, ts: ^Type_Scope, name: string, 
     b := k.gb
     if i, checked := codes.bodies[ts]; checked { lw_code(k, codes, i) }
     c, built := b.prog.bodies[ts]
+    if !built && k.units != nil { return }   // (one an error breaks: no code, nothing placed)
     if !built { graph_fatal(span, "the checker built no graph of '%s'", graph_scope_name(ts, name, written)) }
     graph_place_scope(b.prog, c, ts, name, written)
     owner := tc_defs_owner(k, ts)

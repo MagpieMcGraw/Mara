@@ -103,6 +103,9 @@ TC :: struct {
     bound:         []u32,               // by token: its binding's place in binds (0: none)
     binds:         [dynamic]Type,       // (dense, in the order they're bound: a map's inserts miss the cache)
     bound_log:     [dynamic]TC_Bound,   // each binding's before, for an instance to give back (tc_instance_end)
+    units:         ^Units,              // a check with errors, lowered around them: what they break (nil: nothing, or nothing lowered)
+    bodies_reversed: bool,              // MARA_BODY_ORDER=reverse, a test's: each scope's funs checked last first
+    pending:       [dynamic]^TC_Scope,  // the scopes whose definitions' bodies wait to be checked, each on its own (tc_bodies)
 }
 
 // A binding's before: what the token meant, if anything.
@@ -321,6 +324,7 @@ TC_Scope :: struct {
     subst:  TC_Bindings,       // an instance's: its type params bound
     synthetic: bool,           // an instance: the compiler's, written nowhere
     registered: bool,       // (they are)
+    inst:      bool,           // defined in an instance's body: checked with it
 }
 
 tc_error :: proc(k: ^TC, span: Span, msg: string, args: ..any) {
@@ -471,7 +475,7 @@ tc_is_call :: proc(k: ^TC, n: Tree_Id) -> bool {
 tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: string,
                          shared: bool = false, web: bool = false, target_os: Target_OS = .Windows, profile_memory := false,
                          analysis_only: bool = false, no_assert: bool = false, perf: ^Performance_Timer = nil,
-                         lower := true, no_crt := false) -> ^Checked_Program {
+                         lower := true, no_crt := false, also: []string = nil, partial := false) -> ^Checked_Program {
     table := new(SymbolTable)
     table.allocator = context.allocator
     main_mod := new(Type_Scope)
@@ -495,6 +499,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     c.profile_memory = profile_memory
 
     k := &TC{t = t, c = c, table = table, checked = checked, modules = modules, main_package = main_package, shared = shared, no_assert = no_assert, module_scopes = k_module_scopes}
+    k.bodies_reversed = os.get_env("MARA_BODY_ORDER", context.temp_allocator) == "reverse"
     // (What the check finds, reported in source order: diagnostics_sort.)
     diagnosed := diagnostics_count()
     ir_types_forget()   // (a check of serve's, after another: its types are new)
@@ -549,6 +554,13 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     tc_module_names_ready(k, main_package)
     k.pkg = main_package
     main := tc_check_module_body(k)
+    // (The modules checked beside it, which it doesn't use: a tool's.)
+    for name in also {
+        if name in modules && name not_in k.checked_modules { tc_check_module(k, name, {}) }
+    }
+    k.pkg = main_package
+    tc_bodies(k)
+    main = k.scopes[k.scope_of[main_mod]].nested[:]
 
     // (Generic structs' instances: their methods, their inits — before the
     // main module's.)
@@ -575,7 +587,13 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     // (lower false: the annotations are all that's wanted — mara lsp's.)
     fns := flow_functions(checked)   // (in name order, once)
     mid: Middle
-    if c.errors == 0 && lower {
+    // (A tool's check with errors, `partial`: what they break is left out,
+    // the rest lowered as ever — units.odin. A build's stops here.)
+    if c.errors > 0 && lower && partial {
+        k.units = units_find(k, diagnostics_error_tokens(diagnosed))
+        checked.holes = true
+    }
+    if (c.errors == 0 || k.units != nil) && lower {
         // The checker only checks: each code is lowered from the annotated
         // tree once it is done, and analysed (middle.odin).
         if perf != nil { perf_timer_mark(perf, "lower") }
@@ -603,6 +621,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     annot_check(k.annot, t, &checked.code, c.errors)
     checked.names, checked.bound, checked.binds = k.names, k.bound, k.binds[:]
     checked.errors = c.errors
+    checked.partial = partial && lower && c.errors > 0 && (mid.on || len(checked.code.codes) > 0)
     return checked
 }
 
@@ -771,7 +790,7 @@ tc_register_scope :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope, owner_
     }
     append(&k.scopes[owner_i].nested, len(k.scopes))
     if !k.scopes[owner_i].synthetic { k.scope_at[node] = len(k.scopes) }
-    append(&k.scopes, new_clone(TC_Scope{ts = ts, def = def, node = node}))
+    append(&k.scopes, new_clone(TC_Scope{ts = ts, def = def, node = node, inst = tc_instance(k, node) != 0}))
 }
 
 // A fun's or a struct's params and a fun's results, resolved in the scope
@@ -1191,6 +1210,8 @@ Checked_Program :: struct {
     binds:          []Type,
 
     errors:         int,
+    partial:        bool,   // ... and lowered all the same: a tool's check, answered from what they don't break
+    holes:          bool,   // ... around those the checker found: what they break has no code (units.odin)
 
     // Whether the program starts threads (mara.os's thread_start, called):
     // the arena slot each thread's own then (program_starts_threads).

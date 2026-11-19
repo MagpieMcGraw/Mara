@@ -236,7 +236,7 @@ ask_file_discovered :: proc(all_files: map[string][dynamic]^Source_File, token: 
 // module `foo`. Submodules `foo.*` are pulled in only when something issues an
 // explicit `use foo.bar`, riding in via that import like any other dependency
 // rather than being globbed in by the parent.
-compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target: string, perf: ^Performance_Timer = nil, also := "") -> map[string][dynamic]^Source_File {
+compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target: string, perf: ^Performance_Timer = nil, also: []string = nil) -> map[string][dynamic]^Source_File {
     if perf != nil { perf_timer_mark(perf, "lex") }
     // (Room for the tokens first — about one for each two bytes of dense
     // code, of every file found: which of them the target reaches isn't known
@@ -249,8 +249,11 @@ compute_use_closure :: proc(all_files: map[string][dynamic]^Source_File, target:
     visited: map[string]bool
     worklist: [dynamic]string
     defer delete(worklist)
+    // (Beside the target: the runtime's module, when it's Mara's — nothing
+    // uses it by name; a module a query points into that the target doesn't
+    // use.)
     append(&worklist, target)
-    if also != "" { append(&worklist, also) }   // (the runtime's module, when it's Mara's: nothing uses it by name)
+    for name in also { append(&worklist, name) }
     for len(worklist) > 0 {
         module := pop(&worklist)
         if visited[module] { continue }
@@ -1486,6 +1489,8 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
                                no_assert     = args.no_assert,
                                no_crt        = args.no_crt,
                                perf          = perf,
+                               also          = args.also,
+                               partial       = args.ask || args.serve,   // (a query's check, a server's: answered around its errors)
                                lower         = !args.edit && len(parse_errors) == 0)   // (mara lsp's too: what the flow finds, a missing return, its errors)
     if checked.errors > 0 || len(parse_errors) > 0 {
         return checked, shared, strings.concatenate({take_diagnostics(), fmt.aprintf(BUILD_TYPE_ERRORS_ABORT, checked.errors)})
@@ -1499,6 +1504,7 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
 
 CLI_Args :: struct {
     pkg_name:     string,
+    also:         []string,   // modules checked beside it: each has a file a query pointed into, and the module doesn't use it
     compiler_dir: string,
     web:          bool,
     shared:       bool,    // -shared — emit a .dll/.so instead of an executable
@@ -2279,7 +2285,15 @@ main :: proc() {
         // what it answers about — as serve's check has none.)
         args.no_crt = cant == "" && RUNTIME_MODULE in all_files && !args.ask
     }
-    files := compute_use_closure(all_files, args.pkg_name, &perf, RUNTIME_MODULE if args.no_crt else "")
+    // (A query pointed at a file of a module this one doesn't use: that
+    // module is checked beside it.)
+    if args.ask {
+        if m := point_module(all_files, args.ask_query.at); m != "" && m != args.pkg_name { args.also = slice.clone([]string{m}) }
+    }
+    beside := make([dynamic]string, context.temp_allocator)
+    if args.no_crt { append(&beside, RUNTIME_MODULE) }
+    append(&beside, ..args.also)
+    files := compute_use_closure(all_files, args.pkg_name, &perf, beside[:])
 
     // `ask ... in <scope>` narrows where the subject resolves (ask_scopes). A
     // bad scope fails here, before the check; a query from stdin, as its answer.
@@ -2294,6 +2308,16 @@ main :: proc() {
     }
 
     checked, pkg_shared, failure := check_module(args, files, &perf)
+    // (A query of a check with errors is answered from what they don't
+    // break; one it can't answer says them.)
+    if failure != "" && args.ask && checked != nil && checked.partial {
+        reset_diagnostics()
+        s := Ask_Session{checked, all_files, files, args.compiler_dir, args.pkg_name}
+        if out, found := ask_run(&s, args.ask_query, ask_in); found {
+            fmt.print(out)
+            return
+        }
+    }
     if failure != "" {
         if os.get_env("MARA_CHECK_ONLY", context.temp_allocator) == "" { perf_timer_end(&perf) }
         fmt.print(failure)

@@ -18,6 +18,11 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
     v := scope_view(t, sc.node)
     span := tree_span(t, sc.def)
     ts.sig_state = .In_Progress
+    // (Checked as its own module's, whoever asked for it first — a struct's
+    // layout, by a body of another module.)
+    pkg := k.pkg
+    k.pkg = ts.home_package
+    defer k.pkg = pkg
     hint := k.hint
     defer k.hint = hint
     outer, outer_vars, outer_defer, outer_loops := k.body, k.vars, k.in_defer, k.loops

@@ -166,6 +166,7 @@ flow_report :: proc(c: ^Checker, checked: ^Checked_Program, passes: []^Flow_Pass
         if _, is_source := ft.origin.(Origin_Source); !is_source { continue }
         if !graphed { continue }
         g := checked.code.funs[ft] or_else nil
+        if g == nil && checked.holes { continue }   // (one an error breaks)
         if g == nil { fmt.panicf("missing return: '%s' has no code", ft.name) }
         flow_report_found(c, fp.found[g][:], .Missing_Return)
     }

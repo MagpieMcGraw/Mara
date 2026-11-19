@@ -89,6 +89,15 @@ emit_diagnostic_after :: proc(kind: Diagnostic_Kind, at: Token_Id, msg: string, 
     append(&g_diagnostics, Diagnostic{kind = kind, message = fmt.aprintf(msg, ..args), at = at})
 }
 
+// The tokens the errors queued since `from` are at (those at none left out).
+diagnostics_error_tokens :: proc(from: int) -> []Token_Id {
+    out := make([dynamic]Token_Id, context.temp_allocator)
+    for d in g_diagnostics[min(from, len(g_diagnostics)):] {
+        if (d.kind == .Type_Error || d.kind == .Parse_Error) && d.at != 0 { append(&out, d.at) }
+    }
+    return out[:]
+}
+
 // How many diagnostics are queued: where a phase's begin (diagnostics_sort).
 diagnostics_count :: proc() -> int {
     return len(g_diagnostics)

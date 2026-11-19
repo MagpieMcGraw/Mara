@@ -170,7 +170,7 @@ docs_point_answer :: proc(args: CLI_Args) -> string {
     here.serve = true   // (a check for analysis: no code)
     check: Serve_Check
     serve_check(&check, here, serve_stamp(args.compiler_dir, args.search_dirs))
-    local, ok := serve_answer(&check, query)
+    local, ok := serve_answer(&check, query, &here)
     return local if ok else ""
 }
 

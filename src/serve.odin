@@ -7,6 +7,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:time"
+import "base:runtime"
 
 // ---------------------------------------------------------------------------
 // `mara serve [module]`: ask's queries, one a line from stdin, each answered
@@ -67,7 +68,7 @@ serve :: proc(args: CLI_Args) {
             words = words[3:]
         }
         answer, ok := serve_ready(&check, &here, dir, module), false
-        if answer == "" { answer, ok = serve_answer(&check, words) }
+        if answer == "" { answer, ok = serve_answer(&check, words, &here.args) }
         fmt.print(answer)
         fmt.println(ASK_DONE if ok else ASK_FAILED)
         free_all(context.temp_allocator)
@@ -94,7 +95,7 @@ serve_ready :: proc(check: ^Serve_Check, here: ^Serve_Here, dir, module: string)
         }
         context.allocator = virtual.arena_allocator(&here.arena)
         here.dir, here.args.pkg_name = strings.clone(dir), strings.clone(module)
-        here.args.search_dirs = nil
+        here.args.search_dirs, here.args.also = nil, nil
         if problem := build_dirs_in(&here.args, here.dir); problem != "" {
             // (The next query tries again. The check kept was of what's gone.)
             here.dir, check.stamp = "", ""
@@ -164,7 +165,7 @@ serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string, overlays: ^m
         c.failure = module_missing(all_files, args.pkg_name)
         return
     }
-    files := compute_use_closure(all_files, args.pkg_name, &perf)
+    files := compute_use_closure(all_files, args.pkg_name, &perf, args.also)
     checked, _, failure := check_module(args, files, &perf)
     c.session = Ask_Session{checked, all_files, files, args.compiler_dir, args.pkg_name}
     c.failure = failure
@@ -200,17 +201,34 @@ path_key :: proc(path: string) -> string {
 // A query's answer, and whether it is one — false where `mara ask` would
 // fail: a mistake in the query (that is its answer), a name not found, the
 // module not checking (what's wrong with it is).
-serve_answer :: proc(c: ^Serve_Check, words: []string) -> (answer: string, ok: bool) {
+serve_answer :: proc(c: ^Serve_Check, words: []string, args: ^CLI_Args = nil) -> (answer: string, ok: bool) {
     q, err := ask_parse_query(words)
     if q.help { return ASK_USAGE + "\n", true }
     if err != "" { return strings.concatenate({err, "\n"}, context.temp_allocator), false }
-    if c.failure != "" { return c.failure, false }
+    // (Pointed at a file of a module the check didn't read: checked again,
+    // that module beside its own from here on — `args`, the check's.)
+    if args != nil && q.at != "" && c.session.files != nil {
+        if m := point_module(c.session.all_files, q.at); m != "" && m not_in c.session.files {
+            heap := runtime.heap_allocator()
+            also := make([dynamic]string, heap)
+            append(&also, ..args.also)
+            append(&also, strings.clone(m, heap))
+            args.also = also[:]
+            serve_check(c, args^, strings.clone(c.stamp, context.temp_allocator))
+        }
+    }
+    // (A check with errors answers from what they don't break; a query it
+    // can't answer says them.)
+    partial := c.session.checked != nil && c.session.checked.partial
+    if c.failure != "" && !partial { return c.failure, false }
     // (What a query keeps for the next, a fun's def-use, stays with its check.)
     context.allocator = virtual.arena_allocator(&c.arena)
     s := &c.session
     in_, in_err := ask_scopes(q, s.all_files, s.files, s.pkg)
     if in_err != "" { return strings.concatenate({in_err, "\n"}, context.temp_allocator), false }
-    return ask_run(s, q, in_)
+    answer, ok = ask_run(s, q, in_)
+    if !ok && c.failure != "" { return c.failure, false }
+    return
 }
 
 // The sources a check reads, as one text: each .mara file's path, size and

@@ -418,6 +418,27 @@ hit_find_file :: proc(all_files: map[string][dynamic]^Source_File, file: string)
     return
 }
 
+// The module of the file a query's `at` names — `<file>@<byte>`,
+// `<file>:<line>`, `<file>:<line>:<col>` — among every file found, read or
+// not ("": no `at`, or no such file). What a check takes in beside its
+// module when it doesn't use it.
+point_module :: proc(all_files: map[string][dynamic]^Source_File, at: string) -> string {
+    file := at
+    if name, _, _, is_bytes := hit_byte_spec(at); is_bytes {
+        file = name
+    } else {
+        for _ in 0 ..< 2 {
+            colon := strings.last_index_byte(file, ':')
+            if colon <= 1 { break }   // (a drive's)
+            if _, is_num := strconv.parse_int(file[colon + 1:], 10); !is_num { break }
+            file = file[:colon]
+        }
+    }
+    if file == "" { return "" }
+    src, _, _ := hit_find_file(all_files, file)
+    return src.module if src != nil else ""
+}
+
 // What to say of a file the build found but never read: no module it built uses the file's.
 @(private="file")
 hit_unbuilt :: proc(src: ^Source_File, want: string) -> string {

@@ -86,13 +86,44 @@ tc_register_defs :: proc(k: ^TC, sc: ^TC_Scope) {
     for s in dispatches { tc_validate(k, s) }
 }
 
+// A scope's definitions' bodies are checked apart from it, each on its own
+// (tc_bodies), once every module's definitions are registered: a body sees
+// the rest of the program through what its definitions declare — their
+// signatures, a struct's layout — never through another body. A module's
+// and a struct's wait here. (An instance's, and a fun's own, are checked
+// with it for now.)
+
+// Each waiting scope's definitions' bodies — one checked may add more: a
+// struct first needed there, its methods'. Then each module's funs,
+// extracted (the main module's: by its caller, last).
+tc_bodies :: proc(k: ^TC) {
+    for i := 0; i < len(k.pending); i += 1 { tc_check_defs(k, k.pending[i], now = true) }
+    for sc in k.pending {
+        if sc.ts.is_module && sc.ts.name != k.main_package { tc_extract(k, sc.nested[:], sc.ts.name, is_main = false) }
+    }
+    clear(&k.pending)
+}
+
 // A body's definitions checked: its structs' bodies (their fields), then its
-// funs'.
-tc_check_defs :: proc(k: ^TC, sc: ^TC_Scope) {
-    hint := k.hint
-    defer k.hint = hint
+// funs'. (`now`: a waiting scope's, its turn come.)
+tc_check_defs :: proc(k: ^TC, sc: ^TC_Scope, now := false) {
+    if !now && !sc.synthetic && !sc.inst && (sc.ts.is_module || sc.ts.kind == .Struct) {
+        append(&k.pending, sc)
+        return
+    }
+    pkg, hint, body := k.pkg, k.hint, k.body
+    defer { k.pkg, k.hint, k.body = pkg, hint, body }
+    k.pkg, k.body = sc.ts.home_package, sc.ts
     nested := sc.nested[:]
     for i in nested { tc_struct_ensure(k, k.scopes[i].ts) }
+    // (MARA_BODY_ORDER=reverse, a test's: a scope's funs checked last first.
+    // Bodies that don't depend on each other check the same in any order.)
+    if k.bodies_reversed {
+        #reverse for i in nested {
+            if k.scopes[i].ts.kind == .Fun { tc_scope_body(k, k.scopes[i]) }
+        }
+        return
+    }
     for i in nested {
         if k.scopes[i].ts.kind == .Fun { tc_scope_body(k, k.scopes[i]) }
     }

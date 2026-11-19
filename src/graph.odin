@@ -3673,6 +3673,7 @@ graph_tag_type :: proc(t: Type) -> Type {
 // Every checked fun and struct with code is exactly one node.
 @(private="file")
 graph_check_coverage :: proc(b: ^Graph_Program, pc: ^Program_Code) {
+    if b.checked.holes { return }   // (lowered around its errors: what they break has no code)
     count: map[^Type_Scope]int
     defer delete(count)
     for c in pc.codes {
