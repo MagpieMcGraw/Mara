@@ -530,11 +530,12 @@ read_answer :: fun(ui: ^Ui, h: ^Hub) {
 // them: its diagnostics off).
 CURSOR_NOT_CHECKED :: "The module doesn't check, so what's at the cursor can't be shown:"
 
-// Whether a line is the compiler's error — `[file:line:col] Type error: …`,
-// `Found 2 type error(s). Aborting.` — not an answer's.
+// Whether a line is the compiler's — `[file:line:col] Type error: …`, a
+// warning (a check that failed says its warnings first), `Found 2 type
+// error(s). Aborting.` — not an answer's.
 is_diagnostic :: fun(line: []utf8) -> bool {
 	if starts_with(line, "Found ") and contains(line, " error(s)") do return true
-	return starts_with(line, "[") and contains(line, "] ") and contains(line, " error: ")
+	return starts_with(line, "[") and (contains(line, " error: ") or contains(line, "] Warning: "))
 }
 
 // How a line of `mara ask what at`'s answer is shown, the n-th: the first
