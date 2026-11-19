@@ -188,8 +188,10 @@ Codegen :: struct {
     shared: bool,  // -shared build mode — emit a DLL/SO instead of an exe
     // -profile time: the build, as the profile's header names it ("" when not
     // profiling). Funs worth timing tell the profiler (runtime/mara_prof.c)
-    // when they're entered and left (llvm.odin, llvm_probe).
+    // when they're entered and left (llvm.odin, llvm_probe) — but those in
+    // profile_skip's modules (-skip), which are left as any build has them.
     profile: string,
+    profile_skip: []string,
     // -profile memory: how full each partial array gets, told to the memory
     // profiler (runtime/mara_mem.c; codegen_mem.odin). mem_name, mem_where:
     // the site partial arrays laid down or copied in now are of — where

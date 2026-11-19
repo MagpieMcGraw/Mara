@@ -28,6 +28,13 @@
 // over too quickly for the timing to be worth its cost. Its time is its
 // caller's self time.
 //
+// Timing a call stops the optimizer from inlining it, so code made of
+// millions of tiny calls (matrix maths) runs much slower profiled than not.
+// `-skip <module>` leaves a module's funs untimed: they're optimized as in
+// any build, and their time is their callers' self.
+//   mara build profiling -profile time -release -skip mara.math
+// Several: `-skip` again, or commas between the modules.
+//
 // For how full your partial arrays and arenas get, `-profile memory`: see
 // memory_profiling.mara.
 module profiling

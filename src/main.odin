@@ -1510,6 +1510,7 @@ CLI_Args :: struct {
     no_crt_asked: bool,    // -no crt — asked for: an error where it can't be had
     crt:          bool,    // -crt — built with the C library, as every program was (build.mara's `crt = true`): for C source that calls it
     profile:      bool,    // -profile time — time the program's funs, written to profile.txt at exit (runtime/mara_prof.c)
+    profile_skip: [dynamic]string,   // -skip <module> — modules whose funs -profile time doesn't time: their time is their callers' own
     profile_memory: bool,  // -profile memory — how full each partial array and arena gets, written to memory.txt at exit (runtime/mara_mem.c)
     ok:           bool,
 
@@ -1568,10 +1569,15 @@ version_text :: proc() -> string {
 
 WEB_TURNED_OFF :: "mara build -web is turned off for now: the web build isn't up to the rest of Mara."
 
-USAGE :: "Usage: mara build [module|build] [-shared] [-release] [-x86] [-profile time|memory] [-no assert] [-no console] [-crt]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n       mara version\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
+USAGE :: "Usage: mara build [module|build] [-shared] [-release] [-x86] [-profile time|memory] [-skip module] [-no assert] [-no console] [-crt]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n       mara version\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
 PROFILE_USAGE :: `-profile needs what to measure:
     -profile time     how long each fun takes: profile.txt, next to the program, when it ends
+                      (-skip <module> leaves a module's funs untimed: see below)
     -profile memory   how full each partial array and arena gets: memory.txt`
+SKIP_USAGE :: `-skip needs a module, with -profile time: its funs aren't timed, so they're optimized
+as in any build and their time is their callers' own.
+    mara build -profile time -release -skip mara.math
+Several: -skip again, or commas between (-skip mara.math,mara.string).`
 
 LSP_USAGE :: `Usage: mara lsp
 
@@ -1872,6 +1878,18 @@ parse_args :: proc() -> CLI_Args {
                 fmt.println(PROFILE_USAGE)
                 os.exit(1)
             }
+            i += 2
+            continue
+        }
+        if arg == "-skip" {
+            // `-skip <module>` (several: again, or commas between): its funs
+            // aren't timed by -profile time.
+            names := os.args[i + 1] if i + 1 < len(os.args) else ""
+            if names == "" || strings.has_prefix(names, "-") {
+                fmt.println(SKIP_USAGE)
+                os.exit(1)
+            }
+            for name in strings.split(names, ",") { if name != "" { append(&args.profile_skip, name) } }
             i += 2
             continue
         }
@@ -2323,6 +2341,22 @@ main :: proc() {
     build := "release build" if args.release else "debug build"
     profile, profile_memory := "", ""
     if args.profile { profile = build }
+    // (-skip's modules: ones the program has funs in, named in the profile's header.)
+    if len(args.profile_skip) > 0 {
+        if !args.profile {
+            fmt.println(SKIP_USAGE)
+            os.exit(1)
+        }
+        for name in args.profile_skip {
+            found := false
+            for _, f in checked.functions { if f.home_package == name { found = true; break } }
+            if !found {
+                fmt.printf("-skip %s: the program has no fun in a module of that name.\n", name)
+                os.exit(1)
+            }
+        }
+        profile = strings.concatenate({build, ", not timed: ", strings.join(args.profile_skip[:], ", ")})
+    }
     if args.profile_memory { profile_memory = build }
 
     perf_timer_mark(&perf, "codegen")
@@ -2345,7 +2379,7 @@ main :: proc() {
     // Its debug info, linked into a PDB: the x86 backend's (codeview.odin),
     // LLVM's (llvm_dbg.odin) but for the web and -release.
     debug := !args.web && !args.release
-    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, profile = profile, profile_memory = profile_memory, x86 = x86, debug = debug)
+    ll_paths, ok := generate_program(ll_path, checked, web = args.web, shared = pkg_shared, profile = profile, profile_skip = args.profile_skip[:], profile_memory = profile_memory, x86 = x86, debug = debug)
     if !ok {
         fmt.printf("Code generation failed for '%s'.\n", args.pkg_name)
         os.exit(1)

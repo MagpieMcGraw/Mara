@@ -173,11 +173,13 @@ llvm_debug_var :: proc(e: ^Llvm, d: Node_Id, at: Val, addr: bool, param := 0) {
 // (llvm_ret). Both name its slot: its name and where it's written, for its
 // line in the profile, and the profiler's record of it, filled on its first
 // call. Straight-line code that calls nothing costs its caller less than the
-// probes would; its time is the caller's own.
+// probes would; its time is the caller's own. So is a fun's in a module the
+// build skips (-skip): no probe, so it's inlined and optimized as ever.
 @(private="file")
 llvm_probe :: proc(e: ^Llvm) {
     g, cf := e.g, e.ft
     if g.profile == "" || !(e.main || llvm_works(&g.checked.code, e.pg, constructs = true)) { return }
+    if !e.main { for skipped in g.profile_skip { if cf.home_package == skipped { return } } }
     name := scope_path_name(cf)
     at := fmt.tprintf("%s:%d", filepath.base(span_file(cf.body_span)), span_line(cf.body_span))
     e.probe = strings.concatenate({".prof.", mara_fn_name(g, cf.name)}, codegen_keep(g))

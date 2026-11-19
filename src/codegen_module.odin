@@ -183,6 +183,7 @@ init_worker_codegen :: proc(g: ^Codegen, task: ^Module_Task) {
     g.web                = task.web
     g.shared             = task.shared_mode
     g.profile            = task.main_g.profile
+    g.profile_skip       = task.main_g.profile_skip
     g.profile_memory     = task.main_g.profile_memory
     g.mem_sites          = make(map[string]string, keep)
 
@@ -327,12 +328,13 @@ module_build_worker :: proc(t: thread.Task) {
 // emitted; the linker drops unreachable code. Returns the list of per-
 // module .ll files produced (one per home_package in g.module_order),
 // plus a success flag.
-generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, profile: string = "", profile_memory: string = "", x86 := false, debug := false) -> ([]string, bool) {
+generate_program :: proc(output_path: string, checked: ^Checked_Program, web: bool = false, shared: bool = false, profile: string = "", profile_skip: []string = nil, profile_memory: string = "", x86 := false, debug := false) -> ([]string, bool) {
     g := Codegen{}
     g.checked = checked
     g.web = web
     g.shared = shared
     g.profile = profile
+    g.profile_skip = profile_skip
     g.profile_memory = profile_memory != ""
     g.mem_build = profile_memory
     g.mem_sites = make(map[string]string)
