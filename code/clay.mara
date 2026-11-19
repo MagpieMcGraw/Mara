@@ -1440,8 +1440,10 @@ final_layout :: fun(c: ^Context) {
 					edge.id = hash_number(node.id, u32(node.children_len)).id
 					command_add(c, edge)
 					if border.width.between > 0.0 and border.color.a > 0.0 {
-						half_gap := layout.gap / 2.0
-						half_width := border.width.between / 2.0
+						// (Whole pixels, as Clay's are: a line 1 wide sits on
+						// a pixel, not across two.)
+						half_gap := floor_f32(layout.gap / 2.0)
+						half_width := floor_f32(border.width.between / 2.0)
 						offset := Point{x = layout.padding.left - half_gap, y = layout.padding.top - half_gap}
 						for k in 0:node.children_len {
 							child := &c.nodes[c.children[node.children_at + k]]
