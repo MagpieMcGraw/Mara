@@ -1236,21 +1236,20 @@ docs_show_example :: fun(l: ^Lines, text: []utf8, fd: Found) {
 }
 
 // Line k of the Docs panel's — a definition's title, its place below it —
-// as the file and line it opens (line_link: `<file>:<line>`), and whether it
-// opens one (an "At the cursor" builtin's title doesn't).
-docs_place :: fun(l: ^Lines, k: i64) -> []utf8, i64, bool {
+// as the file, the line and the column it opens (line_link: `<file>:<line>`,
+// or `<file>:<line>:<col>`; no column: 0), and whether it opens one (an "At
+// the cursor" builtin's title doesn't).
+docs_place :: fun(l: ^Lines, k: i64) -> []utf8, i64, i64, bool {
 	none := l.text[0 : 0]
-	if k < 0 or k >= l.lines.len do return none, 0, false
+	if k < 0 or k >= l.lines.len do return none, 0, 0, false
 	text := line_link(l, k)
-	colon := text.len - 1
-	for colon > 0 {
-		if text[colon] == ':' do break
-		colon -= 1
-	}
-	if colon <= 0 do return none, 0, false
-	line, ok := parse_number(text[colon + 1 : text.len])
-	if not ok do return none, 0, false
-	return text[0 : colon], i64(line), true
+	colon := number_colon(text, text.len)
+	if colon == 0 do return none, 0, 0, false
+	last, _ := parse_number(text[colon + 1 : text.len])
+	line_colon := number_colon(text, colon)
+	if line_colon == 0 do return text[0 : colon], i64(last), 0, true
+	line, _ := parse_number(text[line_colon + 1 : colon])
+	return text[0 : line_colon], i64(line), i64(last), true
 }
 
 // The definition title, or the fun's signature, under the mouse in the Docs
@@ -1263,7 +1262,7 @@ docs_hover :: fun(ui: ^Ui) -> i64 {
 	l := docs_shown(ui)
 	k := lines_line_at(ui, l, content_rect(ui, ui.panels[i]), ui.mouse_x, ui.mouse_y)
 	if k < 0 do return -1
-	_, _, place := docs_place(l, k)
+	_, _, _, place := docs_place(l, k)
 	if not place and l.lines[k].fold_len == 0 do return -1
 	return k
 }
@@ -1287,9 +1286,9 @@ docs_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 		ui.dirty = true
 		return
 	}
-	file, line, place := docs_place(l, k)
+	file, line, col, place := docs_place(l, k)
 	if not place do return
-	editor_open(ui, l, file, line)
+	editor_open(ui, l, file, line, col)
 }
 
 // A line of code added: `indent` columns of its indentation left out, two

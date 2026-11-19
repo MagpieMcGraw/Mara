@@ -1663,9 +1663,10 @@ DOCS_USAGE :: `Usage: mara docs [at <file>:<line>:<col>] <words>
 EDITOR_USAGE :: `Usage: mara editor <program> [<word> ...]
 
   Tells the windows this compiler opens (mara view) the editor to open a
-  file in: '<program> <word>... <file>:<line>' opens the file at the line —
-  Sublime Text's subl takes no words, VS Code's Code.exe -g. A window's
-  Crash, Ask and Docs panels open what they show so, clicked. The window
+  file in: '<program> <word>... <file>:<line>' opens the file at the line,
+  '<file>:<line>:<col>' on a name in it — Sublime Text's subl takes no
+  words, VS Code's Code.exe -g. A window's Crash, Ask and Docs panels open
+  what they show so, clicked; what the panels show stays. The window
   that answers docs keeps it beside its program, for every window after.
   The Sublime and VS Code plugins tell them their editor. Fails when no
   window is open.`

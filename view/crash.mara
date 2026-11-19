@@ -163,14 +163,16 @@ crash_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 	whole := file.len > 1 and (file[1] == ':' or file[0] == '/' or file[0] == '\\')
 	if ui.crash_dir.len > 0 and not whole do &full ++ ui.crash_dir
 	&full ++ file[0 : min_int(file.len, 1000)]
-	editor_open(ui, &ui.crash, full, line)
+	editor_open(ui, &ui.crash, full, line, 0)
 }
 
-// A file opened in the editor at a line — `"<editor>" "<word>"… "<file>:<line>"`,
-// the program and its words as `mara editor` named them (tab apart) — waited
-// for (it hands the file to the editor and ends). No editor named yet, or one
-// that didn't start: said on l's status line.
-editor_open :: fun(ui: ^Ui, l: ^Lines, file: []utf8, line: i64) {
+// A file opened in the editor at a line, on the name at byte column `col` of
+// it (0: none said, the line's start) — `"<editor>" "<word>"…
+// "<file>:<line>[:<col>]"`, the program and its words as `mara editor` named
+// them (tab apart) — waited for (it hands the file to the editor and ends).
+// Where it sent the editor kept (ui.jump: jump_echo). No editor named yet, or
+// one that didn't start: said on l's status line.
+editor_open :: fun(ui: ^Ui, l: ^Lines, file: []utf8, line: i64, col: i64) {
 	editor_load(ui)
 	if ui.editor.len == 0 {
 		lines_status(l, "Files open in the editor once it's named: the Sublime and VS Code plugins name theirs (mara editor).", STYLE_DIM)
@@ -190,6 +192,11 @@ editor_open :: fun(ui: ^Ui, l: ^Lines, file: []utf8, line: i64) {
 	&command ++ file
 	&command ++ ":"
 	&command ++ int_text(line)
+	at, chars, found := file_spot(file, line, col)
+	if found and col > 0 {
+		&command ++ ":"
+		&command ++ int_text(chars)
+	}
 	&command ++ "\""
 	pr, e := os.process_start(command)   // (the buffer itself: a 0 follows its text)
 	if e {
@@ -197,6 +204,77 @@ editor_open :: fun(ui: ^Ui, l: ^Lines, file: []utf8, line: i64) {
 		return
 	}
 	_, _ = os.process_wait(&pr)
+	ui.jump = false
+	whole, no_path := real_path(file)
+	if found and not no_path {
+		ui.jump = true
+		ui.jump_file.len = 0
+		&ui.jump_file ++ whole
+		ui.jump_byte = at
+		ui.jump_at = GetTicks()
+	}
+}
+
+// Where line `line`, byte column `col`, of a file is — both from 1; col 0,
+// the line's start: the byte in the file, from 0, and the column as an editor
+// counts it, in characters. False: the file can't be read, or ends before the
+// line.
+file_spot :: fun(path: []utf8, line: i64, col: i64) -> i64, i64, bool {
+	id, e := file_open_read(path)
+	if e do return 0, 0, false
+	defer file_close(id)
+	chunk : [64 * KB]byte
+	at : i64 = 0                    // the byte the next one read is
+	on : i64 = 1                    // ... the line it's on
+	chars : i64 = 1
+	before := max_int(col - 1, 0)   // the line's bytes still before the column
+	more := true
+	for more {
+		if file_read(id, &chunk) do return 0, 0, false
+		more = chunk.len > 0
+		text : []utf8 = chunk
+		for ch in text {
+			if on == line {
+				if before == 0 or ch == '\n' do return at, chars, true
+				if (u8(ch) & 0xC0) != 0x80 do chars += 1
+				before -= 1
+			elif ch == '\n'
+				on += 1
+			}
+			at += 1
+		}
+	}
+	return at, chars, on == line
+}
+
+JUMP_ECHO_MS :: 5000   // how long after the window sent the editor somewhere its cursor's report can be that
+
+// Whether a cursor's query — `cursor at <file>@<byte>`, asked from `dir` — is
+// the editor saying it's where the window just sent it: once, soon after.
+// Not your move: what the panels show stays.
+jump_echo :: fun(ui: ^Ui, dir: []utf8, asked: []utf8) -> bool {
+	if not ui.jump or GetTicks() -% ui.jump_at > JUMP_ECHO_MS do return false
+	at := asked.len
+	for at > 0 {
+		if asked[at - 1] == '@' do break
+		at -= 1
+	}
+	if at == 0 do return false
+	spot, ok := parse_number(asked[at : asked.len])
+	if not ok or i64(spot) != ui.jump_byte do return false
+	start := at - 1
+	for start > 0 {
+		if asked[start - 1] == ' ' do break
+		start -= 1
+	}
+	path : [3200]utf8
+	&path ++ dir[0 : min_int(dir.len, 1000)]
+	&path ++ "/"
+	&path ++ asked[start : at - 1]
+	whole, no_path := real_path(path)
+	if no_path or not same_path(whole, ui.jump_file) do return false
+	ui.jump = false
+	return true
 }
 
 // The editor the windows were told of, as editor.txt keeps it — read again

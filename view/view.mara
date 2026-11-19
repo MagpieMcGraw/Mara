@@ -107,6 +107,13 @@ Ui :: struct {
 	sel_scrolled: u32        // when it last scrolled the lines (GetTicks)
 	clip:       [2 * MB]utf8
 	editor:      [1000]utf8    // the editor a call opens in, and its words: `"<editor>" "<word>"… "<file>:<line>"`
+	// Where the window last sent the editor (editor_open): its plugin then
+	// says the cursor's there, which isn't your move — not asked about, once,
+	// soon after (jump_echo).
+	jump:      bool
+	jump_file: [1000]utf8    // whole, as the system has it
+	jump_byte: i64             // the byte in it, from 0
+	jump_at:   u32             // when (GetTicks)
 
 	// The theme's colors (theme.mara: theme_set).
 	theme:      i64     // THEME_DARK, _LIGHT, _SUBLIME

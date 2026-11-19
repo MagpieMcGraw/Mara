@@ -44,7 +44,9 @@ appears in an output panel with every `file:line` clickable.
   - its **Ask** panel shows
     what's at the cursor at its top: for a variable or a field, the types along
     its path, where it's declared, and every place it's written and read in the
-    module and the modules it uses, each opening in the editor when clicked. A
+    module and the modules it uses, each opening in the editor when clicked,
+    the cursor on the name there (the panels keep what they show: a cursor
+    the window placed isn't asked about). A
     field used through a value lists that value's uses, followed through locals
     and params, with any it can't be sure of under `maybe`; at the field's
     declaration, every value's. For anything else named, what it is, its type and

@@ -746,6 +746,9 @@ ask_what_at_point :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File,
 ask_cursor :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, a: ^Annotations, spec: string, checked: ^Checked_Program) -> (string, bool) {
     p, msg, ok := hit_point(t, all_files, spec)
     if !ok { return "" if p.blank else msg, p.blank }
+    // (A window opens the editor at a place clicked: on the name there.)
+    hit_place_cols = true
+    defer hit_place_cols = false
     tok := p.tokens[p.tok_i]
     name := token_text(tok)
     words, kind, def, path := "", "", "", ""
@@ -1203,10 +1206,14 @@ hit_source_line :: proc(tok: Token) -> string {
 }
 
 // A place, as the answer lists it: `  <file>:<line>  <what it's in>`, its line
-// of source under it.
+// of source under it. For a window (`cursor at`, hit_place_cols), the name's
+// column too: `  <file>:<line>:<col>  …`, a byte's, from 1.
+@(private="file")
+hit_place_cols: bool
 @(private="file")
 hit_write_place :: proc(sb: ^strings.Builder, t: ^Tree, tok: Token_Id, n: Tree_Id) {
     fmt.sbprintf(sb, "  %s", ask_loc(token_span(build_tokens[tok])))
+    if hit_place_cols { fmt.sbprintf(sb, ":%d", token_col(build_tokens[tok])) }
     if holder := hit_holder_name(t, n); holder != "" { fmt.sbprintf(sb, "  %s", holder) }
     fmt.sbprintf(sb, "\n    %s\n", hit_source_line(build_tokens[tok]))
 }

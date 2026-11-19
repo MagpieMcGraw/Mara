@@ -396,6 +396,12 @@ ask_serve :: fun(ui: ^Ui, h: ^Hub) {
 	dir, name, asked := line_place(query)
 	h.cursor_dir.len = 0
 	if h.cursor do &h.cursor_dir ++ dir[0 : min_int(dir.len, h.cursor_dir.cap)]
+	// (The cursor where the window itself just sent it: answered with nothing.)
+	if h.cursor and jump_echo(ui, dir, asked) {
+		_ = file_write_text(h.asked.id, "-- end of answer --\n")
+		file_close(h.asked.id)
+		return
+	}
 	if h.shown or h.cursor do hub_follow(ui, h, dir, name)
 	if h.shown {
 		lines_clear(&ui.asked)
@@ -543,29 +549,39 @@ cursor_style :: fun(n: i64, line: []utf8) -> i64 {
 }
 
 // Where a place's `<file>:<line>` ends in a line of the answer —
-// `  <file>:<line>  <what it's in>`; 0 for a line that's no place.
-place_end :: fun(line: []utf8) -> i64 {
-	if line.len < 3 or line[0] != ' ' or line[1] != ' ' or line[2] == ' ' do return 0
+// `  <file>:<line>  <what it's in>`, a window's `<file>:<line>:<col>` — and
+// where its column, if it has one, ends; 0 for a line that's no place.
+place_end :: fun(line: []utf8) -> i64, i64 {
+	if line.len < 3 or line[0] != ' ' or line[1] != ' ' or line[2] == ' ' do return 0, 0
 	stop := 2
 	for stop < line.len {
 		if line[stop] == ' ' and stop + 1 < line.len and line[stop + 1] == ' ' do break
 		stop += 1
 	}
-	colon := stop - 1
-	for colon > 2 {
-		if line[colon] < '0' or line[colon] > '9' do break
-		colon -= 1
-	}
-	if colon + 1 == stop or colon < 7 or line[colon] != ':' do return 0
-	if line[colon - 5 : colon] != ".mara" do return 0
-	return stop
+	colon := number_colon(line, stop)
+	if colon >= 7 and line[colon - 5 : colon] == ".mara" do return stop, stop
+	line_colon := number_colon(line, colon)
+	if line_colon >= 7 and line[line_colon - 5 : line_colon] == ".mara" do return colon, stop
+	return 0, 0
 }
 
-// A line of the answer added, in its style. A place shows its file's name alone,
-// and opens where it says, clicked: its folder's kept, from this window's folder
-// when it's not whole.
+// The ':' before the number that ends at `stop` in s; 0 when no number ends
+// there, or no ':' is before it.
+number_colon :: fun(s: []utf8, stop: i64) -> i64 {
+	colon := stop - 1
+	for colon > 0 {
+		if s[colon] < '0' or s[colon] > '9' do break
+		colon -= 1
+	}
+	if colon <= 0 or colon + 1 == stop or s[colon] != ':' do return 0
+	return colon
+}
+
+// A line of the answer added, in its style. A place shows its file's name and
+// its line alone, and opens where it says, clicked, on its column: its
+// folder's kept, from this window's folder when it's not whole.
 cursor_add :: fun(l: ^Lines, h: ^Hub, line: []utf8) {
-	stop := place_end(line)
+	shown_stop, stop := place_end(line)
 	if stop == 0 {
 		lines_add(l, line, cursor_style(l.lines.len, line))
 		return
@@ -577,7 +593,8 @@ cursor_add :: fun(l: ^Lines, h: ^Hub, line: []utf8) {
 	}
 	shown : [1000]utf8
 	&shown ++ "  "
-	&shown ++ line[name : min_int(line.len, name + 900)]
+	&shown ++ line[name : shown_stop]
+	&shown ++ line[stop : min_int(line.len, stop + 600)]
 	lines_add(l, shown, STYLE_DIM)
 	link : [2000]utf8
 	whole := line[2] == '/' or line[2] == '\\' or line[3] == ':'
@@ -594,10 +611,10 @@ cursor_add :: fun(l: ^Lines, h: ^Hub, line: []utf8) {
 cursor_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 	l := &ui.at_cursor
 	k := lines_line_at(ui, l, r, x, y)
-	file, line, place := docs_place(l, k)
-	if not place do file, line, place = docs_place(l, k - 1)
+	file, line, col, place := docs_place(l, k)
+	if not place do file, line, col, place = docs_place(l, k - 1)
 	if not place do return
-	editor_open(ui, l, file, line)
+	editor_open(ui, l, file, line, col)
 }
 
 // Serve running: started unless it is. False when it can't be.
