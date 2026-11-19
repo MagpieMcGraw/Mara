@@ -218,7 +218,10 @@ units_report :: proc(k: ^TC, errors: []Diagnostic) -> string {
     needs :: proc(b: ^strings.Builder, k: ^TC, defined: bool, title: string) {
         first := true
         said := make(map[string]bool, context.temp_allocator)   // (two calls on a line that need the same: once)
-        for r in k.required {
+        // (By file and place, whatever order the calls were checked in.)
+        required := slice.clone(k.required[:], context.temp_allocator)
+        slice.stable_sort_by(required, proc(x, y: Required) -> bool { return units_before(x.at.at, y.at.at) })
+        for r in required {
             if (r.ft.origin.(Origin_Required).of != nil) != defined { continue }
             line := fmt.tprintf("  %s   %s", required_text(r.name, r.ft), ask_loc(r.at))
             if r.by != nil && r.by.source_name != "" { line = fmt.tprintf("%s, in %s", line, r.by.source_name) }

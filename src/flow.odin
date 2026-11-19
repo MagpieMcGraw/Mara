@@ -23,6 +23,7 @@ import "core:strings"
 // (a generic's instances share their template's) does so as it reports.
 Flow_Pass :: struct {
     kept:    bool,   // a kept stage's: not let go of at a report (middle_keep)
+    lent:    map[^Program_Graph]bool,   // the codes whose findings are a kept stage's, taken in for a report
     found:   map[^Program_Graph][dynamic]Flow_Finding,
     sources: map[^Type_Scope]bool,   // the checked source funs (whose codes the fun checks read)
     walk:    virtual.Arena,          // what a walk makes, until the next (flow_init_fun)
@@ -53,11 +54,18 @@ flow_pass_make :: proc(fns: []^Type_Scope, pc: ^Program_Code = nil) -> Flow_Pass
     return fp
 }
 
+// Whether a code's findings are a kept stage's, taken in for a report (flow_report): not this pass's to let go of.
+@(private="file")
+flow_kept_code :: proc(fp: ^Flow_Pass, g: ^Program_Graph) -> bool {
+    return g in fp.lent
+}
+
 flow_pass_free :: proc(fp: ^Flow_Pass) {
     virtual.arena_destroy(&fp.walk)
     delete(fp.ctor_unset)
-    for _, list in fp.found { delete(list) }
+    for g, list in fp.found { if !flow_kept_code(fp, g) { delete(list) } }
     delete(fp.found)
+    delete(fp.lent)
     delete(fp.sources)
 }
 
@@ -109,9 +117,14 @@ flow_report_gaps :: proc(c: ^Checker, gaps: []Literal_Gap) {
 flow_report :: proc(c: ^Checker, checked: ^Checked_Program, passes: []^Flow_Pass, fns: []^Type_Scope, void_defaults: map[Span]bool) {
     // (Each code is one pass's: their findings, together.)
     fp := passes[0]
+    // (A kept stage's stay its own too: it reports them again at the next
+    // check, where its store is all that's left of them — middle_keep.)
     for other in passes[1:] {
-        for g, list in other.found { fp.found[g] = list }
-        clear(&other.found)
+        for g, list in other.found {
+            fp.found[g] = list
+            if other.kept { fp.lent[g] = true }
+        }
+        if !other.kept { clear(&other.found) }
     }
     codes := checked.code.codes[:]
     graphed := len(codes) > 0
