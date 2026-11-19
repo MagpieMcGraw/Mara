@@ -1486,7 +1486,7 @@ check_module :: proc(args: CLI_Args, files: map[string][dynamic]^Source_File, pe
                                no_assert     = args.no_assert,
                                no_crt        = args.no_crt,
                                perf          = perf,
-                               lower         = !args.lsp && !args.edit)
+                               lower         = !args.edit && len(parse_errors) == 0)   // (mara lsp's too: what the flow finds, a missing return, its errors)
     if checked.errors > 0 || len(parse_errors) > 0 {
         return checked, shared, strings.concatenate({take_diagnostics(), fmt.aprintf(BUILD_TYPE_ERRORS_ABORT, checked.errors)})
     }
