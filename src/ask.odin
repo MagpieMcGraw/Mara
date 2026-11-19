@@ -902,6 +902,15 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         }
         return strings.to_string(b), false
     }
+    // (Several, some the module asked about's own: those — a set of modules
+    // held together, each with its `main`, is asked as each one alone is.)
+    if len(matches) > 1 && scope_module == "" && scope_file == "" {
+        own := make([dynamic]Ask_Match, context.temp_allocator)
+        for m in matches {
+            if m.span.at != 0 && build_files[build_tokens[m.span.at].file].module == pkg { append(&own, m) }
+        }
+        if len(own) > 0 && len(own) < len(matches) { matches = own }
+    }
     if len(matches) > 1 {
         // Subject ambiguity: don't guess. List the candidates and tell the user
         // how to pick one. (For types this is rare; it becomes the norm only once

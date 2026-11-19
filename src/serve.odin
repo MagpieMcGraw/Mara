@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:mem/virtual"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 import "core:time"
 import "base:runtime"
@@ -35,21 +36,51 @@ Serve_Check :: struct {
     diagnostics: [dynamic]Diagnostic,   // its errors and warnings, each at its place
 }
 
-// Where serve answers from: the folder it runs in and the module it checks
-// there. A line's `-in` changes them. The strings in here, and the folders
-// build.mara names, live in the arena, which each change replaces.
+// One folder's set of modules, held: where it is, the module first asked
+// about there and those added beside it since (args.pkg_name, args.also),
+// its check, and — while another folder's set is the one being answered
+// from — the build's globals its check filled. A folder has its own
+// build.mara and its own modules of a name, so each has a set of its own;
+// serve keeps them side by side, and going back to one checks nothing again
+// unless a file changed. The strings in here, and the folders build.mara
+// names, live in the arena, which each reading of build.mara replaces.
 Serve_Here :: struct {
     arena: virtual.Arena,
     dir:   string,
     args:  CLI_Args,
+    check: Serve_Check,
+    build: Serve_Build,
+}
+
+// The build's globals a check fills — its tokens, files and tree, the types
+// it made canonical — taken out so another folder's can be put in.
+Serve_Build :: struct {
+    tokens:   [dynamic]Token,
+    files:    [dynamic]^Source_File,
+    literals: map[Token_Id]string,
+    tree:     Tree,
+    types:    Types_Held,
+}
+
+serve_build_take :: proc() -> (b: Serve_Build) {
+    b = {build_tokens, build_files, build_literals, build_tree, types_take()}
+    serve_build_put({})
+    return
+}
+
+serve_build_put :: proc(b: Serve_Build) {
+    build_tokens, build_files, build_literals, build_tree = b.tokens, b.files, b.literals, b.tree
+    types_put(b.types)
+    ir_types_forget()   // (made from a check's types: another check's may sit where they did)
 }
 
 serve :: proc(args: CLI_Args) {
     compiler := compiler_file()
-    here := Serve_Here{args = args}
+    sets := make([dynamic]^Serve_Here)
+    here := new_clone(Serve_Here{args = args})
     here.dir, _ = os.get_working_directory(context.allocator)
-    check: Serve_Check
-    serve_check(&check, args, serve_stamp(args.compiler_dir, args.search_dirs))
+    append(&sets, here)
+    serve_check(&here.check, args, serve_stamp(args.compiler_dir, args.search_dirs))
     r: bufio.Reader
     bufio.reader_init(&r, os.to_stream(os.stdin))
     defer bufio.reader_destroy(&r)
@@ -67,8 +98,8 @@ serve :: proc(args: CLI_Args) {
             dir, module = words[1], words[2]
             words = words[3:]
         }
-        answer, ok := serve_ready(&check, &here, dir, module), false
-        if answer == "" { answer, ok = serve_answer(&check, words, &here.args) }
+        answer, ok := serve_ready(&sets, &here, args, dir, module), false
+        if answer == "" { answer, ok = serve_answer(&here.check, words, &here.args, module) }
         fmt.print(answer)
         fmt.println(ASK_DONE if ok else ASK_FAILED)
         free_all(context.temp_allocator)
@@ -76,34 +107,64 @@ serve :: proc(args: CLI_Args) {
     }
 }
 
-// Gets the kept check ready for a query. `dir` and `module` are the query's
-// `-in`; both are empty when it has none. The module is checked again when
-// the query moves serve or a file has changed. Returns what to answer instead
-// when serve can't get there, "" when it's ready.
-serve_ready :: proc(check: ^Serve_Check, here: ^Serve_Here, dir, module: string) -> string {
-    moved := dir != "" && (path_key(dir) != path_key(here.dir) || module != here.args.pkg_name)
-    if moved && os.change_directory(dir) != nil {
-        return fmt.tprintf("mara serve: can't go to the folder %s\n", dir)
+// Gets a set ready for a query. `dir` and `module` are the query's `-in`;
+// both are empty when it has none. Another folder: its set, held or new —
+// `here` from then on. A module the set doesn't have: added beside its own.
+// The set is checked again when it grew or a file has changed. Returns what
+// to answer instead when serve can't get there, "" when it's ready.
+serve_ready :: proc(sets: ^[dynamic]^Serve_Here, here: ^^Serve_Here, base: CLI_Args, dir, module: string) -> string {
+    heap := runtime.heap_allocator()
+    fresh := false
+    if dir != "" && path_key(dir) != path_key(here^.dir) {
+        if os.change_directory(dir) != nil { return fmt.tprintf("mara serve: can't go to the folder %s\n", dir) }
+        here^.build = serve_build_take()
+        next: ^Serve_Here
+        for s in sets { if s.dir != "" && path_key(s.dir) == path_key(dir) { next = s } }
+        if next == nil {
+            next = new(Serve_Here, heap)
+            next.args = base
+            next.args.pkg_name, next.args.search_dirs, next.args.also = strings.clone(module, heap), nil, nil
+            next.dir = strings.clone(dir, heap)
+            append(sets, next)
+            fresh = true
+        }
+        serve_build_put(next.build)
+        next.build = {}
+        here^ = next
     }
-    stamp := serve_stamp(here.args.compiler_dir, here.args.search_dirs)
-    if !moved && stamp == check.stamp { return "" }
+    h := here^
+    check := &h.check
+    grown := false
+    if module != "" && module != h.args.pkg_name && !slice.contains(h.args.also, module) && module not_in check.session.files {
+        also := make([dynamic]string, heap)
+        append(&also, ..h.args.also)
+        append(&also, strings.clone(module, heap))
+        h.args.also = also[:]
+        grown = true
+    }
+    stamp := serve_stamp(h.args.compiler_dir, h.args.search_dirs)
+    if !fresh && !grown && stamp == check.stamp { return "" }
     if dir != "" {
-        // (build.mara read again: this is another folder, or it may have changed.)
-        virtual.arena_destroy(&here.arena)
-        if err := virtual.arena_init_growing(&here.arena); err != nil {
+        // (build.mara read again: a folder new here, or it may have changed.)
+        virtual.arena_destroy(&h.arena)
+        if err := virtual.arena_init_growing(&h.arena); err != nil {
             fmt.panicf("mara serve: no arena for a module (%v)", err)
         }
-        context.allocator = virtual.arena_allocator(&here.arena)
-        here.dir, here.args.pkg_name = strings.clone(dir), strings.clone(module)
-        here.args.search_dirs, here.args.also = nil, nil
-        if problem := build_dirs_in(&here.args, here.dir); problem != "" {
+        context.allocator = virtual.arena_allocator(&h.arena)
+        h.args.search_dirs = nil
+        if problem := build_dirs_in(&h.args, h.dir); problem != "" {
             // (The next query tries again. The check kept was of what's gone.)
-            here.dir, check.stamp = "", ""
+            check.stamp = ""
             return strings.concatenate({problem, "\n"}, context.temp_allocator)
         }
-        stamp = serve_stamp(here.args.compiler_dir, here.args.search_dirs)
+        stamp = serve_stamp(h.args.compiler_dir, h.args.search_dirs)
     }
-    serve_check(check, here.args, stamp)
+    serve_check(check, h.args, stamp)
+    // (A module asked for that isn't here: said, and not kept in the set.)
+    if grown && check.session.all_files != nil && module not_in check.session.all_files {
+        h.args.also = h.args.also[:len(h.args.also) - 1]
+        return module_missing(check.session.all_files, module)
+    }
     return ""
 }
 
@@ -201,7 +262,7 @@ path_key :: proc(path: string) -> string {
 // A query's answer, and whether it is one — false where `mara ask` would
 // fail: a mistake in the query (that is its answer), a name not found, the
 // module not checking (what's wrong with it is).
-serve_answer :: proc(c: ^Serve_Check, words: []string, args: ^CLI_Args = nil) -> (answer: string, ok: bool) {
+serve_answer :: proc(c: ^Serve_Check, words: []string, args: ^CLI_Args = nil, module := "") -> (answer: string, ok: bool) {
     q, err := ask_parse_query(words)
     if q.help { return ASK_USAGE + "\n", true }
     if err != "" { return strings.concatenate({err, "\n"}, context.temp_allocator), false }
@@ -217,17 +278,19 @@ serve_answer :: proc(c: ^Serve_Check, words: []string, args: ^CLI_Args = nil) ->
             serve_check(c, args^, strings.clone(c.stamp, context.temp_allocator))
         }
     }
-    // (A check with errors answers from what they don't break; a query it
-    // can't answer says them.)
+    // (A check with errors answers from what they don't break, and says
+    // after each answer which scopes those are.)
     partial := c.session.checked != nil && c.session.checked.partial
     if c.failure != "" && !partial { return c.failure, false }
     // (What a query keeps for the next, a fun's def-use, stays with its check.)
     context.allocator = virtual.arena_allocator(&c.arena)
     s := &c.session
+    // (Asked as the query's module's: one of the set, as `mara ask` there.)
+    if module != "" && module in s.files { s.pkg = module } else if args != nil { s.pkg = args.pkg_name }
     in_, in_err := ask_scopes(q, s.all_files, s.files, s.pkg)
     if in_err != "" { return strings.concatenate({in_err, "\n"}, context.temp_allocator), false }
     answer, ok = ask_run(s, q, in_)
-    if !ok && c.failure != "" { return c.failure, false }
+    if partial { answer = strings.concatenate({answer, s.checked.errors_said}, context.temp_allocator) }
     return
 }
 

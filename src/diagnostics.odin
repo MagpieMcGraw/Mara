@@ -103,6 +103,29 @@ diagnostics_error_tokens :: proc(from: int) -> []Token_Id {
     return out[:]
 }
 
+// The errors queued, as they are now (a copy: the queue goes on).
+diagnostics_errors :: proc() -> []Diagnostic {
+    out := make([dynamic]Diagnostic, context.temp_allocator)
+    for d in g_diagnostics {
+        if d.kind == .Type_Error || d.kind == .Parse_Error { append(&out, d) }
+    }
+    return out[:]
+}
+
+// A diagnostic as its line is printed, with no line end.
+diagnostic_line :: proc(d: Diagnostic) -> string {
+    label: string
+    switch d.kind {
+    case .Parse_Error:   label = "Parse error"
+    case .Type_Error:    label = "Type error"
+    case .Warning:       label = "Warning"
+    case .Codegen_Error: label = "Codegen error"
+    case .Graph_Error:   label = "Graph error"
+    }
+    if d.location == "" { return fmt.tprintf("%s: %s", label, d.message) }
+    return fmt.tprintf("[%s] %s: %s", d.location, label, d.message)
+}
+
 // How many diagnostics are queued: where a phase's begin (diagnostics_sort).
 diagnostics_count :: proc() -> int {
     return len(g_diagnostics)
@@ -127,21 +150,7 @@ flush_diagnostics :: proc() {
 // after. (A check that fails says what's wrong with them first.)
 take_diagnostics :: proc() -> string {
     b := strings.builder_make()
-    for d in g_diagnostics {
-        label: string
-        switch d.kind {
-        case .Parse_Error:   label = "Parse error"
-        case .Type_Error:    label = "Type error"
-        case .Warning:       label = "Warning"
-        case .Codegen_Error: label = "Codegen error"
-        case .Graph_Error:   label = "Graph error"
-        }
-        if d.location != "" {
-            fmt.sbprintf(&b, "[%s] %s: %s\n", d.location, label, d.message)
-        } else {
-            fmt.sbprintf(&b, "%s: %s\n", label, d.message)
-        }
-    }
+    for d in g_diagnostics { fmt.sbprintf(&b, "%s\n", diagnostic_line(d)) }
     if g_keep != nil { append(g_keep, ..g_diagnostics[:]) }
     clear(&g_diagnostics)
     return strings.to_string(b)
@@ -324,6 +333,7 @@ TYPE_CONSTANT_OVERFLOWS_F32 :: "constant %v overflows f32"
 TYPE_STRUCT_CLASS_CANNOT_DECLARE_RETURN :: "struct/class '%s' without constructor parameters cannot declare a return type (only a parameterized constructor may return, e.g. a trailing err)"
 TYPE_ENUM_ALREADY_DEFINED :: "enum '%s' already defined"
 TYPE_UNION_ALREADY_DEFINED :: "union '%s' already defined"
+TYPE_VARIANT_TWICE :: "variant '%s' is in '%s' twice"
 TYPE_ALREADY_DEFINED :: "%s '%s' already defined"
 TYPE_TYPE_ALREADY_DEFINED :: "type '%s' already defined"
 TYPE_FUNCTION_ALREADY_DEFINED :: "function '%s' already defined"

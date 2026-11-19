@@ -37,6 +37,10 @@ tc_register_union :: proc(k: ^TC, def, node: Tree_Id, owner: ^Type_Scope) {
         variants = tc_union_variants(k, node)
         tc_union_same_tags(k, variants[:])
     }
+    // (A name in it twice: an error — two variants of one name were one tag's, the second's body no struct's.)
+    for v, i in variants {
+        for w in variants[:i] { if w.name == v.name { tc_error(k, v.span, TYPE_VARIANT_TWICE, v.name, name); break } }
+    }
     has_data := false
     for v in variants { if v.fields { has_data = true } }
     flat := make_flat_name(owner.name, filed)

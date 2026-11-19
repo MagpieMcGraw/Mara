@@ -2317,14 +2317,15 @@ main :: proc() {
 
     checked, pkg_shared, failure := check_module(args, files, &perf)
     // (A query of a check with errors is answered from what they don't
-    // break; one it can't answer says them.)
+    // break; after it, which scopes those are.)
     if failure != "" && args.ask && checked != nil && checked.partial {
         reset_diagnostics()
         s := Ask_Session{checked, all_files, files, args.compiler_dir, args.pkg_name}
-        if out, found := ask_run(&s, args.ask_query, ask_in); found {
-            fmt.print(out)
-            return
-        }
+        out, found := ask_run(&s, args.ask_query, ask_in)
+        fmt.print(out)
+        fmt.print(checked.errors_said)
+        if !found { os.exit(1) }
+        return
     }
     if failure != "" {
         if os.get_env("MARA_CHECK_ONLY", context.temp_allocator) == "" { perf_timer_end(&perf) }

@@ -1,5 +1,9 @@
 package mara
 
+import "core:fmt"
+import "core:slice"
+import "core:strings"
+
 // units.odin — a check that found errors: which definitions they break.
 //
 // A definition — a fun, a struct, a constant, a type — is a unit. Its head
@@ -20,6 +24,17 @@ Units :: struct {
     body:    map[Token_Id]bool,   // the funs whose body is: an error in it, or it names a broken head
     outer:   map[Token_Id]Token_Id,   // each definition written in another's: that one
     loose:   map[u16]bool,        // the files with an error in a statement of the module's own
+    via:     map[Token_Id]Token_Id,   // each definition broken by naming a broken head: that one
+}
+
+// The definition an error at a token is in (0: none — a statement of its
+// file's own, as the parser read it: one it took out of a definition can be
+// within that definition's tokens).
+units_home :: proc(u: ^Units, t: ^Tree, tok: Token_Id) -> Token_Id {
+    for s in tree_list(t, t.a[t.files[build_tokens[tok].file]]) {
+        if t.tag[s] != .Define && tok >= t.first[s] && tok < t.end[s] { return 0 }
+    }
+    return u.def[tok]
 }
 
 // The units a check's errors break — `errors`, the tokens they're at.
@@ -70,15 +85,9 @@ units_find :: proc(k: ^TC, errors: []Token_Id) -> ^Units {
     broken := make([dynamic]Token_Id, context.temp_allocator)
     for tok in errors {
         if tok == 0 || int(tok) >= len(u.def) { continue }
-        d := u.def[tok]
-        // (In a statement of its file's own, as the parser read it — one it
-        // took for a definition's can be within that definition's tokens.)
-        file := build_tokens[tok].file
-        for s in tree_list(t, t.a[t.files[file]]) {
-            if t.tag[s] != .Define && tok >= t.first[s] && tok < t.end[s] { d = 0 }
-        }
+        d := units_home(u, t, tok)
         switch {
-        case d == 0:          u.loose[file] = true
+        case d == 0:          u.loose[build_tokens[tok].file] = true
         case u.in_body[tok]:  u.body[d] = true
         case !u.head[d]:      u.head[d] = true; append(&broken, d)
         }
@@ -86,6 +95,7 @@ units_find :: proc(k: ^TC, errors: []Token_Id) -> ^Units {
     for i := 0; i < len(broken); i += 1 {
         named := users[broken[i]] or_else nil   // (bound first: a loop over a map's missing entry crashes)
         for x in named {
+            if !u.head[x.def] && !u.body[x.def] { u.via[x.def] = broken[i] }
             if x.in_body { u.body[x.def] = true; continue }
             if !u.head[x.def] { u.head[x.def] = true; append(&broken, x.def) }
         }
@@ -113,4 +123,68 @@ units_broken :: proc(u: ^Units, t: ^Tree, sc: ^TC_Scope) -> bool {
 // ... a constant's.
 units_broken_const :: proc(u: ^Units, t: ^Tree, kc: ^TC_Const) -> bool {
     return u != nil && units_broken_at(u, t.main[kc.def])
+}
+
+// A definition's name, with those it's written in: `main.step`.
+@(private="file")
+units_name :: proc(u: ^Units, d: Token_Id) -> string {
+    name := token_text(build_tokens[d])
+    for o := u.outer[d] or_else 0; o != 0; o = u.outer[o] or_else 0 {
+        name = strings.concatenate({token_text(build_tokens[o]), ".", name}, context.temp_allocator)
+    }
+    return name
+}
+
+// What a tool's check says after an answer when it has errors: the scopes
+// with errors that no answer comes from, each with its errors (three of
+// them); the scopes left out with them, each using one whose head is
+// broken; and the errors in scopes that answer all the same — found once
+// they were lowered: a missing return, an escape.
+units_report :: proc(k: ^TC, errors: []Diagnostic) -> string {
+    t := k.t
+    u := k.units
+    if u == nil { u = units_find(k, nil) }   // (only lowering found errors: nothing is left out)
+    Group :: struct { home: Token_Id, file: u16, out: bool, errors: [dynamic]Diagnostic }
+    groups := make([dynamic]Group, context.temp_allocator)
+    for d in errors {
+        home, file, out := Token_Id(0), u16(0), true
+        if d.at != 0 {
+            home, file = units_home(u, t, d.at), build_tokens[d.at].file
+            out = k.units != nil && units_broken_at(u, d.at)
+        }
+        at := -1
+        for g, i in groups { if g.home == home && g.file == file && g.out == out { at = i } }
+        if at < 0 {
+            at = len(groups)
+            append(&groups, Group{home, file, out, make([dynamic]Diagnostic, context.temp_allocator)})
+        }
+        append(&groups[at].errors, d)
+    }
+    place :: proc(d: Token_Id) -> string { return ask_loc(Span{at = d, tok = d, end = d + 1}) }
+    said :: proc(b: ^strings.Builder, u: ^Units, groups: []Group, out: bool, title: string) {
+        first := true
+        for g in groups {
+            if g.out != out { continue }
+            if first { strings.write_string(b, title); first = false }
+            switch {
+            case g.home != 0:           fmt.sbprintf(b, "  %s  %s\n", units_name(u, g.home), place(g.home))
+            case len(g.errors) > 0 && g.errors[0].at != 0:
+                fmt.sbprintf(b, "  %s, outside any definition: nothing in its file answers\n", ask_loc(Span{at = g.errors[0].at, tok = g.errors[0].at, end = g.errors[0].at + 1}))
+            case:                       strings.write_string(b, "  the program\n")
+            }
+            for d, i in g.errors {
+                if i == 3 { fmt.sbprintf(b, "    (and %d more)\n", len(g.errors) - 3); break }
+                fmt.sbprintf(b, "    %s\n", diagnostic_line(d))
+            }
+        }
+    }
+    b := strings.builder_make()
+    said(&b, u, groups[:], true, "\nscopes with errors — no answers from them:\n")
+    with := make([dynamic]Token_Id, context.temp_allocator)
+    for d in u.via { append(&with, d) }
+    slice.sort(with[:])
+    if len(with) > 0 { strings.write_string(&b, "left out with them — each uses one:\n") }
+    for d in with { fmt.sbprintf(&b, "  %s  %s   (uses %s)\n", units_name(u, d), place(d), units_name(u, u.via[d])) }
+    said(&b, u, groups[:], false, "\nerrors in scopes that answer all the same:\n")
+    return strings.to_string(b)
 }

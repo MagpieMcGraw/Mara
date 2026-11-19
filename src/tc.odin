@@ -103,6 +103,7 @@ TC :: struct {
     bound:         []u32,               // by token: its binding's place in binds (0: none)
     binds:         [dynamic]Type,       // (dense, in the order they're bound: a map's inserts miss the cache)
     bound_log:     [dynamic]TC_Bound,   // each binding's before, for an instance to give back (tc_instance_end)
+    beside:        []string,            // the modules checked beside the main one (a tool's set of them)
     units:         ^Units,              // a check with errors, lowered around them: what they break (nil: nothing, or nothing lowered)
     bodies_reversed: bool,              // MARA_BODY_ORDER=reverse, a test's: each scope's funs checked last first
     pending:       [dynamic]^TC_Scope,  // the scopes whose definitions' bodies wait to be checked, each on its own (tc_bodies)
@@ -555,6 +556,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     k.pkg = main_package
     main := tc_check_module_body(k)
     // (The modules checked beside it, which it doesn't use: a tool's.)
+    k.beside = also
     for name in also {
         if name in modules && name not_in k.checked_modules { tc_check_module(k, name, {}) }
     }
@@ -623,6 +625,7 @@ tc_check_program :: proc(t: ^Tree, modules: map[string][]Tree_Id, main_package: 
     checked.names, checked.bound, checked.binds = k.names, k.bound, k.binds[:]
     checked.errors = c.errors
     checked.partial = partial && lower && (c.errors > 0 || parse_errors) && mid.on
+    if checked.partial { checked.errors_said = units_report(k, diagnostics_errors()) }
     return checked
 }
 
@@ -841,15 +844,16 @@ tc_extract :: proc(k: ^TC, list: []int, module: string, is_main: bool, nested :=
         // (Its own definitions first.)
         tc_extract(k, sc.nested[:], module, is_main, nested = true)
         name := ft.source_name
-        // (`main` is the entry's, its bare name: the main module's only.)
-        if name == "main" && !is_main && !nested { continue }
+        // (`main` is the entry's, its bare name: the main module's only. One
+        // of a module checked beside it — a tool's set — is that module's fun.)
+        if name == "main" && !is_main && !nested && !slice.contains(k.beside, module) { continue }
         key := name
         if nested {
             // (Named for its owner already: `mara_core_Arena_mark`.)
             key = ft.name
             flat_pkg, _ := strings.replace_all(module, ".", "_")
             if module != "" && !strings.has_prefix(key, fmt.tprintf("%s_", flat_pkg)) { key = make_flat_name(module, key) }
-        } else if name != "main" && module != "" {
+        } else if (name != "main" || !is_main) && module != "" {
             key = make_flat_name(module, name)
         }
         ft.origin = Origin_Source{}
@@ -1212,6 +1216,7 @@ Checked_Program :: struct {
 
     errors:         int,
     partial:        bool,   // ... and lowered all the same: a tool's check, answered from what they don't break
+    errors_said:    string, // ... what an answer ends with: the scopes with errors, those left out with them (units_report)
     holes:          bool,   // ... around those the checker found: what they break has no code (units.odin)
 
     // Whether the program starts threads (mara.os's thread_start, called):

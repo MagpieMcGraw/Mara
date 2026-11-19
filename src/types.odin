@@ -151,6 +151,24 @@ Type_Shape :: struct {
 @(private="file")
 g_type_shapes: map[Type_Shape]rawptr
 
+// A check's own of these tables — the shapes made, its array bindings —
+// taken out (the tables left empty) and put back: serve holds several
+// checks, one answered from at a time.
+Types_Held :: struct {
+    shapes: map[Type_Shape]rawptr,
+    arrays: [dynamic]^Infer_Cell,
+}
+
+types_take :: proc() -> (h: Types_Held) {
+    h = {g_type_shapes, g_infer_arrays}
+    g_type_shapes, g_infer_arrays = {}, {}
+    return
+}
+
+types_put :: proc(h: Types_Held) {
+    g_type_shapes, g_infer_arrays = h.shapes, h.arrays
+}
+
 // The shapes made forgotten: a check of serve's, after another.
 types_forget_shapes :: proc() {
     delete(g_infer_arrays)
