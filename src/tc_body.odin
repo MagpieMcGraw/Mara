@@ -139,8 +139,9 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
         if t.tag[e] == .Import { return }   // (`use m`: checked before its module — tc_check_uses)
         if tc_override(k, e) { return }
         k.several_ok = tc_unparen(k, e)   // (what it drops: said below)
+        k.dropped = k.several_ok
         rt := tc_check(k, e)
-        k.several_ok = 0
+        k.several_ok, k.dropped = 0, 0
         // A call's value, dropped: `_ = f()` says so.
         if tc_is_call(k, e) && rt != nil {
             _, is_void := rt.(Type_Void)

@@ -204,5 +204,12 @@ units_report :: proc(k: ^TC, errors: []Diagnostic) -> string {
     if len(with) > 0 { strings.write_string(&b, "left out with them — each uses one:\n") }
     for d in with { fmt.sbprintf(&b, "  %s  %s   (uses %s)\n", units_name(u, d), place(d), units_name(u, u.via[d])) }
     said(&b, u, groups[:], false, "\nerrors in scopes that answer all the same:\n")
+    // (What calls need that nothing defines yet: requires.odin.)
+    if len(k.required) > 0 { strings.write_string(&b, "\nnot defined yet — needed as:\n") }
+    for r in k.required {
+        fmt.sbprintf(&b, "  %s   %s", required_text(r.name, r.ft), ask_loc(r.at))
+        if r.by != nil && r.by.source_name != "" { fmt.sbprintf(&b, ", in %s", r.by.source_name) }
+        strings.write_byte(&b, '\n')
+    }
     return strings.to_string(b)
 }

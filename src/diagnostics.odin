@@ -668,6 +668,7 @@ WARN_VARS_MORE :: "%d more locals are never read (the first %d are listed)"
 WARN_LOOP_NEVER_LOOPS :: "this loop never runs a second time: every run ends in a `break` or `return` — was a statement meant inside a block? (code that runs once reads better as an `if`)"
 WARN_CHAIN_MISALIGNED :: "this `%s` belongs to the `if` on line %d, but is indented differently. Was it meant for another `if`?"
 WARN_LOOP_ON_IN_TEST :: "this `for` runs while `%s` is true: `%s` isn't a name for each item, so it's a test. To loop over the items, name them (`for x in …`); to loop on the test, put it in parentheses"
+WARN_NOT_DEFINED_NEEDED :: "'%s' isn't defined yet. This call needs: %s"
 WARN_LINE_DOES_NOTHING :: "'%s' by itself does nothing: it's read and dropped. Was an assignment (`%s = ...`) or a call meant?"
 WARN_REDUNDANT_CAST ::"redundant cast to %s — %s already has that type, drop the `%s(...)`"
 

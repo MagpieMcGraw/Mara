@@ -844,7 +844,18 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
     for decl in calls { hit_declared(&sb, t, decl) }
     if refers {
         if r.decl == 0 {
-            fmt.sbprint(&sb, "  built into the compiler\n")
+            // (A fun its call needs that nothing defines yet: requires.odin.)
+            needed: ^Type_Scope
+            for h in hits {
+                ft := a.callees[annot_key(0, h)] or_else nil
+                if ft == nil { continue }
+                if _, is_needed := ft.origin.(Origin_Required); is_needed { needed = ft; break }
+            }
+            if needed != nil {
+                fmt.sbprintf(&sb, "  not defined yet — this call needs:  %s\n", required_text(needed.source_name, needed))
+            } else {
+                fmt.sbprint(&sb, "  built into the compiler\n")
+            }
         } else {
             hit_declared(&sb, t, r.decl)
         }

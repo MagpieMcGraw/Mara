@@ -104,6 +104,8 @@ TC :: struct {
     binds:         [dynamic]Type,       // (dense, in the order they're bound: a map's inserts miss the cache)
     bound_log:     [dynamic]TC_Bound,   // each binding's before, for an instance to give back (tc_instance_end)
     beside:        []string,            // the modules checked beside the main one (a tool's set of them)
+    required:      [dynamic]Required,   // the funs calls need that nothing defines (a tool's check: requires.odin)
+    dropped:       Tree_Id,             // the call whose value its statement drops, being checked
     middle_kept:   ^Middle_Kept,        // a staged check's first stage's codes, lowered and analysed (nil: none)
     run:           TC_Run,              // what the check was asked for, and where it's at
     units:         ^Units,              // a check with errors, lowered around them: what they break (nil: nothing, or nothing lowered)
@@ -714,7 +716,7 @@ tc_check_finish :: proc(k: ^TC) -> ^Checked_Program {
     checked.names, checked.bound, checked.binds = k.names, k.bound, k.binds[:]
     checked.errors = c.errors
     checked.partial = partial && lower && (c.errors > 0 || parse_errors) && mid.on
-    if checked.partial { checked.errors_said = units_report(k, diagnostics_errors()) }
+    if checked.partial || partial && len(k.required) > 0 { checked.errors_said = units_report(k, diagnostics_errors()) }
     return checked
 }
 

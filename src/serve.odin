@@ -517,7 +517,7 @@ serve_answer :: proc(c: ^Serve_Check, words: []string, args: ^CLI_Args = nil, mo
     in_, in_err := ask_scopes(q, s.all_files, s.files, s.pkg)
     if in_err != "" { return strings.concatenate({in_err, "\n"}, context.temp_allocator), false }
     answer, ok = ask_run(s, q, in_)
-    if partial { answer = strings.concatenate({answer, s.checked.errors_said}, context.temp_allocator) }
+    if s.checked != nil { answer = strings.concatenate({answer, s.checked.errors_said}, context.temp_allocator) }
     return
 }
 

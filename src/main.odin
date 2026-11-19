@@ -2359,6 +2359,7 @@ main :: proc() {
         s := Ask_Session{checked, all_files, files, args.compiler_dir, args.pkg_name}
         out, found := ask_run(&s, args.ask_query, ask_in)
         fmt.print(out)
+        fmt.print(checked.errors_said)   // (what calls need that nothing defines yet: requires.odin)
         if !found { os.exit(1) }   // not-found / ambiguous: text already printed
         return
     }

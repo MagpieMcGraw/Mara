@@ -875,9 +875,15 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
             for a in args { tc_check(k, a) }
             return Type_Error{}
         }
-        if !tc_behind_use(k, span, name) { tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name) }
-        for a in args { tc_check(k, a) }
-        return Type_Error{}
+        // (A tool's check: the head the call needs, when it says one — requires.odin.)
+        _, _, behind := names_named_use_of(k.names, span.at, name)
+        if needed := tc_required_fun(k, n, name, args, span) if !behind else nil; needed != nil {
+            ft_raw, found = needed, true
+        } else {
+            if !tc_behind_use(k, span, name) { tc_error(k, span, TYPE_UNDEFINED_FUNCTION, name) }
+            for a in args { tc_check(k, a) }
+            return Type_Error{}
+        }
     }
     if _, is_ref := distinct_base(ft_raw).(^Type_Field); is_ref {
         // (Only `S.field` makes one: an offset from anything else could be anywhere.)
@@ -909,7 +915,8 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
     from_text ||= field_from_text
     variant_text ||= field_text
     _, err_runtime := ft.origin.(Origin_Err_Runtime)
-    if !indirect && ft.node == 0 && ft.calling_conv != .C && !from_text && !variant_text && !err_runtime {
+    _, required := ft.origin.(Origin_Required)
+    if !indirect && ft.node == 0 && ft.calling_conv != .C && !from_text && !variant_text && !err_runtime && !required {
         tc_unsupported(k, n, "a call of this")
         return Type_Error{}
     }

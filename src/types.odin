@@ -768,7 +768,11 @@ Function_Origin :: union {
     Origin_Err_Runtime,
     Origin_Field_Text,
     Origin_Field_From_Text,
+    Origin_Required,
 }
+
+// A fun a call needs that nothing defines yet (requires.odin): a head, no body.
+Origin_Required :: struct {}
 
 // `r.text()` and `R.from_text(text)` for a field reference's type: no function
 // at all, each call generated where it is (field_text_fun, field_from_text_fun).
