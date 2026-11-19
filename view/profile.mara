@@ -65,6 +65,7 @@ Profile :: struct {
 	text:    [8 * MB]byte          // the file
 	header:  [8]Field              // its lines before the columns
 	exit_note: i64 = -1              // the header line saying calls were running at exit: its place; -1: none were
+	title:   [300]utf8             // which profile it is, as the panel says it: the first line, shortened (profile_title)
 	columns: [MAX_COLUMNS]i64      // the columns it has, in order: which title each is
 	rows:    [MAX_ROWS]Row
 	order:   [MAX_ROWS]i64         // the rows as shown: sorted
@@ -153,6 +154,7 @@ field_text :: fun(p: ^Profile, f: Field) -> []utf8 {
 // sorted as they were. When it can't be shown, why: p.problem.
 profile_read :: fun(p: ^Profile, path: []utf8) {
 	p.header.len = 0
+	p.title.len = 0
 	p.exit_note = -1
 	p.columns.len = 0
 	p.rows.len = 0
@@ -233,6 +235,41 @@ profile_read :: fun(p: ^Profile, path: []utf8) {
 	}
 	if p.sort_by >= p.columns.len do p.sort_by = -1
 	profile_sort(p)
+	profile_title(p)
+}
+
+// Which profile it is, p.title: the file's first line — `Mara profile:
+// <program>, <build>, <how long it ran>, <when>` — without its first words
+// and how long it ran (main's total, the table's first row, says that).
+// A first line that isn't such a one, as it is.
+profile_title :: fun(p: ^Profile) {
+	p.title.len = 0
+	if p.header.len == 0 do return
+	whole := field_text(p, p.header[0])
+	s := whole[0 : min_int(whole.len, p.title.cap)]
+	from : i64 = 0
+	if starts_with(s, "Mara profile: ") do from = 14
+	// (The last two `, `: how long it ran is between them.)
+	last : i64 = -1
+	before : i64 = -1
+	for k in from : s.len - 1 {
+		if s[k] == ',' and s[k + 1] == ' ' {
+			before = last
+			last = k
+		}
+	}
+	ran := false
+	if from > 0 and before >= 0 and last - before >= 5 {
+		piece := s[before + 2 : last]
+		digit := piece[0] >= '0' and piece[0] <= '9'
+		ran = digit and (piece[piece.len - 2 : piece.len] == " s" or piece[piece.len - 3 : piece.len] == " ms")
+	}
+	if ran {
+		&p.title ++ s[from : before]
+		&p.title ++ s[last : s.len]
+	else
+		&p.title ++ s[from : s.len]
+	}
 }
 
 // When the line names the columns (it begins "total ms"), the titles it

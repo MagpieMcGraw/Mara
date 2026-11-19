@@ -5,8 +5,8 @@ use mara.string
 use mara.math
 use mara.sdl
 
-// The Profile panel: which profile it is (profile.txt's first line, wrapped
-// to the panel), the chart of its call tree, its column titles, the rows
+// The Profile panel: which profile it is (profile.txt's first line less how
+// long it ran, wrapped to the panel), the chart of its call tree, its column titles, the rows
 // that fit from the scroll on, a scroll bar, a status line — drawn in the
 // panel's content (r, a rectangle in the window, pixels). A click on a column's
 // title sorts by it. The columns are in the window's order (ui.columns),
@@ -178,14 +178,21 @@ note_shown :: fun(p: ^Profile, k: i64) -> bool {
 	return k == 0 or (p.exit_note >= 0 and k >= p.exit_note)
 }
 
+// A header line as the panel shows it: the first shortened (p.title).
+note_text :: fun(p: ^Profile, k: i64) -> []utf8 {
+	if k > 0 do return field_text(p, p.header[k])
+	text : []utf8 = p.title
+	return text
+}
+
 // The height those lines take at the panel's top, wrapped to it, the room
 // under them included.
 notes_height :: fun(ui: ^Ui, p: ^Profile, r: Rect) -> f32 {
 	count : i64 = 0
-	for h, k in p.header {
+	for _, k in p.header {
 		if not note_shown(p, k) do continue
 		rows : [STATUS_ROWS]Line_Row
-		_ = wrap(ui, field_text(p, h), STYLE_TEXT, r.w - 2.0 * PAD, 0, 0, &rows)
+		_ = wrap(ui, note_text(p, k), STYLE_TEXT, r.w - 2.0 * PAD, 0, 0, &rows)
 		count += max_int(rows.len, 1)
 	}
 	if count == 0 do return 0.0
@@ -196,11 +203,11 @@ notes_height :: fun(ui: ^Ui, p: ^Profile, r: Rect) -> f32 {
 // calls running at exit dim.
 draw_notes :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 	y := r.y + PAD
-	for h, k in p.header {
+	for _, k in p.header {
 		if not note_shown(p, k) do continue
 		style := STYLE_DIM
 		if k == 0 do style = STYLE_TEXT
-		y = draw_wrapped(ui, field_text(p, h), style, r.x + PAD, y, r.w - 2.0 * PAD)
+		y = draw_wrapped(ui, note_text(p, k), style, r.x + PAD, y, r.w - 2.0 * PAD)
 	}
 }
 
