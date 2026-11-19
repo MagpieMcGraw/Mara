@@ -63,6 +63,7 @@ Lines :: struct {
 	lines:  [50000]Line
 	status: [400]utf8   // the status line; none when empty
 	status_style: i64
+	quiet:  bool          // no status line drawn: its text shown only in place of the lines, when there are none
 	scroll: i64           // the first row shown
 	cut_off: bool          // more came than it holds: the rest left out
 	lit:    i64 = -1      // a line lit, all its rows (the call under the mouse); -1: none
@@ -343,7 +344,7 @@ doc_code_at :: fun(s: []utf8, at: i64) -> bool {
 
 // The status line's height, wrapped to r's width; 0 for none.
 status_height :: fun(ui: ^Ui, l: ^Lines, r: Rect) -> f32 {
-	if l.status.len == 0 do return 0
+	if l.status.len == 0 or l.quiet do return 0
 	rows : [STATUS_ROWS]Line_Row
 	_ = wrap(ui, l.status, STYLE_TEXT, lines_width(r), 0, 0, &rows)
 	return f32(rows.len) * ui.text.line + 2.0 * ROW_PAD
@@ -359,14 +360,21 @@ lines_visible :: fun(ui: ^Ui, l: ^Lines, r: Rect) -> i64 {
 
 // The lines drawn in r: from the scroll, as many rows as fit — what's
 // selected behind them — a scroll bar when they don't all; the status line
-// at its bottom. With none, `empty`, dim.
+// at its bottom. With none, `empty`, dim — quiet lines', their status when
+// they have one.
 draw_lines :: fun(ui: ^Ui, l: ^Lines, r: Rect, empty: []utf8) {
 	rd := ui.renderer
 	w := lines_width(r)
 	lines_wrap(ui, l, w)
 	shown := lines_visible(ui, l, r)
 	l.scroll = max_int(0, min_int(l.scroll, l.rows.len - shown))
-	if l.lines.len == 0 do _ = draw_wrapped(ui, empty, STYLE_DIM, r.x + PAD, r.y + PAD, w)
+	if l.lines.len == 0 {
+		if l.quiet and l.status.len > 0 {
+			_ = draw_wrapped(ui, l.status, l.status_style, r.x + PAD, r.y + PAD, w)
+		else
+			_ = draw_wrapped(ui, empty, STYLE_DIM, r.x + PAD, r.y + PAD, w)
+		}
+	}
 	from, to := lines_selection(l)
 	selected := spot_before(from, to)
 	y := r.y + PAD
@@ -396,7 +404,7 @@ draw_lines :: fun(ui: ^Ui, l: ^Lines, r: Rect, empty: []utf8) {
 		thumb_y := r.y + PAD + (track - thumb) * f32(l.scroll) / f32(l.rows.len - shown)
 		fill(rd, r.x + r.w - 8.0, thumb_y, 5.0, thumb, ui.dim)
 	}
-	if l.status.len > 0 {
+	if l.status.len > 0 and not l.quiet {
 		h := status_height(ui, l, r)
 		fill(rd, r.x, r.y + r.h - h, r.w, h, ui.header)
 		_ = draw_wrapped(ui, l.status, l.status_style, r.x + PAD, r.y + r.h - h + ROW_PAD, w)

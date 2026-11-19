@@ -138,6 +138,9 @@ main :: fun(args: [][]utf8) -> i64 {
 	hub : Hub
 	theme_set(&ui, THEME_DARK)
 	columns_default(&ui)
+	// (The Docs panel's bottom is its last line: no status line there.)
+	ui.docs[0].quiet = true
+	ui.docs[1].quiet = true
 
 	// (Its font and its layout beside it: the directory of its own file —
 	// exe_path's, however it was started; args[0] is what its
@@ -383,7 +386,8 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 				ui.scroll_x += sideways * 60.0
 				ui.dirty = true
 			}
-			l, has := panel_lines(ui, ui.panels[i].kind)
+			// (The Ask panel: the part the mouse is over.)
+			l, _, has := panel_lines_at(ui, ui.panels[i], ui.mouse_x, ui.mouse_y)
 			if has {
 				l.scroll -= i64(e.y * 3.0)
 				ui.dirty = true
@@ -416,9 +420,13 @@ handle :: fun(ui: ^Ui, p: ^Profile, ev: ^Event) {
 				if e.scancode == Scancode.Right do ui.scroll_x += 60.0
 				ui.dirty = true
 			}
-			l, has := panel_lines(ui, ui.panels[i].kind)
+			// (The Ask panel: the part the mouse is over; the mouse elsewhere,
+			// what was asked, or with nothing asked, what's at the cursor.)
+			at_x, at_y := ui.mouse_x, ui.mouse_y
+			if not inside(content_rect(ui, ui.panels[i]), at_x, at_y) do at_y = if ui.asked.lines.len == 0 do -1.0 else 1.0e9
+			l, part, has := panel_lines_at(ui, ui.panels[i], at_x, at_y)
 			if has {
-				page := lines_visible(ui, l, content_rect(ui, ui.panels[i]))
+				page := lines_visible(ui, l, part)
 				if e.scancode == Scancode.Down do l.scroll += 1
 				if e.scancode == Scancode.Up do l.scroll -= 1
 				if e.scancode == Scancode.PageDown do l.scroll += page
