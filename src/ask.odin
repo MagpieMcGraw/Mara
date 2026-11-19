@@ -1190,13 +1190,14 @@ render_enum_variants :: proc(b: ^strings.Builder, e: ^Type_Enum) {
 }
 
 // A definition as written up to its body, on one line: a fun's name, params and
-// results, whatever lines they're written on.
-@(private="file")
+// results, whatever lines they're written on — a result too, its `->` ending
+// a line or starting the next.
 ask_signature :: proc(first: Token_Id) -> string {
     f := build_files[build_tokens[first].file]
     sb := strings.builder_make(context.temp_allocator)
     open := 0   // brackets open
     after := -1   // where the token before ended
+    prev: Token_Kind
     walk: for id := first; id < f.end_token; id += 1 {
         tok := build_tokens[id]
         #partial switch tok.kind {
@@ -1208,9 +1209,10 @@ ask_signature :: proc(first: Token_Id) -> string {
             if open == 0 { break walk }
             open += 1
         case .Newline, .Do, .EOF:
-            if open == 0 { break walk }
+            if open == 0 && !(tok.kind == .Newline && (prev == .Arrow || ask_next_kind(id, f.end_token) == .Arrow)) { break walk }
             if tok.kind == .Newline { continue walk }
         }
+        prev = tok.kind
         if after >= 0 {
             gap := f.source[after:tok.offset]
             if !strings.contains(gap, "\n") {
@@ -1225,6 +1227,15 @@ ask_signature :: proc(first: Token_Id) -> string {
     // (A comma ending a last line of params is nothing to read here.)
     joined, _ := strings.replace_all(strings.to_string(sb), ",)", ")", context.temp_allocator)
     return joined
+}
+
+// The kind of the first token after `id` that isn't a line's end.
+@(private="file")
+ask_next_kind :: proc(id, end: Token_Id) -> Token_Kind {
+    for next := id + 1; next < end; next += 1 {
+        if build_tokens[next].kind != .Newline { return build_tokens[next].kind }
+    }
+    return .EOF
 }
 
 // --- a field asked for by name -----------------------------------------------

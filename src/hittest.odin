@@ -875,8 +875,9 @@ hit_declared :: proc(sb: ^strings.Builder, t: ^Tree, decl: Token_Id) {
     fmt.sbprintf(sb, "  declared  %s\n", ask_loc(token_span(build_tokens[decl])))
     if def := tree_define_at(t, decl); def != 0 {
         first := span_text(source_of(build_tokens[decl]), tree_span(t, def))
-        first = strings.trim_suffix(strings.trim_suffix(first, " …"), " {")
-        fmt.sbprintf(sb, "  %s\n", first)
+        // (On several lines: up to its body, joined — a result on the next.)
+        if strings.has_suffix(first, " …") { first = ask_signature(decl) }
+        fmt.sbprintf(sb, "  %s\n", strings.trim_suffix(first, " {"))
     }
 }
 
