@@ -346,6 +346,7 @@ graph_bound :: proc(pg: ^Program_Graph) -> map[Node_Id]Node_Id {
 // which would otherwise have to hide a copy, stops at it too
 // (storage_reads_its_dest), should a program get past.
 Reach_Pass :: struct {
+    kept:  bool,   // a kept stage's: not let go of at a report (middle_keep)
     cache: Reach_Summaries,
     diags: [dynamic]Reach_Diag,
     walk:  virtual.Arena,   // what working out a summary makes, until the next (reach_scc)
@@ -429,6 +430,7 @@ reach_report :: proc(c: ^Checker, passes: []^Reach_Pass) {
     diags := make([dynamic]Reach_Diag, context.temp_allocator)
     for rp in passes {
         append(&diags, ..rp.diags[:])
+        if rp.kept { continue }
         delete(rp.diags)
         delete(rp.cache)
     }
@@ -438,5 +440,5 @@ reach_report :: proc(c: ^Checker, passes: []^Reach_Pass) {
         return a.msg < b.msg
     })
     for d in diags { check_error(c, d.span, "%s", d.msg) }
-    for rp in passes { virtual.arena_destroy(&rp.walk) }
+    for rp in passes { if !rp.kept { virtual.arena_destroy(&rp.walk) } }
 }

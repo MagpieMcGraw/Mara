@@ -22,6 +22,7 @@ import "core:strings"
 // one pass over the whole program would. A check that reports a span once
 // (a generic's instances share their template's) does so as it reports.
 Flow_Pass :: struct {
+    kept:    bool,   // a kept stage's: not let go of at a report (middle_keep)
     found:   map[^Program_Graph][dynamic]Flow_Finding,
     sources: map[^Type_Scope]bool,   // the checked source funs (whose codes the fun checks read)
     walk:    virtual.Arena,          // what a walk makes, until the next (flow_init_fun)

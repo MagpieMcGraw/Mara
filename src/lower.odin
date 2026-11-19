@@ -35,8 +35,9 @@ Lower :: struct {
     bind_checks: map[Tree_Id]LW_Bind_Check, // a match arm's binding's uses that check its subject's tag first (lw_bind_checks)
 }
 
-lower_begin :: proc(k: ^TC) -> (^Graph_Program, LW_Codes) {
-    p := graph_program_new(k.checked)
+lower_begin :: proc(k: ^TC, kept: ^Graph_Program = nil, was: ^LW_Codes = nil) -> (^Graph_Program, LW_Codes) {
+    // (`kept`, `was`: a stage before's program and codes — gone on with.)
+    p := kept if kept != nil else graph_program_new(k.checked)
     lw_const_index(k)
     // Each code's event — where it was checked: a body's by its fun or
     // struct (and the statement that declares it), a constant's by its
@@ -51,6 +52,10 @@ lower_begin :: proc(k: ^TC) -> (^Graph_Program, LW_Codes) {
         case .Const:
             codes.consts[tc_sid(k, e.kc.def)] = i
         }
+    }
+    if was != nil {
+        copy(codes.done, was.done); copy(codes.code, was.code)
+        copy(codes.folded, was.folded); copy(codes.analysed, was.analysed)
     }
     return p, codes
 }

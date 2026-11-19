@@ -127,6 +127,8 @@ check_staged_kept :: proc(args: CLI_Args, all_files: map[string][dynamic]^Source
     slice.sort(names)
     for name in names { staged_module(k, name) }
     tc_bodies(k)
+    perf_timer_mark(perf, "lower")
+    tc_check_kept_lowered(k)
     tc_blocks_end(k)   // (its blocks' scratch: the next stage's its own)
     st.k = k
     return

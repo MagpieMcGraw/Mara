@@ -1052,8 +1052,15 @@ graph_const_code :: proc(pc: ^Program_Code, value: Syntax_Id) -> ^Program_Graph 
 
 // A program's code let go of: its columns' regions, then its arena. (A
 // build's goes with its process; `mara serve` checks again, and again.)
-program_code_free :: proc(pc: ^Program_Code) {
-    for s in pc.stores {
+program_code_free :: proc(pc: ^Program_Code, from := 0) {
+    // (`from`: the stores before it are a kept stage's — middle_kept_free's.)
+    if from < len(pc.stores) { program_stores_free(pc.stores[from:]) }
+    delete(pc.stores)
+    pc^ = {}
+}
+
+program_stores_free :: proc(stores: []Graph_Store) {
+    for s in stores {
         if s.regions != nil {
             for &r in s.regions {
                 if r.base != nil { virtual.release(r.base, r.reserved) }
@@ -1061,8 +1068,6 @@ program_code_free :: proc(pc: ^Program_Code) {
         }
         virtual.arena_destroy(s.arena)
     }
-    delete(pc.stores)
-    pc^ = {}
 }
 // --- one code at a time ---------------------------------------------------------
 

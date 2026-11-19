@@ -334,6 +334,7 @@ serve_keep :: proc(c: ^Serve_Check, st: Staged, all_files: map[string][dynamic]^
 serve_unkeep :: proc(kept: ^Serve_Kept) {
     if !kept.on { return }
     heap := runtime.heap_allocator()
+    if mk := kept.st.k.middle_kept; mk != nil { middle_kept_free(mk) }
     delete(kept.bytes, heap)
     delete(kept.types.shapes); delete(kept.types.arrays)
     for m in kept.modules { delete(m, heap) }
@@ -346,7 +347,7 @@ serve_unkeep :: proc(kept: ^Serve_Kept) {
 @(private="file")
 serve_put_back :: proc(c: ^Serve_Check) {
     kept := c.kept
-    if c.session.checked != nil { program_code_free(&c.session.checked.code) }   // (its own memory)
+    if c.session.checked != nil { program_code_free(&c.session.checked.code, 1) }   // (its own memory: the kept stage's store stays)
     checked := kept.st.k.checked
     // (The atoms are the heap's, their table's place in the arena: the
     // table as it is now, cut to those the kept part had.)
@@ -385,11 +386,12 @@ serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string, overlays: ^m
     if put_back {
         serve_put_back(c)
     } else {
-        if c.session.checked != nil { program_code_free(&c.session.checked.code) }   // (its own memory)
+        // (Its own memory — a kept stage's store apart: serve_unkeep's, while the arena that names it is there.)
+        if c.session.checked != nil { program_code_free(&c.session.checked.code, 1 if kept != nil && kept.on else 0) }
+        if kept != nil { serve_unkeep(kept) }
         virtual.arena_destroy(&c.arena)
         c^ = {}
         c.kept = kept
-        if kept != nil { serve_unkeep(kept) }
         delete(build_tokens)   // (the tokens and the tree are on the heap)
         tree_free(&build_tree)
         build_tokens, build_files, build_literals, build_tree = {}, {}, {}, {}

@@ -297,6 +297,17 @@ escape_begin :: proc(c: ^Checker, code: ^Program_Code) {
     g_esc_reported = make([]bool, len(cg.nodes))
 }
 
+// A kept stage's summaries, taken into this check's graph: each fun's that
+// stage analysed, by its scope — reported then, its diagnostics that stage's.
+escape_carry :: proc(cg: ^Call_Graph, was: ^Call_Graph) {
+    for ts, n in cg.nodes {
+        m, had := was.index_of[ts]
+        if !had || m >= len(was.esc) { continue }
+        cg.esc[n] = was.esc[m]
+        g_esc_reported[n] = true
+    }
+}
+
 // A thread's escape analysis begins: a walk arena, diagnostics, the type
 // caches its walks fill, its own.
 escape_thread_begin :: proc(code: ^Program_Code) {

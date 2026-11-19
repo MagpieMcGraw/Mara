@@ -104,6 +104,7 @@ TC :: struct {
     binds:         [dynamic]Type,       // (dense, in the order they're bound: a map's inserts miss the cache)
     bound_log:     [dynamic]TC_Bound,   // each binding's before, for an instance to give back (tc_instance_end)
     beside:        []string,            // the modules checked beside the main one (a tool's set of them)
+    middle_kept:   ^Middle_Kept,        // a staged check's first stage's codes, lowered and analysed (nil: none)
     run:           TC_Run,              // what the check was asked for, and where it's at
     units:         ^Units,              // a check with errors, lowered around them: what they break (nil: nothing, or nothing lowered)
     bodies_reversed: bool,              // MARA_BODY_ORDER=reverse, a test's: each scope's funs checked last first
@@ -487,6 +488,7 @@ TC_Run :: struct {
     diagnosed: int,                 // the diagnostics queued before it: its own are sorted (diagnostics_sort)
     perf:      ^Performance_Timer,
     lower, partial, parse_errors, no_crt: bool,
+    extracted: struct { structs, variants, instances: int, main: bool },   // how far tc_extract_new has got
 }
 
 // A program checked: its main module and what it uses, the modules beside
@@ -612,20 +614,21 @@ tc_check_beside :: proc(k: ^TC, also: []string) {
     k.pkg = k.main_package
 }
 
-// The check's end, every module's bodies checked: its funs extracted, what's
-// asked of the whole program, then the checked code lowered and analysed.
-tc_check_finish :: proc(k: ^TC) -> ^Checked_Program {
-    t, c, checked, main_package := k.t, k.c, k.checked, k.main_package
-    perf, lower, partial, parse_errors, diagnosed := k.run.perf, k.run.lower, k.run.partial, k.run.parse_errors, k.run.diagnosed
-    main := k.scopes[k.scope_of[k.run.main_mod]].nested[:]
-
-    // (Generic structs' instances: their methods, their inits — before the
-    // main module's.)
-    for i in k.struct_instances { tc_extract(k, []int{i}, k.scopes[i].ts.home_package, false, nested = true) }
-    for i in k.variant_scopes { tc_extract(k, []int{i}, k.scopes[i].ts.home_package, false, nested = true) }
-    tc_extract(k, main, main_package, is_main = true)
+// The funs checked since the last time, for the emitter: generic structs'
+// instances and variants' structs — their methods, their inits — the main
+// module's once it is checked, each generic fun's instances.
+tc_extract_new :: proc(k: ^TC) {
+    checked := k.checked
+    x := &k.run.extracted
+    for i in k.struct_instances[x.structs:] { tc_extract(k, []int{i}, k.scopes[i].ts.home_package, false, nested = true) }
+    for i in k.variant_scopes[x.variants:] { tc_extract(k, []int{i}, k.scopes[i].ts.home_package, false, nested = true) }
+    x.structs, x.variants = len(k.struct_instances), len(k.variant_scopes)
+    if !x.main && k.main_package in k.checked_modules {
+        x.main = true
+        tc_extract(k, k.scopes[k.scope_of[k.run.main_mod]].nested[:], k.main_package, is_main = true)
+    }
     // (Each generic fun's instances, for codegen: in the functions, in no order.)
-    for mangled in k.instance_order {
+    for mangled in k.instance_order[x.instances:] {
         ft := k.instances[mangled]
         sc := k.scopes[k.scope_of[ft]]
         key := ft.name   // (its module's prefix in it: tc_instantiate_fun)
@@ -633,6 +636,37 @@ tc_check_finish :: proc(k: ^TC) -> ^Checked_Program {
         ft.origin = Origin_Source{}
         checked.functions[key] = ft
     }
+    x.instances = len(k.instance_order)
+}
+
+// A staged check's kept modules, checked: their codes lowered and analysed,
+// kept for the stage after (Middle_Kept) — what an error of theirs breaks
+// left out, as at the check's end (an error of the rest's breaks none of
+// them: they use none of it).
+tc_check_kept_lowered :: proc(k: ^TC) {
+    c, checked := k.c, k.checked
+    tc_extract_new(k)
+    if c.errors > 0 || diagnostics_parse_placed() > 0 {
+        k.units = units_find(k, diagnostics_error_tokens(0))
+        checked.holes = true
+    }
+    fns := flow_functions(checked)
+    checked.call_graph = build_call_graph(checked)
+    c.cg = &checked.call_graph
+    tree_parents(k.t)
+    mid, codes := middle_stage(k, c, checked, fns)
+    middle_keep(k, c, &mid, codes)
+    k.gb, k.units = nil, nil
+}
+
+// The check's end, every module's bodies checked: its funs extracted, what's
+// asked of the whole program, then the checked code lowered and analysed.
+tc_check_finish :: proc(k: ^TC) -> ^Checked_Program {
+    t, c, checked, main_package := k.t, k.c, k.checked, k.main_package
+    perf, lower, partial, parse_errors, diagnosed := k.run.perf, k.run.lower, k.run.partial, k.run.parse_errors, k.run.diagnosed
+    main := k.scopes[k.scope_of[k.run.main_mod]].nested[:]
+
+    tc_extract_new(k)
     tc_validate_allocator(k)
     tc_validate_main(k, main)
     tc_validate_field_refs(k)

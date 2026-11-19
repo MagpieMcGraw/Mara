@@ -36,6 +36,7 @@ Middle :: struct {
 
 // One worker of the middle end: its lowering and what its analyses keep.
 Middle_Worker :: struct {
+    kept:  bool,   // a kept stage's: not let go of with a check's others (middle_keep)
     k:     ^TC,
     flow:  Flow_Pass,
     reach: Reach_Pass,
@@ -43,15 +44,45 @@ Middle_Worker :: struct {
     analysed: time.Duration,   // its analyses' time (Middle.analysed)
 }
 
+// What a check in stages keeps of the middle end once its first stage's
+// modules are lowered and analysed (modules.odin): the program's codes so
+// far and which events they are, the worker that made them — its builder,
+// what its analyses found — and the call graph as it was, whose escape
+// summaries the next stage's graph takes over.
+Middle_Kept :: struct {
+    prog:   ^Graph_Program,
+    codes:  LW_Codes,
+    worker: ^Middle_Worker,
+    escape: [dynamic]Esc_Diag,
+    cg:     Call_Graph,
+}
+
 // Every code lowered and analysed, then put in place in written order.
 middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope) -> Middle {
-    mid := Middle{on = true}
+    mid, codes := middle_stage(k, c, checked, fns)
+    lower_place(mid.workers[0].k, &codes)
+    folders := make([dynamic]^Folder, context.temp_allocator)
+    for mw in mid.workers { append(&folders, &mw.fold) }
+    ending := time.tick_now()
+    graph_fold_end(folders[:])
+    mid.analysed += time.tick_since(ending)
+    return mid
+}
+
+// The codes not lowered yet, lowered and analysed — every one, or those a
+// stage kept (TC.middle_kept) left: by a worker of its own, the first of
+// the workers; the kept stage's after it, what it found reported with the
+// rest.
+middle_stage :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^Type_Scope) -> (mid: Middle, codes: LW_Codes) {
+    mid = Middle{on = true}
+    kept := k.middle_kept
     saved_salt, saved_pkg := TC_Salt{salt = k.salt, lo = k.salt_lo, hi = k.salt_hi}, k.pkg
     defer {
         tc_salt_set(k, saved_salt)
         k.pkg = saved_pkg
     }
-    p, codes := lower_begin(k)
+    p: ^Graph_Program
+    if kept == nil { p, codes = lower_begin(k) } else { p, codes = lower_begin(k, kept.prog, &kept.codes) }
     shared := lw_shared_sizes(k) if ODIN_DEBUG else nil
     mid.prog = p
     pc := &p.pc
@@ -62,7 +93,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     // The workers: one — a build is sequential, its time the work's
     // (MARA_LOWER_WORKERS: a thread each, as many as it says).
     n := 1
-    if s := os.get_env("MARA_LOWER_WORKERS", context.temp_allocator); s != "" { n = max(1, strconv.parse_int(s) or_else 1) }
+    if s := os.get_env("MARA_LOWER_WORKERS", context.temp_allocator); s != "" && kept == nil { n = max(1, strconv.parse_int(s) or_else 1) }
     for _ in 0 ..< n {
         mw := new(Middle_Worker)
         mw^ = {k = lw_worker(k, p), flow = flow_pass_make(fns, pc), fold = graph_fold_begin(pc, checked)}
@@ -70,10 +101,16 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     }
     resize(&mid.escape, n)
     escape_begin(c, pc)
-    run := Middle_Run{mid = &mid, codes = &codes, cg = c.cg}
+    if kept != nil {
+        append(&mid.workers, kept.worker)
+        append(&mid.escape, kept.escape)
+        escape_carry(c.cg, &kept.cg)
+    }
+    run := Middle_Run{mid = &mid, codes = &codes, cg = c.cg, workers = mid.workers[:n]}
 
     // Constants, and the structs a constant's value may construct.
     for e, i in k.events {
+        if codes.done[i] { continue }
         #partial switch e.kind {
         case .Const: append(&run.list, i)
         case .Body:                   if e.sc.ts.kind == .Struct { append(&run.list, i) }
@@ -96,7 +133,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     middle_components(&run)
     middle_threads(&run, proc(run: ^Middle_Run, mw: ^Middle_Worker) {
         for s in middle_ready(run) {
-            middle_scc(mw, run.codes, run.cg, run.cg.sccs[s][:])
+            if !run.skip[s] { middle_scc(mw, run.codes, run.cg, run.cg.sccs[s][:]) }
             middle_done(run, s)
         }
     })
@@ -104,7 +141,7 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
     // or calls, the program's struct.
     clear(&run.list)
     run.next = 0
-    for _, i in k.events { append(&run.list, i) }
+    for _, i in k.events { if !codes.analysed[i] { append(&run.list, i) } }
     middle_threads(&run, proc(run: ^Middle_Run, mw: ^Middle_Worker) {
         for i in middle_take(run) {
             lw_code(mw.k, run.codes, i)
@@ -112,23 +149,37 @@ middle_program :: proc(k: ^TC, c: ^Checker, checked: ^Checked_Program, fns: []^T
         }
     })
     pc.lock = nil
-    lower_place(mid.workers[0].k, &codes)
-    folders := make([dynamic]^Folder, context.temp_allocator)
-    for mw in mid.workers { append(&folders, &mw.fold) }
-    ending := time.tick_now()
-    graph_fold_end(folders[:])
-    mid.analysed += time.tick_since(ending)
-    for mw in mid.workers { mid.analysed += mw.analysed }
+    for mw in mid.workers[:n] { mid.analysed += mw.analysed }
     when ODIN_DEBUG {
         after := lw_shared_sizes(k)
-        for mw in mid.workers {
+        for mw in mid.workers[:n] {
             worker := lw_shared_sizes(mw.k)
             if !slice.equal(shared[:], after[:]) || !slice.equal(shared[:], worker[:]) {
                 graph_fatal({}, "lowering added to what lowerings share: %v, then %v (its view: %v)", shared[:], after[:], worker[:])
             }
         }
     }
-    return mid
+    return
+}
+
+// A stage's codes kept for the next (TC.middle_kept): its worker's builder
+// and findings stay as they are, let go of with the check that keeps them
+// (middle_kept_free).
+middle_keep :: proc(k: ^TC, c: ^Checker, mid: ^Middle, codes: LW_Codes) {
+    kept := new(Middle_Kept)
+    kept^ = {prog = mid.prog, codes = codes, worker = mid.workers[0], escape = mid.escape[0], cg = c.cg^}
+    kept.worker.kept, kept.worker.flow.kept, kept.worker.reach.kept = true, true, true
+    k.middle_kept = kept
+    delete(mid.workers)
+}
+
+// A kept stage's worker let go of: its walks' arenas, its codes' store.
+middle_kept_free :: proc(kept: ^Middle_Kept) {
+    mw := kept.worker
+    virtual.arena_destroy(&mw.flow.walk)
+    virtual.arena_destroy(&mw.reach.walk)
+    store := mw.k.gb.store
+    program_stores_free({store})
 }
 
 // The work the workers share out, and where it's at.
@@ -137,6 +188,8 @@ Middle_Run :: struct {
     codes:   ^LW_Codes,
     cg:      ^Call_Graph,
     lock:    sync.Mutex,
+    workers: []^Middle_Worker,   // the workers that work (a kept stage's is done: its findings only)
+    skip:    []bool,             // the components a kept stage did
     // Events, any worker's: the next one to take.
     list:    [dynamic]int,
     next:    int,
@@ -153,14 +206,14 @@ Middle_Run :: struct {
 // store); then each is joined. One worker — the default — works on the
 // calling thread: no thread to start.
 middle_threads :: proc(run: ^Middle_Run, work: proc(run: ^Middle_Run, mw: ^Middle_Worker)) {
-    jobs := make([]Middle_Job, len(run.mid.workers), context.temp_allocator)
-    for mw, i in run.mid.workers { jobs[i] = {run, mw, work, i} }
+    jobs := make([]Middle_Job, len(run.workers), context.temp_allocator)
+    for mw, i in run.workers { jobs[i] = {run, mw, work, i} }
     if len(jobs) == 1 {
         middle_job(&jobs[0])
         return
     }
-    threads := make([]^thread.Thread, len(run.mid.workers), context.temp_allocator)
-    for _, i in run.mid.workers {
+    threads := make([]^thread.Thread, len(run.workers), context.temp_allocator)
+    for _, i in run.workers {
         threads[i] = thread.create(proc(t: ^thread.Thread) { middle_job((^Middle_Job)(t.data)) })
         threads[i].data = &jobs[i]
         thread.start(threads[i])
@@ -187,6 +240,16 @@ middle_components :: proc(run: ^Middle_Run) {
     cg := run.cg
     run.waits = make([]int, len(cg.sccs))
     run.callers = make([][dynamic]int, len(cg.sccs))
+    // (A component every fun of which a kept stage analysed: done.)
+    run.skip = make([]bool, len(cg.sccs))
+    for scc, s in cg.sccs {
+        done := len(scc) > 0
+        for node in scc {
+            i, checked := run.codes.bodies[cg.nodes[node]]
+            done &&= checked && run.codes.analysed[i]
+        }
+        run.skip[s] = done
+    }
     for scc, s in cg.sccs {
         for node in scc {
             for to in cg.out_edges[node] {
@@ -291,7 +354,7 @@ middle_report :: proc(c: ^Checker, checked: ^Checked_Program, mid: ^Middle, fns:
         append(&reaches, &mw.reach)
     }
     flow_report(c, checked, flows[:], fns, void_defaults)
-    for fp in flows { flow_pass_free(fp) }
+    for fp in flows { if !fp.kept { flow_pass_free(fp) } }
     escape_report(c, mid.escape[:])
     reach_report(c, reaches[:])
 }
@@ -299,6 +362,7 @@ middle_report :: proc(c: ^Checker, checked: ^Checked_Program, mid: ^Middle, fns:
 // The workers let go of: their lowerings' builders and views.
 middle_free :: proc(mid: ^Middle) {
     for mw in mid.workers {
+        if mw.kept { continue }
         graph_builder_free(mw.k.gb, virtual.arena_allocator(mw.k.gb.store.arena))
         free(mw.k)
         free(mw)
