@@ -606,13 +606,12 @@ cursor_add :: fun(l: ^Lines, h: ^Hub, line: []utf8) {
 	lines_link(l, link)
 }
 
-// A press on what's at the cursor: a place, or the line of source under it,
-// opened in the editor there.
+// A press on what's at the cursor: a place (its `<file>:<line>` line, not the
+// source under it: text to read and select), opened in the editor there.
 cursor_click :: fun(ui: ^Ui, r: Rect, x: f32, y: f32) {
 	l := &ui.at_cursor
 	k := lines_line_at(ui, l, r, x, y)
 	file, line, col, place := docs_place(l, k)
-	if not place do file, line, col, place = docs_place(l, k - 1)
 	if not place do return
 	editor_open(ui, l, file, line, col)
 }
