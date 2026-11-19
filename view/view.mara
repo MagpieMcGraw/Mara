@@ -50,6 +50,9 @@ Ui :: struct {
 	height:   f32
 	saved_width:  f64        // its size as layout.txt had it
 	saved_height: f64
+	saved_x:      f64        // ... and where on the screen, when it said (saved_place)
+	saved_y:      f64
+	saved_place:  bool
 	mouse_x:  f32            // the mouse, pixels; -1 when it's outside
 	mouse_y:  f32
 	cursors:  [12!]Cursor     // the system's, by SYSTEM_CURSOR_...
@@ -192,7 +195,9 @@ main :: fun(args: [][]utf8) -> i64 {
 		return 1
 	}
 	defer Quit()
-	window, no_window := CreateWindow(cstring(title), 1100, 700, Resizable | HighPixelDensity)
+	// (Hidden until it has its layout's size and place: shown at once it
+	// showed its first size for a moment.)
+	window, no_window := CreateWindow(cstring(title), 1100, 700, Resizable | HighPixelDensity | Hidden)
 	if no_window {
 		sdl_failed("no window")
 		return 1
@@ -232,6 +237,7 @@ main :: fun(args: [][]utf8) -> i64 {
 	}
 	clamp_panels(&ui)
 	own_crash_look(&ui)
+	_ = ShowWindow(ui.window)
 	hub_start(&ui, &hub, args)
 	run(&ui, &p, &hub)
 	layout_save(&ui)
@@ -561,9 +567,23 @@ window_raise :: fun(ui: ^Ui) {
 	ui.dirty = true
 }
 
-// The window as big as layout.txt had it, no bigger than its display.
+// The window where layout.txt had it, when it said, and as big: on the
+// display that place is on (the nearest, if it's on none now), its title bar
+// in reach, and no bigger than that display has room for.
 restore_window :: fun(ui: ^Ui) {
 	if ui.saved_width < 1.0 or ui.saved_height < 1.0 do return
+	if ui.saved_place {
+		x := f32(ui.saved_x)
+		y := f32(ui.saved_y)
+		was := SDL_Rect{x = i32(x), y = i32(y), w = i32(ui.saved_width), h = i32(ui.saved_height)}
+		room := SDL_Rect{all 0}
+		if not GetDisplayUsableBounds(GetDisplayForRect(&was), &room) {
+			x = max_f32(f32(room.x) - f32(was.w) + 100.0, min_f32(x, f32(room.x + room.w) - 100.0))
+			y = max_f32(f32(room.y), min_f32(y, f32(room.y + room.h) - 60.0))
+		}
+		_ = SetWindowPosition(ui.window, i32(x), i32(y))
+		measure(ui)   // (the display it's on now may count pixels another way)
+	}
 	room_w, room_h := display_room(ui)
 	w := min_f32(f32(ui.saved_width) / ui.density, room_w)
 	h := min_f32(f32(ui.saved_height) / ui.density, room_h)

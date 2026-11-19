@@ -629,7 +629,7 @@ draw_keys :: fun(ui: ^Ui, r: Rect) {
 
 // The layout written to layout.txt:
 //   mara view layout
-//   window <width> <height>
+//   window <width> <height> <x> <y>   (its size, pixels; where it is on the screen)
 //   theme <dark, light or sublime>
 //   own_crash <time>   (the window's own crash.txt's, when it last looked)
 //   columns <title> ...   (the profile's columns, left to right: column_key's words)
@@ -641,6 +641,22 @@ layout_save :: fun(ui: ^Ui) {
 	&text ++ int_text(i64(ui.width))
 	&text ++ " "
 	&text ++ int_text(i64(ui.height))
+	// (Where it is now — minimized, it's nowhere: where it was last kept.)
+	at_x : i32 = 0
+	at_y : i32 = 0
+	if (GetWindowFlags(ui.window) & 64) == 0 {
+		if not GetWindowPosition(ui.window, &at_x, &at_y) {
+			ui.saved_x = f64(at_x)
+			ui.saved_y = f64(at_y)
+			ui.saved_place = true
+		}
+	}
+	if ui.saved_place {
+		&text ++ " "
+		&text ++ int_text(i64(ui.saved_x))
+		&text ++ " "
+		&text ++ int_text(i64(ui.saved_y))
+	}
 	&text ++ "\ntheme "
 	if ui.theme == THEME_LIGHT {
 		&text ++ "light"
@@ -680,7 +696,7 @@ layout_save :: fun(ui: ^Ui) {
 }
 
 // The layout read from layout.txt: the theme, the panels it names, in its
-// order, and the window's size it had (ui.saved_width, saved_height); a
+// order, and the window's size and place it had (ui.saved_width, …); a
 // panel kind it doesn't name, as the default layout has it. False when
 // there's none — or it isn't one: the default layout then.
 layout_load :: fun(ui: ^Ui) -> bool {
@@ -717,9 +733,14 @@ layout_load :: fun(ui: ^Ui) -> bool {
 			continue
 		}
 		head := line[words[0].at : words[0].at + words[0].len]
-		if head == "window" and words.len == 3 {
+		if head == "window" and (words.len == 3 or words.len == 5) {
 			ui.saved_width, _ = parse_number(word_text(line, words[1]))
 			ui.saved_height, _ = parse_number(word_text(line, words[2]))
+			if words.len == 5 {
+				x, x_ok := parse_number(word_text(line, words[3]))
+				y, y_ok := parse_number(word_text(line, words[4]))
+				ui.saved_x, ui.saved_y, ui.saved_place = x, y, x_ok and y_ok
+			}
 		}
 		if head == "own_crash" and words.len == 2 {
 			ui.own_crash_seen.len = 0

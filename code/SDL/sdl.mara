@@ -1154,6 +1154,9 @@ foreign static_lib "SDL3" prefix SDL_ fails Failed {
     fun GetModState() -> u16
     fun GetGlobalMouseState(x: ^f32, y: ^f32) -> u32
     fun GetWindowPosition(window: Window, x: ^i32, y: ^i32) -> err
+    fun SetWindowPosition(window: Window, x: i32, y: i32) -> err
+    fun ShowWindow(window: Window) -> err
+    fun GetDisplayForRect(rect: ^SDL_Rect) -> u32
     fun GetWindowFlags(window: Window) -> u64
     fun RestoreWindow(window: Window) -> err
     fun MaximizeWindow(window: Window) -> err
