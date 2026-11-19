@@ -139,6 +139,11 @@ has_title :: fun(ui: ^Ui, title: i64) -> bool {
 	return false
 }
 
+// Whether the title's column holds times: ms or us.
+is_time :: fun(k: i64) -> bool {
+	return k == 0 or k == 1 or (k >= 3 and k <= 6)
+}
+
 // Whether the title's column holds numbers (all but fun and where).
 is_number :: fun(k: i64) -> bool {
 	return k < 8
@@ -372,6 +377,20 @@ profile_row :: fun(p: ^Profile, line: Field) -> bool {
 			if p.files.len < p.files.cap do &p.files ++ file
 			row.file = p.files.len - 1
 		}
+	}
+	// (A time is shown to two digits after the point: a run's times aren't
+	// good to the file's third. Its text in the file is written over with
+	// that, rounded — never longer than it was. row.values keeps all of
+	// it: what the rows sort by.)
+	for col in 0:p.columns.len {
+		if not is_time(p.columns[col]) do continue
+		f := row.fields[col]
+		shown := float_text(row.values[col], 2)
+		if shown.len > f.len do continue
+		for k in 0:shown.len {
+			p.text[f.at + k] = u8(shown[k])
+		}
+		row.fields[col].len = shown.len
 	}
 	&p.rows ++ row
 	return true

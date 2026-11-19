@@ -311,7 +311,7 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 			node := p.nodes[bar.node]
 			&status ++ short_name(p, bar.node)
 			&status ++ "'s own code, called this way: "
-			&status ++ float_text(node.self, 3)
+			&status ++ float_text(node.self, 2)
 			&status ++ " ms, "
 			&status ++ float_text(node.self / p.run_ms * 100.0, 1)
 			&status ++ "% of the run"
@@ -327,7 +327,7 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 			&status ++ "  "
 			&status ++ row_field(p, node.row, 9)
 			&status ++ ":  "
-			&status ++ float_text(node.total, 3)
+			&status ++ float_text(node.total, 2)
 			&status ++ " ms, "
 			&status ++ float_text(node.total / p.run_ms * 100.0, 1)
 			&status ++ "% of the run"
@@ -342,7 +342,7 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 			&status ++ ", "
 			&status ++ int_text(i64(node.calls))
 			&status ++ " calls, own code "
-			&status ++ float_text(node.self, 3)
+			&status ++ float_text(node.self, 2)
 			&status ++ " ms."
 		}
 		fill(rd, r.x, r.y + r.h - row_h, r.w, row_h, ui.header)
