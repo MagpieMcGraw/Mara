@@ -419,6 +419,8 @@ TYPE_CLASS_FIELDS_POSITIONAL_VALUES :: "class '%s' has %d fields, got %d positio
 TYPE_FIELD_POSITION_EXPECTED :: "field '%s' (position %d): expected %s, got %s"
 TYPE_FIELD_EXPECTED :: "field '%s': expected %s, got %s"
 TYPE_CLASS_FIELD :: "class '%s' has no field '%s'"
+TYPE_ENTRY_SET_TWICE :: "'%s' is set twice here: the second would replace the first"
+TYPE_ENTRY_UNDOES_EARLIER :: "'%s' is written whole here, after '%s' was set inside it: that undoes it — write '%s' first, then what's set inside it"
 TYPE_OVERRIDE_PATH_NO_STRUCT :: "'%s' is %s: an override's path goes on into a struct held in place, or an array's x, y, z, w — not to '%s'"
 TYPE_UNION_REQUIRES_NAMED_VARIANT_VARIANT :: "union '%s' requires a named variant, e.g. Variant {{ ... }}"
 TYPE_VARIANT_UNION :: "'%s' is not a variant of union '%s'"

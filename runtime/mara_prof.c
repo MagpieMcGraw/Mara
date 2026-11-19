@@ -10,8 +10,10 @@
 // Per fun it keeps:
 //   calls  — how many calls ended
 //   total  — the time in it, callees included (outermost calls only, so a
-//            recursive fun's time isn't counted twice)
-//   sum    — every call's time added up: the average's
+//            recursive fun's time isn't counted twice). The average is this
+//            over its calls: for a fun that calls itself, its time shared
+//            among all its calls — their own times overlap, each holding
+//            the calls inside it, and add up to more than the run.
 //   self   — the time in its own code, callees excluded
 //   inner  — the probed calls inside its outermost calls
 //   each call's time (callees included): min, max, and a histogram the
@@ -76,7 +78,6 @@ typedef struct Mara_Prof_Fun {
     const char* where;
     uint64_t calls;
     uint64_t total;
-    uint64_t sum;
     uint64_t self;
     uint64_t inner;
     uint64_t min, max;
@@ -264,7 +265,6 @@ static void prof_end_call(uint64_t t) {
     Mara_Prof_Fun* f = fr->fun;
     uint64_t d = t - fr->start;
     f->calls += 1;
-    f->sum += d;
     f->self += d > fr->callees ? d - fr->callees : 0;
     f->running -= 1;
     if (f->running == 0) {
@@ -465,7 +465,7 @@ static void prof_dump(void) {
         double probes = f->total ? f->inner * probe / f->total * 100 : 0;
         fprintf(out, "%12.3f %12.3f %10llu %12.3f %12.3f %12.3f %12.3f %8.0f  %-*s  %s\n",
                 f->total * ms, f->self * ms, (unsigned long long)f->calls,
-                (double)f->sum / f->calls * us, f->min * us, prof_median(f) * us, f->max * us,
+                (double)f->total / f->calls * us, f->min * us, prof_median(f) * us, f->max * us,
                 probes > 100 ? 100 : probes, wname, f->name, f->where);
     }
 

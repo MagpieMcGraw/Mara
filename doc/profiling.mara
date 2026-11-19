@@ -13,7 +13,9 @@
 //   calls       how many times it ran
 //   avg us, min us, median us, max us
 //               one call's time. A max far above the median is a call that
-//               was slow once: a stutter.
+//               was slow once: a stutter. For a fun that calls itself, avg
+//               is its total shared among all its calls; min, median and
+//               max time each call with the calls inside it.
 //   probes %    how much of total is the profiler's own cost. Each timed call
 //               costs its caller a few hundredths of a microsecond; a fun
 //               making millions of tiny calls is mostly that, and its
