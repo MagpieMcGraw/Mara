@@ -254,6 +254,7 @@ draw_profile :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 		}
 		fill(rd, r.x, r.y + r.h - row_h, r.w, row_h, ui.header)
 		_ = text_draw(&ui.text, rd, status, r.x + PAD, r.y + r.h - row_h + ROW_PAD, ui.ink)
+		draw_bar_tip(ui, p, r)
 		return
 	}
 	&status ++ "profile.txt: "
@@ -543,6 +544,42 @@ draw_chart :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
 			if text_width(&ui.text, "…") <= room do _ = text_draw(&ui.text, rd, "…", b.x + BAR_PAD, text_y, ui.dim)
 		}
 	}
+}
+
+// The bar under the mouse named in a box under it, when the bar has no
+// room for its name: the fun and its share of the run; whose own code;
+// whose other callees. Drawn last, over the table. r is the panel's content.
+draw_bar_tip :: fun(ui: ^Ui, p: ^Profile, r: Rect) {
+	if p.hover_bar < 0 do return
+	bar := p.bars[p.hover_bar]
+	if bar.kind == BAR_CRUMB do return
+	room := bar.box.w - 2.0 * BAR_PAD
+	tip : [300]utf8
+	if bar.kind == BAR_FUN {
+		if text_width(&ui.text, node_name(p, bar.node)) <= room do return
+		&tip ++ short_name(p, bar.node)
+		&tip ++ "  "
+		&tip ++ float_text(p.nodes[bar.node].total / p.run_ms * 100.0, 1)
+		&tip ++ "%"
+	elif bar.kind == BAR_SELF
+		if text_width(&ui.text, SELF_LABEL) <= room do return
+		&tip ++ short_name(p, bar.node)
+		&tip ++ ": own code  "
+		&tip ++ float_text(p.nodes[bar.node].self / p.run_ms * 100.0, 1)
+		&tip ++ "%"
+	else
+		&tip ++ "the rest of what "
+		&tip ++ short_name(p, bar.node)
+		&tip ++ " calls"
+	}
+	rd := ui.renderer
+	w := text_width(&ui.text, tip) + 2.0 * BAR_PAD
+	h := row_height(ui)
+	x := max_f32(r.x + 2.0, min_f32(bar.box.x, r.x + r.w - w - 2.0))
+	y := bar.box.y + bar.box.h + 3.0
+	fill(rd, x - 1.0, y - 1.0, w + 2.0, h + 2.0, ui.border)
+	fill(rd, x, y, w, h, ui.header)
+	_ = text_draw(&ui.text, rd, tip, x + BAR_PAD, y + ROW_PAD, ui.ink)
 }
 
 // A fun's bar's words, from x, in `room` pixels: its name and its share of
