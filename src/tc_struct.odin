@@ -694,15 +694,19 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
             tc_error(k, span, TYPE_CLASS_FIELD, scope_display_name(sd), name)
             continue
         }
-        path := strings.join(entry_path(tr, e), ".", context.temp_allocator)
-        for earlier in paths {
-            if earlier == path {
-                tc_error(k, tree_span(tr, e), TYPE_ENTRY_SET_TWICE, path)
-            } else if strings.has_prefix(earlier, path) && earlier[len(path)] == '.' {
-                tc_error(k, tree_span(tr, e), TYPE_ENTRY_UNDOES_EARLIER, path, earlier, path)
+        if len(entries) > 1 {
+            // (A plain name is its own path: nothing made for it.)
+            path := name
+            if tr.b[e] != 0 && Token_Id(tr.b[e]) != tr.main[e] { path = strings.join(entry_path(tr, e), ".", context.temp_allocator) }
+            for earlier in paths {
+                if earlier == path {
+                    tc_error(k, tree_span(tr, e), TYPE_ENTRY_SET_TWICE, path)
+                } else if strings.has_prefix(earlier, path) && earlier[len(path)] == '.' {
+                    tc_error(k, tree_span(tr, e), TYPE_ENTRY_UNDOES_EARLIER, path, earlier, path)
+                }
             }
+            append(&paths, path)
         }
-        append(&paths, path)
         tc_set_ref(k, e, {sd.fields[idx].decl, .Field})
         f, found := tc_entry_field(k, e, sd, span)
         if found { tc_literal_field(k, Tree_Id(tr.a[e]), f, 0, f.name, span) }
