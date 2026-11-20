@@ -1,0 +1,170 @@
+module mara.sdl_mixer
+
+sdl :: use mara.sdl
+
+// SDL3_mixer 3.2: sound files loaded once (WAV, OGG, MP3, FLAC) and played on
+// tracks, which a mixer mixes into an audio device. Each track has its own
+// gain, frequency ratio (speed and pitch), loops, fades, and stereo or 3D
+// position. A tag names a set of tracks; a group's tracks share a post-mix
+// callback. A program using it needs SDL3_mixer.dll beside SDL3.dll.
+//
+// Callbacks run on SDL's mixing thread, not the program's: keep them to work
+// on the samples they're given.
+
+Mixer        :: distinct ^byte
+Audio        :: distinct ^byte
+Track        :: distinct ^byte
+Group        :: distinct ^byte
+AudioDecoder :: distinct ^byte
+
+StereoGains :: struct {
+    left:  f32
+    right: f32
+}
+
+Point3D :: struct {
+    x: f32
+    y: f32
+    z: f32
+}
+
+// What SDL_mixer's functions fail with; GetError() in mara.sdl says why.
+Mixer_Error :: error { Failed }
+
+MAJOR_VERSION :: 3
+MINOR_VERSION :: 2
+MICRO_VERSION :: 4
+
+// The names of options, for sdl.SetNumberProperty and the rest.
+PROP_MIXER_DEVICE_NUMBER                     :: "SDL_mixer.mixer.device"
+PROP_AUDIO_LOAD_IOSTREAM_POINTER             :: "SDL_mixer.audio.load.iostream"
+PROP_AUDIO_LOAD_CLOSEIO_BOOLEAN              :: "SDL_mixer.audio.load.closeio"
+PROP_AUDIO_LOAD_PREDECODE_BOOLEAN            :: "SDL_mixer.audio.load.predecode"
+PROP_AUDIO_LOAD_PREFERRED_MIXER_POINTER      :: "SDL_mixer.audio.load.preferred_mixer"
+PROP_AUDIO_LOAD_SKIP_METADATA_TAGS_BOOLEAN   :: "SDL_mixer.audio.load.skip_metadata_tags"
+PROP_AUDIO_LOAD_IGNORE_LOOPS_BOOLEAN         :: "SDL_mixer.audio.load.ignore_loops"
+PROP_AUDIO_DECODER_STRING                    :: "SDL_mixer.audio.decoder"
+PROP_METADATA_TITLE_STRING                   :: "SDL_mixer.metadata.title"
+PROP_METADATA_ARTIST_STRING                  :: "SDL_mixer.metadata.artist"
+PROP_METADATA_ALBUM_STRING                   :: "SDL_mixer.metadata.album"
+PROP_METADATA_COPYRIGHT_STRING               :: "SDL_mixer.metadata.copyright"
+PROP_METADATA_TRACK_NUMBER                   :: "SDL_mixer.metadata.track"
+PROP_METADATA_TOTAL_TRACKS_NUMBER            :: "SDL_mixer.metadata.total_tracks"
+PROP_METADATA_YEAR_NUMBER                    :: "SDL_mixer.metadata.year"
+PROP_METADATA_DURATION_FRAMES_NUMBER         :: "SDL_mixer.metadata.duration_frames"
+PROP_METADATA_DURATION_INFINITE_BOOLEAN      :: "SDL_mixer.metadata.duration_infinite"
+PROP_PLAY_LOOPS_NUMBER                       :: "SDL_mixer.play.loops"
+PROP_PLAY_MAX_FRAME_NUMBER                   :: "SDL_mixer.play.max_frame"
+PROP_PLAY_MAX_MILLISECONDS_NUMBER            :: "SDL_mixer.play.max_milliseconds"
+PROP_PLAY_START_FRAME_NUMBER                 :: "SDL_mixer.play.start_frame"
+PROP_PLAY_START_MILLISECOND_NUMBER           :: "SDL_mixer.play.start_millisecond"
+PROP_PLAY_START_ORDER_NUMBER                 :: "SDL_mixer.play.start_order"
+PROP_PLAY_LOOP_START_FRAME_NUMBER            :: "SDL_mixer.play.loop_start_frame"
+PROP_PLAY_LOOP_START_MILLISECOND_NUMBER      :: "SDL_mixer.play.loop_start_millisecond"
+PROP_PLAY_FADE_IN_FRAMES_NUMBER              :: "SDL_mixer.play.fade_in_frames"
+PROP_PLAY_FADE_IN_MILLISECONDS_NUMBER        :: "SDL_mixer.play.fade_in_milliseconds"
+PROP_PLAY_FADE_IN_START_GAIN_FLOAT           :: "SDL_mixer.play.fade_in_start_gain"
+PROP_PLAY_APPEND_SILENCE_FRAMES_NUMBER       :: "SDL_mixer.play.append_silence_frames"
+PROP_PLAY_APPEND_SILENCE_MILLISECONDS_NUMBER :: "SDL_mixer.play.append_silence_milliseconds"
+PROP_PLAY_HALT_WHEN_EXHAUSTED_BOOLEAN        :: "SDL_mixer.play.halt_when_exhausted"
+
+// MAKE SURE STRINGS PASSED TO C CODE HAVE A \0
+// As in mara.sdl: a fun that gives err is Ok when C says it worked (true, or
+// a handle that isn't NULL), Failed when it didn't. A properties id of 0 is
+// no options.
+foreign static_lib "SDL3_mixer" prefix MIX_ fails Failed {
+    fun Version() -> i32
+    fun Init() -> err
+    fun Quit()
+    fun GetNumAudioDecoders() -> i32
+    fun GetAudioDecoder(index: i32) -> ^byte
+    fun CreateMixerDevice(devid: u32, spec: ^sdl.AudioSpec) -> Mixer, err
+    fun CreateMixer(spec: ^sdl.AudioSpec) -> Mixer, err
+    fun DestroyMixer(mixer: Mixer)
+    fun GetMixerProperties(mixer: Mixer) -> u32
+    fun GetMixerFormat(mixer: Mixer, spec: ^sdl.AudioSpec) -> err
+    fun LockMixer(mixer: Mixer)
+    fun UnlockMixer(mixer: Mixer)
+    fun LoadAudio_IO(mixer: Mixer, io: sdl.IOStream, predecode: bool, closeio: bool) -> Audio, err
+    fun LoadAudio(mixer: Mixer, path: cstring, predecode: bool) -> Audio, err
+    fun LoadAudioNoCopy(mixer: Mixer, data: ^byte, datalen: usize, free_when_done: bool) -> Audio, err
+    fun LoadAudioWithProperties(props: u32) -> Audio, err
+    fun LoadRawAudio_IO(mixer: Mixer, io: sdl.IOStream, spec: ^sdl.AudioSpec, closeio: bool) -> Audio, err
+    fun LoadRawAudio(mixer: Mixer, data: ^byte, datalen: usize, spec: ^sdl.AudioSpec) -> Audio, err
+    fun LoadRawAudioNoCopy(mixer: Mixer, data: ^byte, datalen: usize, spec: ^sdl.AudioSpec, free_when_done: bool) -> Audio, err
+    fun CreateSineWaveAudio(mixer: Mixer, hz: i32, amplitude: f32, ms: i64) -> Audio, err
+    fun GetAudioProperties(audio: Audio) -> u32
+    fun GetAudioDuration(audio: Audio) -> i64
+    fun GetAudioFormat(audio: Audio, spec: ^sdl.AudioSpec) -> err
+    fun DestroyAudio(audio: Audio)
+    fun CreateTrack(mixer: Mixer) -> Track, err
+    fun DestroyTrack(track: Track)
+    fun GetTrackProperties(track: Track) -> u32
+    fun GetTrackMixer(track: Track) -> Mixer
+    fun SetTrackAudio(track: Track, audio: Audio) -> err
+    fun SetTrackAudioStream(track: Track, stream: sdl.AudioStream) -> err
+    fun SetTrackIOStream(track: Track, io: sdl.IOStream, closeio: bool) -> err
+    fun SetTrackRawIOStream(track: Track, io: sdl.IOStream, spec: ^sdl.AudioSpec, closeio: bool) -> err
+    fun TagTrack(track: Track, tag: cstring) -> err
+    fun UntagTrack(track: Track, tag: cstring)
+    fun GetTrackTags(track: Track, count: ^i32) -> ^^byte, err
+    fun GetTaggedTracks(mixer: Mixer, tag: cstring, count: ^i32) -> ^Track, err
+    fun SetTrackPlaybackPosition(track: Track, frames: i64) -> err
+    fun GetTrackPlaybackPosition(track: Track) -> i64
+    fun GetTrackFadeFrames(track: Track) -> i64
+    fun GetTrackLoops(track: Track) -> i32
+    fun SetTrackLoops(track: Track, num_loops: i32) -> err
+    fun GetTrackAudio(track: Track) -> Audio
+    fun GetTrackAudioStream(track: Track) -> sdl.AudioStream
+    fun GetTrackRemaining(track: Track) -> i64
+    fun TrackMSToFrames(track: Track, ms: i64) -> i64
+    fun TrackFramesToMS(track: Track, frames: i64) -> i64
+    fun AudioMSToFrames(audio: Audio, ms: i64) -> i64
+    fun AudioFramesToMS(audio: Audio, frames: i64) -> i64
+    fun MSToFrames(sample_rate: i32, ms: i64) -> i64
+    fun FramesToMS(sample_rate: i32, frames: i64) -> i64
+    fun PlayTrack(track: Track, options: u32) -> err
+    fun PlayTag(mixer: Mixer, tag: cstring, options: u32) -> err
+    fun PlayAudio(mixer: Mixer, audio: Audio) -> err
+    fun StopTrack(track: Track, fade_out_frames: i64) -> err
+    fun StopAllTracks(mixer: Mixer, fade_out_ms: i64) -> err
+    fun StopTag(mixer: Mixer, tag: cstring, fade_out_ms: i64) -> err
+    fun PauseTrack(track: Track) -> err
+    fun PauseAllTracks(mixer: Mixer) -> err
+    fun PauseTag(mixer: Mixer, tag: cstring) -> err
+    fun ResumeTrack(track: Track) -> err
+    fun ResumeAllTracks(mixer: Mixer) -> err
+    fun ResumeTag(mixer: Mixer, tag: cstring) -> err
+    fun TrackPlaying(track: Track) -> bool
+    fun TrackPaused(track: Track) -> bool
+    fun SetMixerGain(mixer: Mixer, gain: f32) -> err
+    fun GetMixerGain(mixer: Mixer) -> f32
+    fun SetTrackGain(track: Track, gain: f32) -> err
+    fun GetTrackGain(track: Track) -> f32
+    fun SetTagGain(mixer: Mixer, tag: cstring, gain: f32) -> err
+    fun SetMixerFrequencyRatio(mixer: Mixer, ratio: f32) -> err
+    fun GetMixerFrequencyRatio(mixer: Mixer) -> f32
+    fun SetTrackFrequencyRatio(track: Track, ratio: f32) -> err
+    fun GetTrackFrequencyRatio(track: Track) -> f32
+    fun SetTrackOutputChannelMap(track: Track, chmap: ^i32, count: i32) -> err
+    fun SetTrackStereo(track: Track, gains: ^StereoGains) -> err
+    fun SetTrack3DPosition(track: Track, position: ^Point3D) -> err
+    fun GetTrack3DPosition(track: Track, position: ^Point3D) -> err
+    fun CreateGroup(mixer: Mixer) -> Group, err
+    fun DestroyGroup(group: Group)
+    fun GetGroupProperties(group: Group) -> u32
+    fun GetGroupMixer(group: Group) -> Mixer
+    fun SetTrackGroup(track: Track, group: Group) -> err
+    fun SetTrackStoppedCallback(track: Track, cb: fun(^byte, Track), userdata: ^byte) -> err
+    fun SetTrackRawCallback(track: Track, cb: fun(^byte, Track, ^sdl.AudioSpec, ^f32, i32), userdata: ^byte) -> err
+    fun SetTrackCookedCallback(track: Track, cb: fun(^byte, Track, ^sdl.AudioSpec, ^f32, i32), userdata: ^byte) -> err
+    fun SetGroupPostMixCallback(group: Group, cb: fun(^byte, Group, ^sdl.AudioSpec, ^f32, i32), userdata: ^byte) -> err
+    fun SetPostMixCallback(mixer: Mixer, cb: fun(^byte, Mixer, ^sdl.AudioSpec, ^f32, i32), userdata: ^byte) -> err
+    fun Generate(mixer: Mixer, buffer: ^byte, buflen: i32) -> i32
+    fun CreateAudioDecoder(path: cstring, props: u32) -> AudioDecoder, err
+    fun CreateAudioDecoder_IO(io: sdl.IOStream, closeio: bool, props: u32) -> AudioDecoder, err
+    fun DestroyAudioDecoder(audiodecoder: AudioDecoder)
+    fun GetAudioDecoderProperties(audiodecoder: AudioDecoder) -> u32
+    fun GetAudioDecoderFormat(audiodecoder: AudioDecoder, spec: ^sdl.AudioSpec) -> err
+    fun DecodeAudio(audiodecoder: AudioDecoder, buffer: ^byte, buflen: i32, spec: ^sdl.AudioSpec) -> i32
+}

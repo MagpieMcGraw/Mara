@@ -117,7 +117,8 @@ tc_void_arg :: proc(k: ^TC, n: Tree_Id) -> bool {
 tc_text_literal :: proc(k: ^TC, n: Tree_Id) -> bool {
     m := tc_unparen(k, n)
     if k.t.tag[m] == .String { return true }
-    if k.t.tag[m] != .Ident { return false }
+    // (A constant by name, its module's prefix or not: `NAME`, `mix.NAME`.)
+    if k.t.tag[m] != .Ident && k.t.tag[m] != .Field { return false }
     kc := tc_const_named(k, m)
     return kc != nil && k.t.tag[kc.value] == .String
 }

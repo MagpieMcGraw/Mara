@@ -19,6 +19,7 @@
 # Vendored runtime deps — shipped with the apps, not produced by the build
 !**/SDL2.dll
 !**/SDL3.dll
+!**/SDL3_mixer.dll
 # emcc web build output
 *.html
 *.js

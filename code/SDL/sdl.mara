@@ -1225,6 +1225,20 @@ foreign static_lib "SDL3" prefix SDL_ fails Failed {
     fun GetAudioStreamFrequencyRatio(stream: AudioStream) -> f32
     // A .wav file's samples, in memory SDL gives: free them with free().
     fun LoadWAV(path: cstring, spec: ^AudioSpec, audio_buf: ^^byte, audio_len: ^u32) -> err
+    // A set of named values, for options SDL and SDL_mixer take by name (a
+    // track's loops and fade-in, say). CreateProperties gives 0 when it failed.
+    fun CreateProperties() -> u32
+    fun DestroyProperties(props: u32)
+    fun SetPointerProperty(props: u32, name: cstring, value: ^byte) -> err
+    fun SetStringProperty(props: u32, name: cstring, value: cstring) -> err
+    fun SetNumberProperty(props: u32, name: cstring, value: i64) -> err
+    fun SetFloatProperty(props: u32, name: cstring, value: f32) -> err
+    fun SetBooleanProperty(props: u32, name: cstring, value: bool) -> err
+    fun GetPointerProperty(props: u32, name: cstring, default_value: ^byte) -> ^byte
+    fun GetStringProperty(props: u32, name: cstring, default_value: cstring) -> ^byte
+    fun GetNumberProperty(props: u32, name: cstring, default_value: i64) -> i64
+    fun GetFloatProperty(props: u32, name: cstring, default_value: f32) -> f32
+    fun GetBooleanProperty(props: u32, name: cstring, default_value: bool) -> bool
 }
 
 // gl_load takes a fun([]utf8), and only a foreign fun can take cstring, so this
