@@ -11,17 +11,15 @@ Two packages, each a folder here:
 ## Install
 
 Copy both folders into Sublime's `Packages/` folder
-(`Preferences → Browse Packages…`) and restart Sublime Text.
-
-For development, junction them to the repo instead, so an edit here is the
-one Sublime reads. On Windows, no admin needed:
+(`Preferences → Browse Packages…`) and restart Sublime Text. On Windows:
 
 ```
-mklink /J "%APPDATA%\Sublime Text\Packages\Mara" "C:\Code\Mara\editor\sublime\Mara"
-mklink /J "%APPDATA%\Sublime Text\Packages\MaraAsk" "C:\Code\Mara\editor\sublime\MaraAsk"
+xcopy /E /I /Y "C:\Code\Mara\editor\sublime\Mara" "%APPDATA%\Sublime Text\Packages\Mara"
+xcopy /E /I /Y "C:\Code\Mara\editor\sublime\MaraAsk" "%APPDATA%\Sublime Text\Packages\MaraAsk"
 ```
 
-(On Linux or macOS, `ln -s` each folder into the Packages folder.)
+The folders here are the packages' source: change them here, then copy
+again, as anyone using the language would.
 
 ## The language server
 

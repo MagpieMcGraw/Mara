@@ -144,20 +144,9 @@ aside first.
 ## Install
 
 Copy this `MaraAsk/` folder into your Sublime `Packages/` directory
-(`Preferences → Browse Packages…`), then **restart Sublime Text**. The canonical
-source lives in the Mara repo at `editor/sublime/MaraAsk/`.
-
-**For development**, junction the package to the repo instead of copying, so edits
-are live (no re-copy, no drift). On Windows (no admin needed):
-
-```
-rmdir "%APPDATA%\Sublime Text\Packages\MaraAsk"
-mklink /J "%APPDATA%\Sublime Text\Packages\MaraAsk" "C:\Code\Mara\editor\sublime\MaraAsk"
-```
-
-Then a repo edit is picked up on the next Sublime plugin reload. (Don't later
-"sync" by copying into `Packages\` — that would replace the junction with a stale
-copy, the exact drift the junction avoids.)
+(`Preferences → Browse Packages…`), then **restart Sublime Text** — with the
+`Mara/` package beside it (editor/sublime/README.md). The source lives in the
+Mara repo at `editor/sublime/MaraAsk/`: change it there, then copy it again.
 
 > The bundled **`.python-version`** (`3.8`) is required: it opts the package into
 > Sublime Text 4's modern plugin host. Without it ST4 loads the package under the
