@@ -636,6 +636,7 @@ TYPE_ARGUMENT_EXPECTED :: "argument %d%s of '%s': parameter '%s' expects %s, got
 TYPE_METHOD_REQUIRES_POINTER_RECEIVER_TAKE :: "method '%s' requires a pointer receiver — take an address with `&` (or use a `^%s` local) before calling"
 TYPE_MODULE_FUNCTION :: "module '%s' has no function '%s'"
 TYPE_MATCHING_FUNCTION_DISPATCH_GROUP_ARGUMENT :: "no matching function in dispatch group '%s' for argument types (%s)"
+TYPE_DISPATCH_EXPECTS_ARGS :: "'%s' expects %s, got %d"
 TYPE_AMBIGUOUS_DISPATCH_MATCHES_MULTIPLE_OVERLOADS :: "ambiguous dispatch '%s' — matches multiple overloads: %s"
 TYPE_UNDEFINED_FUNCTION :: "undefined function '%s'"
 TYPE_CANNOT_CONSTRUCT_UNDERLYING_TYPE :: "cannot construct %s from %s; underlying type is %s"

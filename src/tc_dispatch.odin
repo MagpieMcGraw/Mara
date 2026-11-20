@@ -1,5 +1,6 @@
 package mara
 
+import "core:fmt"
 import "core:slice"
 import "core:strings"
 
@@ -32,6 +33,38 @@ tc_add_members :: proc(out: ^[dynamic]TC_Member, members: []TC_Member) {
         for o in out { if o.ref.decl == m.ref.decl && o.name == m.name { continue each } }
         append(out, m)
     }
+}
+
+// What a group's members take when none takes n arguments: `3 arguments (x,
+// lo, hi)` (the names when every member has the same), `1 or 2 arguments`.
+// "" when one does: then it's the types that don't fit.
+tc_dispatch_arg_counts :: proc(k: ^TC, members: []TC_Member, n: int) -> string {
+    counts := make([dynamic]int, context.temp_allocator)
+    names, same, first := "", true, true
+    for m in members {
+        found, ok := tc_ref_type(k, m.ref, m.name)
+        ft, is_scope := found.(^Type_Scope)
+        if !ok || !is_scope { continue }
+        lo, hi := count_required_params(ft), len(ft.params)
+        if n >= lo && n <= hi { return "" }
+        for c in lo..=hi { if !slice.contains(counts[:], c) { append(&counts, c) } }
+        b := strings.builder_make(context.temp_allocator)
+        for p, i in ft.params {
+            if i > 0 { strings.write_string(&b, ", ") }
+            strings.write_string(&b, p.name)
+        }
+        if first { names = strings.to_string(b); first = false } else if names != strings.to_string(b) { same = false }
+    }
+    if len(counts) == 0 { return "" }
+    slice.sort(counts[:])
+    b := strings.builder_make(context.temp_allocator)
+    for c, i in counts {
+        if i > 0 { strings.write_string(&b, " or " if i == len(counts) - 1 else ", ") }
+        fmt.sbprintf(&b, "%d", c)
+    }
+    strings.write_string(&b, " argument" if len(counts) == 1 && counts[0] == 1 else " arguments")
+    if same && len(counts) == 1 && names != "" { fmt.sbprintf(&b, " (%s)", names) }
+    return strings.to_string(b)
 }
 
 // `f(args)` where f is a dispatch group: each argument checked, the one
@@ -109,6 +142,10 @@ tc_dispatch_call :: proc(k: ^TC, n: Tree_Id, name: string, members: []TC_Member,
         }
     }
     if len(matched) == 0 {
+        if takes := tc_dispatch_arg_counts(k, members, len(args)); takes != "" {
+            tc_error(k, span, TYPE_DISPATCH_EXPECTS_ARGS, name, takes, len(args))
+            return Type_Error{}
+        }
         names := make([dynamic]string, context.temp_allocator)
         for at, i in arg_types { append(&names, "_" if underscore[i] else type_name(at)) }
         tc_error(k, span, TYPE_MATCHING_FUNCTION_DISPATCH_GROUP_ARGUMENT, name, strings.join(names[:], ", "))
