@@ -188,6 +188,20 @@ types_back_to :: proc(h: Types_Held) {
     copy(g_infer_arrays[:], h.arrays[:])
 }
 
+// The shapes made let go of, each once — those of the table and of `kept`, a
+// kept check's copy of it: a server's check thrown away whole, nothing after
+// it naming one (serve_check). Forgetting them alone (types_forget_shapes)
+// left them all on the heap, every check's.
+types_free_shapes :: proc(kept: map[Type_Shape]rawptr = nil) {
+    heap := runtime.heap_allocator()
+    made := make(map[rawptr]bool, len(g_type_shapes) + len(kept), context.temp_allocator)
+    for _, p in g_type_shapes { made[p] = true }
+    for _, p in kept { made[p] = true }
+    for p in made { free(p, heap) }
+    delete(g_type_shapes)
+    types_forget_shapes()   // (new tables on the heap: nil, the next check's arena would hold them, and a kept part put back writes over it)
+}
+
 // The shapes made forgotten: a check of serve's, after another.
 types_forget_shapes :: proc() {
     delete(g_infer_arrays)

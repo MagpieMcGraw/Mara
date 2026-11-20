@@ -1185,6 +1185,16 @@ checked_atom :: proc(checked: ^Checked_Program, text: string) -> u32 {
     return id
 }
 
+// A program's atoms let go of, their texts with them: a server's check thrown
+// away whole (serve_check), nothing after it naming them.
+checked_atoms_free :: proc(checked: ^Checked_Program) {
+    heap := runtime.heap_allocator()
+    for text in checked.atoms { delete(text, heap) }
+    delete(checked.atoms)
+    delete(checked.atom_ids)
+    checked.atoms, checked.atom_ids = nil, nil
+}
+
 // The atoms cut back to the first n: those handed out since, gone (a check's
 // kept part put back — serve.odin).
 checked_atoms_cut :: proc(checked: ^Checked_Program, n: int) {

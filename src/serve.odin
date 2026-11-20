@@ -388,6 +388,15 @@ serve_check :: proc(c: ^Serve_Check, args: CLI_Args, stamp: string, overlays: ^m
     } else {
         // (Its own memory — a kept stage's store apart: serve_unkeep's, while the arena that names it is there.)
         if c.session.checked != nil { program_code_free(&c.session.checked.code, 1 if kept != nil && kept.on else 0) }
+        // (What it put on the heap — its atoms, the type shapes it made, a
+        // kept stage's too: nothing after it names them.)
+        if c.session.checked != nil { checked_atoms_free(c.session.checked) }
+        if kept != nil && kept.on {
+            if other := kept.st.k.checked; other != nil && other != c.session.checked { checked_atoms_free(other) }
+            types_free_shapes(kept.types.shapes)
+        } else {
+            types_free_shapes()
+        }
         if kept != nil { serve_unkeep(kept) }
         virtual.arena_destroy(&c.arena)
         c^ = {}
