@@ -1465,7 +1465,7 @@ ask_variant_answer :: proc(checked: ^Checked_Program, variants: []Ask_Variant, n
         return fmt.tprintf("mara ask: %s.%s is a variant: the answer is where it's named, with no types, call or flow, above or below, or depth\n", v.owner, name), false
     }
     home := v.home if v.home != "" else pkg
-    title := fmt.tprintf("%s — variant of %s %s  %s   (module %s)", name, v.sub, v.owner, ask_loc(token_span(build_tokens[v.decl])), home)
+    title := fmt.tprintf("%s — variant of %s %s%s  %s   (module %s)", name, v.sub, v.owner, hit_variant_value_text(checked, v.decl), ask_loc(token_span(build_tokens[v.decl])), home)
     return hit_variant_answer(&build_tree, checked.annot, v.decl, title), true
 }
 

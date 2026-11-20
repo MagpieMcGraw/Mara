@@ -157,6 +157,13 @@ hit_ref :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: strin
     // there: itself, then. A param's, the same.)
     for n in hits {
         if t.tag[n] == .Define && int(t.first[n]) == at { return Ref{decl = Token_Id(at), kind = names_def_kind(t, Tree_Id(t.b[n]))}, n, true }
+        // (A variant's own name, in its union or error set: the variant.)
+        if t.tag[n] == .Variant && int(t.main[n]) == at { return Ref{decl = Token_Id(at), kind = .Variant}, n, true }
+        if t.tag[n] == .Error_Def {
+            for tok in tree_token_list(t, t.a[n]) {
+                if int(tok) == at { return Ref{decl = tok, kind = .Variant}, n, true }
+            }
+        }
     }
     if g := hit_param_group(t, at); g != 0 { return Ref{decl = Token_Id(at), kind = .Param}, g, true }
     return {}, 0, false
@@ -825,7 +832,7 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
         case .Local, .Param, .Result, .Field, .Const:
             return hit_uses_answer(t, a, p, r, named_at, title, checked), true
         case .Variant:
-            return hit_variant_answer(t, a, r.decl, title), true
+            return hit_variant_answer(t, a, r.decl, title, checked), true
         }
     }
     // (The point's own node: the innermost, when it ends at the point — a
@@ -838,6 +845,7 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
     written := p.written if p.written != "" else span_text(p.src.source, token_span(p.tokens[p.tok_i]))
     fmt.sbprint(&sb, written)
     if refers { fmt.sbprintf(&sb, " — %s", ref_kind_word(r.kind)) }
+    if refers && r.kind == .Variant { fmt.sbprint(&sb, hit_variant_value_text(checked, r.decl)) }
     // (An operator an `overload` gives a meaning: the function it calls.)
     calls := hit_op_calls(t, a, hits, p.at) if !refers else nil
     for decl, i in calls { fmt.sbprintf(&sb, "%s%s", " — calls " if i == 0 else ", ", token_text(build_tokens[decl])) }
@@ -1057,8 +1065,31 @@ hit_write_variants :: proc(b: ^strings.Builder, t: ^Tree, a: ^Annotations, decls
     }
 }
 
-// A variant asked about: where it's made and where it's matched, every one.
-hit_variant_answer :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, title: string) -> string {
+// A variant's value, the variant its declaring token `decl` names: its enum's
+// or error set's number for it, or its union's tag; and the tag's type, ""
+// for the default (i64). ok false: no type has it, or no program was checked.
+hit_variant_value :: proc(checked: ^Checked_Program, decl: Token_Id) -> (value: int, tag_type: string, ok: bool) {
+    if checked == nil || decl == 0 { return }
+    name := token_text(build_tokens[decl])
+    for _, e in checked.table.enums {
+        if d, has := e.variant_decls[name]; has && d == decl { return e.variants[name], e.tag_type, true }
+    }
+    for _, u in checked.table.unions {
+        if vs := u.variant_structs[name] or_else nil; vs != nil && vs.decl == decl { return u.tag_map[name], u.tag_type, true }
+    }
+    return
+}
+
+// ", value 3" (", value 3 (u8)" for a tag type of its own) — "" when unknown.
+hit_variant_value_text :: proc(checked: ^Checked_Program, decl: Token_Id) -> string {
+    value, tag_type, ok := hit_variant_value(checked, decl)
+    if !ok { return "" }
+    if tag_type != "" { return fmt.tprintf(", value %d (%s)", value, tag_type) }
+    return fmt.tprintf(", value %d", value)
+}
+
+// A variant asked about: its value, where it's made and where it's matched, every one.
+hit_variant_answer :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, title: string, checked: ^Checked_Program = nil) -> string {
     if len(t.parent) != len(t.tag) { tree_parents(t) }
     // (Its type's definition holds it.)
     owner := ""
@@ -1073,10 +1104,12 @@ hit_variant_answer :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, title: str
     uses := hit_variant_uses(t, a, []Token_Id{decl})
     list := uses[decl] or_else nil
     sb := strings.builder_make()
+    value := hit_variant_value_text(checked, decl)
     if title != "" {
         fmt.sbprintf(&sb, "%s\n", title)
+        if value != "" { fmt.sbprintf(&sb, "  %s\n", value[2:]) }
     } else {
-        fmt.sbprintf(&sb, "%s — variant of %s  %s\n", token_text(build_tokens[decl]), owner, ask_loc(token_span(build_tokens[decl])))
+        fmt.sbprintf(&sb, "%s — variant of %s%s  %s\n", token_text(build_tokens[decl]), owner, value, ask_loc(token_span(build_tokens[decl])))
     }
     made_word, matched_word := hit_variant_words(is_error)
     for rows, which in ([2][]Hit_Use{hit_variant_rows(list[:], .Written), hit_variant_rows(list[:], .Read)}) {
