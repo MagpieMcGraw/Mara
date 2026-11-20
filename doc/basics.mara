@@ -186,7 +186,10 @@ example_fun :: fun() {
 //
 // A call of several results goes only where several go: `a, b := f()`, not
 // `f() == 1`. `return f()` hands on all of f's results — its err too — when
-// they fit the function's; `return f()?` passes on only a failure.
+// they fit the function's; `return f()?` passes on only a failure. A run of
+// elements takes them one each, `xs[0:2] = f()`, all of the elements' type.
+// In an array literal each result is an element: `[f()]` is an array of
+// them, so `&list ++ [f()]` appends them all.
 example_return :: fun() {
 	sign :: fun(n: i64) -> i64 {
 		if n < 0 do return -1
@@ -194,6 +197,14 @@ example_return :: fun() {
 		return 1
 	}
 	print(sign(-5), sign(0), sign(9))      // -1 0 1
+	sorted :: fun(a, b: i64) -> (lo, hi: i64) {
+		if a < b do return a, b
+		return b, a
+	}
+	print([sorted(7, 3), 10])              // [3, 7, 10]
+	xs : [4!]i64
+	xs[1:3] = sorted(9, 2)
+	print(xs)                              // [0, 2, 9, 0]
 }
 
 // ---- choosing and repeating -------------------------------------------------
