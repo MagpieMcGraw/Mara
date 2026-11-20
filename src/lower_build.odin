@@ -146,7 +146,7 @@ lw_use_type :: proc(k: ^TC, n: Tree_Id, t: Type, span: Span) -> (Dest, Span) {
     if sl, to_slice := distinct_base(t).(^Type_Slice); to_slice {
         #partial switch tag {
         case .Array:
-            count := len(tree_list(k.t, k.t.a[e]))
+            count := tc_literal_count(k, e)
             if count == 0 && is_slice_type(tc_node_type(k, e)) { return {}, {} }   // (`[]` typed as the slice: its zero, no array)
             return {type_ = new_clone(Type_Fixed_Array{size = count, elem = sl.elem})}, span
         case .Literal:

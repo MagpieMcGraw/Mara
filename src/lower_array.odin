@@ -93,13 +93,14 @@ lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest:
     b := k.gb
     span := tree_span(tr, n)
     elems := tree_list(tr, tr.a[n])
+    count := tc_literal_count(k, n)   // (a call's several results each an element)
     // (Into a slice's place — `g : []i16 = [300, 400]`, `h.xs = [1, 2]` — the
     // literal held as an array of its own in the block, as `[300, 400][:]`
     // is, the place given a view of it: a slice's header holds no elements,
     // and they were written past its len 0. Into a range, `a[1:3] = [9, 9]`,
     // they are copied in, below.)
     if sl, to_slice := distinct_base(dest.type_).(^Type_Slice); to_slice && want == .Into && len(elems) > 0 && !lw_range_dest(b, dest) {
-        held_t := new_clone(Type_Fixed_Array{size = len(elems), elem = sl.elem})
+        held_t := new_clone(Type_Fixed_Array{size = count, elem = sl.elem})
         slot := graph_slot(b, "temp", nil, span)
         lw_array_literal(k, n, .Into, w, graph_dest_var(slot, held_t), false, {})
         graph_build_typed(b, slot, held_t)
@@ -118,32 +119,51 @@ lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest:
         // (Into a slice — `a[1:3] = [9, 9]` — the elements are built in an
         // array of their own, then copied in: a slice's header holds none.)
         if sl, to_slice := distinct_base(tt).(^Type_Slice); to_slice {
-            tt = new_clone(Type_Fixed_Array{size = len(elems), elem = sl.elem})
+            tt = new_clone(Type_Fixed_Array{size = count, elem = sl.elem})
         }
         d = graph_build_temp(b, at, tt)
     }
     ga := graph_build_array(b, span, d)
-    if len(elems) == 0 {
-        // (Nothing to store: what it is, its zero.)
-    } else if ga.elem_t == nil {
-        et := tc_node_type(k, elems[0])
-        lit_t := new_clone(Type_Fixed_Array{size = len(elems), elem = et})
-        if lw_builds_into(k, elems[0]) {
-            // (An element built where it goes — an array, a struct literal:
-            // `for p in [[4, 4], [16, 16]]` — its slot first, at the type
-            // the checker gave it.)
-            lw_store_into(k, elems[0], graph_build_array_elem(b, ga, 0, et, lit_t), span)
-        } else {
-            r := lw_expr(k, elems[0], .Either)
-            lw_store(k, elems[0], et, r, graph_build_array_elem(b, ga, 0, et, lit_t), span)
+    // (The literal's own type, from its first element, where the destination
+    // gives none.)
+    first: Type
+    lit_t: Type
+    if len(elems) > 0 && ga.elem_t == nil {
+        first = tc_node_type(k, elems[0])
+        lit_t = new_clone(Type_Fixed_Array{size = count, elem = first})
+    }
+    slot := 0
+    for e in elems {
+        if results := tc_call_returns(k, e); len(results) > 1 {
+            // (A call's several results: the call, then each into its slot.)
+            mr := Graph_Destructure{on = true, span = span}
+            mr.names = make([]string, len(results), context.temp_allocator)
+            mr.stores = make([]bool, len(results), context.temp_allocator)
+            for &s in mr.stores { s = true }
+            mr.call = lw_expr(k, e, .Value).v
+            for r, i in results {
+                mr.place = graph_dest_place(b, graph_build_array_elem(b, ga, slot, first, lit_t), span)
+                graph_build_destructure_write(b, &mr, i, distinct_base(solidify_type(r)))
+                slot += 1
+            }
+            continue
         }
-    } else {
-        lw_store_into(k, elems[0], graph_build_array_elem(b, ga, 0, nil, nil), span)
+        if slot == 0 && ga.elem_t == nil {
+            if lw_builds_into(k, e) {
+                // (An element built where it goes — an array, a struct literal:
+                // `for p in [[4, 4], [16, 16]]` — its slot first, at the type
+                // the checker gave it.)
+                lw_store_into(k, e, graph_build_array_elem(b, ga, 0, first, lit_t), span)
+            } else {
+                r := lw_expr(k, e, .Either)
+                lw_store(k, e, first, r, graph_build_array_elem(b, ga, 0, first, lit_t), span)
+            }
+        } else {
+            lw_store_into(k, e, graph_build_array_elem(b, ga, slot, nil, nil), span)
+        }
+        slot += 1
     }
-    if len(elems) > 1 {
-        for e, i in elems[1:] { lw_store_into(k, e, graph_build_array_elem(b, ga, i + 1, nil, nil), span) }
-    }
-    graph_build_array_len(b, ga, len(elems), span)   // (into a list: as many as it holds)
+    graph_build_array_len(b, ga, count, span)   // (into a list: as many as it holds)
     t := tc_node_type(k, n)
     if b.g.type_[ga.zero] == 0 { graph_retype(b, ga.zero, t) }
     return lw_built(k, want, in_temp, temp, d, t, at, placed)

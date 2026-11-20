@@ -348,10 +348,25 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         }
         return t
     }
-    et := elem_type(k, elems[0], 0, into_bytes, place)
-    for e, i in elems[1:] {
+    // (A call's several results, `[directions(q)]`: each an element, in
+    // order — tc_literal_count.)
+    types := make([dynamic]Type, 0, len(elems), context.temp_allocator)
+    for e in elems {
+        if call := tc_unparen(k, e); tc_is_call(k, call) { k.several_ok = call }
+        t := elem_type(k, e, len(types), into_bytes, place)
+        k.several_ok = 0
+        _, failed := t.(Type_Error)
+        if results := tc_call_returns(k, e); len(results) > 1 && !failed {
+            append(&types, ..results)
+        } else {
+            append(&types, t)
+        }
+    }
+    count := len(types)
+    et := types[0]
+    for t, i in types[1:] {
         // (A pointee's width not yet decided, either side: decided by the other.)
-        if t := elem_type(k, e, i + 1, into_bytes, place); !coerce_deferred_pointee(k.c, t, et, span) && !coerce_deferred_pointee(k.c, et, t, span) && types_incompatible(et, t) {
+        if !coerce_deferred_pointee(k.c, t, et, span) && !coerce_deferred_pointee(k.c, et, t, span) && types_incompatible(et, t) {
             tc_error(k, span, TYPE_ARRAY_ELEMENT_TYPE_EXPECTED, i + 1, type_name(t), type_name(et))
         }
     }
@@ -374,12 +389,20 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     // result — the literal is one, as a declaration takes it:
     // `Vertex{position = [x, y, z]}`.)
     if fa, is_fixed := distinct_base(hint).(^Type_Fixed_Array); is_fixed && tc_is_distinct(hint) &&
-       fa.size == len(elems) && !types_incompatible(fa.elem, et) {
+       fa.size == count && !types_incompatible(fa.elem, et) {
         for e in elems { tc_settle(k, e, fa.elem) }
         return hint
     }
     for e in elems { tc_settle(k, e, et) }   // (each written to its slot, at its type)
-    return type_fixed_array(len(elems), et)
+    return type_fixed_array(count, et)
+}
+
+// How many elements an array literal holds: a call's several results each
+// one (`[directions(q)]`), any other element one.
+tc_literal_count :: proc(k: ^TC, n: Tree_Id) -> int {
+    count := 0
+    for e in tree_list(k.t, k.t.a[n]) { count += max(1, len(tc_call_returns(k, e))) }
+    return count
 }
 
 // `a[lo:hi]`: its collection, its bounds at the header's width — a slice of

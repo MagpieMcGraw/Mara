@@ -166,7 +166,7 @@ tc_settle :: proc(k: ^TC, n: Tree_Id, t: Type) {
     // is an array the slice views: of its elements, as many as it has.)
     if tr.tag[n] == .Array {
         if sl, to_slice := distinct_base(t).(^Type_Slice); to_slice {
-            t = type_fixed_array(len(tree_list(tr, tr.a[n])), sl.elem)
+            t = type_fixed_array(tc_literal_count(k, n), sl.elem)
         }
     }
     tc_set_type(k, n, t)
