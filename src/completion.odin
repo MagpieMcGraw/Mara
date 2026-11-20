@@ -193,7 +193,8 @@ completion_signature :: proc(fn: ^Type_Scope) -> string {
 
 // A node's type, in the first instance it's checked in that types it.
 completion_type_of :: proc(a: ^Annotations, n: Tree_Id) -> Type {
-    for inst, i in a.instances {
+    for i in annot_listed(a) {   // (in their names' order: the same however the check went)
+        inst := a.instances[i]
         if n < inst.lo || n > inst.hi { continue }
         if t := annot_type(a, Instance_Id(i), n); t != nil { return t }
     }

@@ -1242,7 +1242,7 @@ tc_is_value :: proc(k: ^TC, n: Tree_Id, t: Type, span: Span, printed := false) -
     // (A module's name — the name, whatever a use calls it. Called, it is
     // made: an empty struct's value.)
     if (k.t.tag[m] == .Ident || k.t.tag[m] == .Field) && k.names.refs[m].kind == .Module {
-        tc_error(k, span, TYPE_MODULE_NOT_VALUE, name)
+        tc_error(k, tree_span(k.t, m), TYPE_MODULE_NOT_VALUE, name)   // (at the name, not what it's given to)
         return false
     }
     // (A type's own name: no local can share it — tc_declarable.)

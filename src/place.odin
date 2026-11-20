@@ -149,7 +149,8 @@ place_finder_make :: proc(t: ^Tree, a: ^Annotations) -> ^Place_Finder {
     }
 
     // Each local holding a pointer or a slice, and each loop's element.
-    for inst, i in a.instances {
+    for i in annot_listed(a) {   // (in their names' order: the same however the check went)
+        inst := a.instances[i]
         for k in 0 ..< len(a.types[i]) {
             n := inst.lo + Tree_Id(k)
             #partial switch t.tag[n] {

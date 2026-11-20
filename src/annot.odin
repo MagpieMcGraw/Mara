@@ -1,5 +1,7 @@
 package mara
 
+import "core:slice"
+
 import "base:runtime"
 import "core:fmt"
 import "core:os"
@@ -84,6 +86,7 @@ Annot_Body :: struct {
 
 Annotations :: struct {
     instances: [dynamic]Instance,
+    listed:    []Instance_Id,     // ... in a fixed order, once asked for (annot_listed)
     types:     [dynamic][]Type_Id,   // each instance's nodes' types, by n - lo
     type_table: ^Type_Table,         // ... their table: the program's types
     refs:      [dynamic][]Ref,    // what each name refers to (a declaration's name, itself)
@@ -146,6 +149,24 @@ annot_new :: proc(t: ^Tree) -> ^Annotations {
     append(&a.types, make([]Type_Id, len(t.tag)))
     append(&a.refs, make([]Ref, len(t.tag)))
     return a
+}
+
+// The instances in a fixed order — the tree's own first, then by what each
+// is of, its name — for what's said of them: they're numbered as the check
+// meets them, and a tool's check meets them in another order than a build's.
+annot_listed :: proc(a: ^Annotations) -> []Instance_Id {
+    if len(a.listed) == len(a.instances) { return a.listed }
+    a.listed = make([]Instance_Id, len(a.instances))
+    for _, i in a.instances { a.listed[i] = Instance_Id(i) }
+    context.user_ptr = a
+    slice.sort_by(a.listed, proc(x, y: Instance_Id) -> bool {
+        a := (^Annotations)(context.user_ptr)
+        sx, sy := a.instances[x].scope, a.instances[y].scope
+        if sx == nil || sy == nil { return sx == nil && sy != nil || sx == sy && x < y }
+        if sx.name != sy.name { return sx.name < sy.name }
+        return x < y
+    })
+    return a.listed
 }
 
 // A generic's instance, its template's nodes [lo, hi]: its number.

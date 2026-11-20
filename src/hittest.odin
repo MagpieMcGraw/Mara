@@ -92,7 +92,8 @@ span_text :: proc(src: string, s: Span) -> string {
 @(private="file")
 hit_type :: proc(a: ^Annotations, n: Tree_Id, ref_elem := false) -> string {
     labels := make([dynamic]string, context.temp_allocator)
-    for inst, i in a.instances {
+    for i in annot_listed(a) {   // (in their names' order: the same however the check went)
+        inst := a.instances[i]
         if n < inst.lo || n > inst.hi { continue }
         ty := annot_type(a, Instance_Id(i), n)
         if fr, is_ref := ty.(^Type_Field); is_ref && ref_elem { ty = fr.elem }
@@ -138,7 +139,8 @@ hit_refers :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: st
 @(private="file")
 hit_ref :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int, name: string) -> (Ref, Tree_Id, bool) {
     #reverse for n in hits {
-        for inst, i in a.instances {
+        for i in annot_listed(a) {   // (in their names' order: the same however the check went)
+            inst := a.instances[i]
             if n < inst.lo || n > inst.hi || int(n - inst.lo) >= len(a.refs[i]) { continue }
             r := annot_ref(a, Instance_Id(i), n)
             if r.kind == .None { continue }
@@ -929,7 +931,8 @@ hit_op_calls :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int) -> []T
         op := t.main[n]
         if t.tag[n] == .Compound { op = Token_Id(tree_rec(t, t.b[n], 2)[0]) }   // (`x op= v`, kept on the statement)
         if int(op) != at { continue }
-        for inst, i in a.instances {
+        for i in annot_listed(a) {   // (in their names' order: the same however the check went)
+            inst := a.instances[i]
             if n < inst.lo || n > inst.hi { continue }
             ts := a.callees[annot_key(Instance_Id(i), n)] or_else nil
             if ts != nil && ts.decl != 0 && !slice.contains(out[:], ts.decl) { append(&out, ts.decl) }
@@ -1181,7 +1184,8 @@ hit_field_writes :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, uses: ^[dyna
         if asked != nil { m = place_match(asked, place_of_entry(f, lit, decl, i)) }
         if m != .No { hit_add_use(uses, t.first[at], at, .Written, here, m == .Maybe) }
     }
-    for inst, i in a.instances {
+    for i in annot_listed(a) {   // (in their names' order: the same however the check went)
+        inst := a.instances[i]
         for k in 0 ..< len(a.types[i]) {
             n := inst.lo + Tree_Id(k)
             #partial switch t.tag[n] {
@@ -1295,7 +1299,8 @@ hit_use_places :: proc(f: ^Place_Finder, t: ^Tree, n: Tree_Id, decl: Token_Id, i
 hit_asked_places :: proc(f: ^Place_Finder, t: ^Tree, a: ^Annotations, n: Tree_Id, decl: Token_Id) -> []Place {
     if t.tag[n] != .Field && t.tag[n] != .Named_Entry && !(t.tag[n] == .Ident && t.main[n] != decl) { return nil }
     out := make([dynamic]Place, context.temp_allocator)
-    for inst, i in a.instances {
+    for i in annot_listed(a) {   // (in their names' order: the same however the check went)
+        inst := a.instances[i]
         if n < inst.lo || n > inst.hi || annot_ref(a, Instance_Id(i), n).decl != decl { continue }
         append(&out, ..hit_use_places(f, t, n, decl, Instance_Id(i)))
     }
@@ -1332,18 +1337,31 @@ hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_
         hit_add_use(&uses, tok, u.node, hit_use_kind(t, a, u.inst, u.node), here, m == .Maybe)
     }
 
-    // (A declaration, a literal's entry, have no type of their own: their uses' does.)
-    types := hit_path_types(t, a, named_at)
-    for u in uses {
-        if types != "" { break }
-        types = hit_type(a, u.node)
-    }
-    if r.kind == .Field { hit_field_writes(t, a, r.decl, &uses, here, finder, asked) }
-    slice.sort_by(uses[:], proc(x, y: Hit_Use) -> bool {
+    listed :: proc(x, y: Hit_Use) -> bool {
         if x.here != y.here { return x.here }
         if x.path != y.path { return x.path < y.path }
         return x.tok < y.tok
-    })
+    }
+    slice.sort_by(uses[:], listed)
+    // (A declaration, a literal's entry, have no type of their own: their
+    // uses' does — the first's as they're listed, whatever order the files
+    // were read in; one an error left untyped only when none has a type.)
+    types := hit_path_types(t, a, named_at)
+    untyped := ""
+    for u in uses {
+        if types != "" { break }
+        ty := hit_type(a, u.node)
+        if strings.has_prefix(ty, "untyped ") {
+            if untyped == "" { untyped = ty }
+            continue
+        }
+        types = ty
+    }
+    if types == "" { types = untyped }
+    if r.kind == .Field {
+        hit_field_writes(t, a, r.decl, &uses, here, finder, asked)
+        slice.sort_by(uses[:], listed)
+    }
 
     sb := strings.builder_make()
     if title != "" {

@@ -51,7 +51,8 @@ annot_uses_build :: proc(a: ^Annotations) {
     uses := make([]Use, total, a.allocator)
     next := make([]u32, len(first), context.temp_allocator)
     copy(next, first)
-    for inst, i in a.instances {
+    for i in annot_listed(a) {   // (in their names' order: the same however the check went)
+        inst := a.instances[i]
         for r, k in a.refs[i] {
             if r.decl == 0 { continue }
             uses[next[r.decl]] = {Instance_Id(i), inst.lo + Tree_Id(k)}
