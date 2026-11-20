@@ -1,0 +1,202 @@
+%YAML 1.2
+---
+# Based on the Odin sublime-text syntax, adapted for Mara
+name: Mara
+file_extensions:
+  - mara
+scope: source.mara
+variables:
+  identifier: '\b[[:alpha:]_][[:alnum:]_]*\b'
+  type_chars: '[[:alnum:]\s,._^<>\[\]-]'
+  screaming_identifier: '\b[A-Z_](?![a-z])[A-Z_0-9]+\b'
+
+contexts:
+  main:
+    - include: global
+
+  global:
+    - include: comments
+    - include: types
+    - include: keywords
+    - include: functions-and-declarations
+    - include: strings
+    - include: string-escaped-char
+
+  comments:
+    - match: /\*
+      scope: punctuation.definition.comment.begin.mara
+      push: block-comment
+    - match: //
+      scope: punctuation.definition.comment.mara
+      push:
+        - meta_scope: comment.line.double-slash.mara
+        - match: \n
+          pop: true
+
+  # `/* … */`, nesting: one inside another needs its own `*/`.
+  block-comment:
+    - meta_scope: comment.block.mara
+    - match: /\*
+      scope: punctuation.definition.comment.begin.mara
+      push: block-comment
+    - match: \*/
+      scope: punctuation.definition.comment.end.mara
+      pop: true
+
+  keywords:
+    - match: \b(foreign)\b
+      scope: keyword.control.mara
+    - match: \b(module|include|use)\b
+      scope: keyword.control.import.mara
+    # Hash directives: #packed, #expose, #big_endian, #if, #web, #native, ...
+    - match: '#[[:alpha:]_]+'
+      scope: keyword.other.directive.mara
+    - match: \b(using)\b
+      scope: keyword.other.using.mara
+    - match: \b(match)\s+(all)\b
+      captures:
+        1: keyword.control.mara
+        2: keyword.control.mara
+    - match: \b(each)\s+(index)\b
+      captures:
+        1: keyword.control.mara
+        2: keyword.control.mara
+    - match: \b(if|elif|else|for|match|each|other|return|do|end|where|defer|with)\b
+      scope: keyword.control.mara
+    - match: \b(break|continue)\b
+      scope: keyword.control.mara
+    - match: '(\!\=)'
+      scope: keyword.operator.mara
+    - match: \b(and|or|not|in)\b
+      scope: keyword.logic.mara
+    - match: '(\%|\+|\-|\*|\/|\:|\:\:|\:\=|\+\=|\*\=|\\\=|\=|\-\=|\=\=|\!\=|\<\=|\>\=|\<|\>|\?|\~|\|)'
+      scope: keyword.operator.mara
+    # `void` is the null-pointer literal; `nil` does not exist in Mara
+    - match: \b(void|true|false)\b
+      scope: constant.language.mara
+    - match: '\b(\d(\d|_)*(\.\d(\d|_)*)?)((e|E)(\+|-)?\d+)?\b'
+      scope: constant.numeric.mara
+    - match: '\b((0b(0|1|_)+)|(0o(\d|_)+)|(0d(\d|_)+)|(0[xXh](\h|_)+))\b'
+      scope: constant.numeric.mara
+    - match: \b(overload)\b
+      scope: keyword.other.overload.mara
+    - match: \b(dispatch)\b
+      scope: storage.type.mara
+    - match: \b(union|error|distinct|alias|var|intrinsic)\b
+      scope: storage.type.mara
+    # `.len` / `.cap` — slice/array header fields (must precede the bare `.` rule)
+    - match: '(\.)(len|cap)\b'
+      captures:
+        1: punctuation.accessor.mara
+        2: support.constant.mara
+    - match: '(\(|\)|\{|\}|\[|\]|,|;)'
+      scope: punctuation.separator.mara
+    - match: '(\.)'
+      scope: punctuation.accessor.mara
+
+  functions-and-declarations:
+    # name :: fun(...) — function definition, however the name is capitalized
+    - match: '\b([[:alpha:]_][[:alnum:]_]*)\s*(:)\s*(:)\s*(fun)'
+      captures:
+        1: meta.function.mara entity.name.function.mara
+        2: keyword.operator.mara
+        3: keyword.operator.mara
+        4: storage.type.mara
+
+    # name :: (params) — a function definition, its `fun` left off:
+    # the ( opens params — (), ($T…, (name: …, (a, b: …, or the line's end —
+    # not a constant's parens, N :: (2 + 3) * 4
+    - match: '\b([[:alpha:]_][[:alnum:]_]*)\s*(:)\s*(:)\s*(?=\(\s*(\)|\$|[[:alpha:]_][[:alnum:]_]*\s*[:,](?!:)|$))'
+      captures:
+        1: meta.function.mara entity.name.function.mara
+        2: keyword.operator.mara
+        3: keyword.operator.mara
+
+    # fun/fn used as anonymous or type
+    - match: (fun)\s*[\(]
+      captures:
+        1: storage.type.mara
+
+    # Builtin functions
+    - match: \b(print|assert|crash|take|size_of)\b\s*(\()
+      captures:
+        1: keyword.function.mara
+        2: punctuation.separator.mara
+
+    # class/struct — consumed without highlighting
+    - match: \b(class|struct)\b
+
+    # Regular function calls
+    - match: ({{identifier}})\s*(\()
+      captures:
+        1: support.function.mara
+        2: punctuation.separator.mara
+
+    # Name :: union
+    - match: '\b({{identifier}})\s*(:)\s*(:)\s*(union)'
+      captures:
+        1: meta.type.mara entity.name.type.mara
+        2: keyword.operator.mara
+        3: keyword.operator.mara
+        4: storage.type.mara
+
+    # Include paths: mara.math, mara.array, etc.
+    - match: '\b(mara)(\.)([[:alpha:]_][[:alnum:]_]*)\b'
+      captures:
+        1: support.module.mara
+        2: punctuation.accessor.mara
+        3: support.module.mara
+
+    # Name :: (constant)
+    - match: '\b({{identifier}})\s*(:)\s*(:)\s*'
+      captures:
+        1: meta.constant.mara entity.name.type.mara
+        2: keyword.operator.mara
+        3: keyword.operator.mara
+
+  types:
+    - match: '\b(union)\b(?:(\{)(\}))?'
+      captures:
+        1: storage.type.mara
+        2: meta.block.mara punctuation.definition.block.begin.mara
+        3: meta.block.mara punctuation.definition.block.end.mara
+    - match: '\b(fun|method|fn)\b'
+      scope: storage.type.mara
+    - match: (\[)(\d*)(\])(?=[[:alpha:]_])
+      scope: meta.brackets.mara
+      captures:
+        1: punctuation.definition.brackets.begin.mara punctuation.separator.mara
+        2: constant.numeric.mara
+        3: punctuation.definition.brackets.end.mara punctuation.separator.mara
+    - include: basic-types
+
+  basic-types:
+    - match: '\b(int|float|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|isize|usize|bool|string|cstr|ptr|byte|utf8|err)\b'
+      scope: storage.type.mara
+    # Reserved names that error in the compiler (c8 -> utf8)
+    - match: '\bc8\b'
+      scope: invalid.illegal.reserved-type.mara
+
+  strings:
+    - match: '"'
+      scope: punctuation.definition.string.begin.mara
+      push:
+        - meta_scope: string.quoted.double.mara
+        - match: '"'
+          scope: punctuation.definition.string.end.mara
+          pop: true
+        - include: string-escaped-char
+    - match: "'"
+      scope: punctuation.definition.string.begin.mara
+      push:
+        - meta_scope: string.quoted.single.mara
+        - match: "'"
+          scope: punctuation.definition.string.end.mara
+          pop: true
+        - include: string-escaped-char
+
+  string-escaped-char:
+    - match: '\\(\\|[abefnrutv''"]|x\h{2}|u\h{4}|U\h{8}|[0-7]{3}|0)'
+      scope: constant.character.escape.mara
+    - match: \\.
+      scope: invalid.illegal.unknown-escape.mara

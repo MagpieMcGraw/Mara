@@ -1,0 +1,7 @@
+// Settings for .mara files only (the Mara syntax).
+{
+	// Alt+Q (Edit > Wrap > Wrap Paragraph at Ruler) rewraps the comment
+	// paragraph under the cursor at this width, keeping each line's `//`.
+	// No ruler drawn.
+	"wrap_width": 80,
+}
