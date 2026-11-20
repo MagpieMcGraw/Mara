@@ -8,7 +8,9 @@
 # and a program is built with the packaged compiler alone. The test suite
 # lives outside the repo: run it before tagging.
 # The Linux window comes with the SDL3 it was built with (built here, of
-# SDL_RELEASE: Ubuntu 24.04 has no package of it), found beside it.
+# SDL_RELEASE: Ubuntu 24.04 has no package of it), found beside it. The
+# package's code/SDL and code/SDL_mixer hold libSDL3 and libSDL3_mixer (of
+# SDL_MIXER_RELEASE) for programs, which find them copied beside them.
 # Linux builds with Ubuntu 24.04's clang 18: the oldest LLVM Mara's IR is
 # checked against (Windows uses tools/, clang 21).
 # A failing step's last lines show on the run's page (.github/report.sh).
@@ -24,6 +26,7 @@ on:
 env:
   ODIN_RELEASE: dev-2026-05
   SDL_RELEASE: 3.4.4
+  SDL_MIXER_RELEASE: 3.2.4
 
 defaults:
   run:
@@ -138,6 +141,21 @@ jobs:
           sudo cmake --install "$RUNNER_TEMP/sdl" | tail -5
           sudo ldconfig
 
+      - name: SDL3_mixer, for mara.sdl_mixer
+        run: |
+          source .github/report.sh
+          curl -sSfL -o "$RUNNER_TEMP/mixer.tar.gz" "https://github.com/libsdl-org/SDL_mixer/releases/download/release-$SDL_MIXER_RELEASE/SDL3_mixer-$SDL_MIXER_RELEASE.tar.gz"
+          tar -xzf "$RUNNER_TEMP/mixer.tar.gz" -C "$RUNNER_TEMP"
+          # (Its own decoders only, as the Windows DLL has them: WAV, OGG, MP3,
+          # FLAC, VOC, AIFF, AU. None that needs another library.)
+          cmake -S "$RUNNER_TEMP/SDL3_mixer-$SDL_MIXER_RELEASE" -B "$RUNNER_TEMP/mixer" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+            -DSDLMIXER_VENDORED=OFF -DSDLMIXER_TESTS=OFF -DSDLMIXER_EXAMPLES=OFF \
+            -DSDLMIXER_FLAC_LIBFLAC=OFF -DSDLMIXER_MP3_MPG123=OFF -DSDLMIXER_VORBIS_VORBISFILE=OFF \
+            -DSDLMIXER_GME=OFF -DSDLMIXER_MOD=OFF -DSDLMIXER_MIDI=OFF -DSDLMIXER_OPUS=OFF -DSDLMIXER_WAVPACK=OFF | tail -40
+          cmake --build "$RUNNER_TEMP/mixer" | tail -5
+          sudo cmake --install "$RUNNER_TEMP/mixer" | tail -5
+          sudo ldconfig
+
       - name: Build the view window
         run: |
           source .github/report.sh
@@ -172,6 +190,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/$pkg"
           git archive HEAD code runtime view doc editor readme README.md LICENSE | tar -x -C "$RUNNER_TEMP/$pkg"
           rm "$RUNNER_TEMP/$pkg/view/SDL3.dll"
+          # (code/SDL and code/SDL_mixer: Linux's libraries for programs, in
+          # place of Windows' DLLs. `-lSDL3` links the .so; the program, built
+          # with an $ORIGIN rpath, loads the .so.0 copied beside it, and
+          # libSDL3_mixer the libSDL3 beside itself.)
+          find "$RUNNER_TEMP/$pkg/code" \( -name '*.dll' -o -name '*.lib' \) -delete
+          for lib in SDL3:SDL SDL3_mixer:SDL_mixer; do
+            name=${lib%%:*} dir="$RUNNER_TEMP/$pkg/code/${lib##*:}"
+            cp -L "$(find /usr/lib -name "lib$name.so.0" | head -1)" "$dir/"
+            ln -s "lib$name.so.0" "$dir/lib$name.so"
+          done
+          patchelf --set-rpath '$ORIGIN' "$RUNNER_TEMP/$pkg/code/SDL_mixer/libSDL3_mixer.so.0"
           cp mara "$RUNNER_TEMP/$pkg/"
           cp view/view view/libSDL3.so.0 "$RUNNER_TEMP/$pkg/view/"
           # (The runtime's objects, made after its sources: used as they are.)
@@ -202,6 +231,21 @@ jobs:
           "$mara" build tlib -shared
           cc host.c ./tlib.so -lpthread -o host
           LD_LIBRARY_PATH=. ./host
+          # mara.sdl_mixer (.github/checks): libSDL3 and libSDL3_mixer copied
+          # from the package beside the program, found there.
+          pkgdir="$RUNNER_TEMP/unpacked/mara-linux-x64"
+          mkdir -p "$RUNNER_TEMP/mixer" && cd "$RUNNER_TEMP/mixer"
+          cp "$GITHUB_WORKSPACE/.github/checks/mixer.mara" .
+          "$mara" build mixer
+          cp "$pkgdir/code/SDL/libSDL3.so.0" "$pkgdir/code/SDL_mixer/libSDL3_mixer.so.0" .
+          libs=$(ldd ./mixer)
+          echo "$libs"
+          case "$libs" in *"not found"*) echo "the program needs a library that isn't beside it"; exit 1 ;; esac
+          case "$libs" in *"libSDL3_mixer.so.0 => $RUNNER_TEMP/mixer/"*) ;; *) echo "the program doesn't take the SDL3_mixer beside it"; exit 1 ;; esac
+          ./mixer | tee mixer.txt
+          grep -q "decoder: STBVORBIS" mixer.txt
+          grep -q "decoder: DRMP3" mixer.txt
+          grep -q "generated: 4096 sound true" mixer.txt
           # A runtime error's report from a packaged build: it exits 1, and
           # says the calls that were running.
           mkdir -p "$RUNNER_TEMP/oops" && cd "$RUNNER_TEMP/oops"

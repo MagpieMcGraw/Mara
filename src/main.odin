@@ -1246,6 +1246,13 @@ link_native :: proc(ll_paths: []string, exe_name: string, checked: ^Checked_Prog
             strings.write_byte(&b, '"')
         }
     }
+    // Off Windows a program finds the shared libraries beside it, as Windows
+    // finds a DLL there: its own folder, `$ORIGIN`, searched first (the
+    // libSDL3.so.0 a release's code/SDL holds, copied beside it). Quoted for
+    // the shell.
+    when ODIN_OS != .Windows {
+        strings.write_string(&b, ` '-Wl,-rpath,$ORIGIN'`)
+    }
     // `-no console`: a Windows program of the windows subsystem — started, it
     // opens no console window — its entry still the C runtime's that calls
     // main (that subsystem's own would look for WinMain). Elsewhere a program

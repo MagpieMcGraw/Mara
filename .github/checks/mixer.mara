@@ -1,0 +1,38 @@
+module mixer
+
+use mara.core
+use mara.os
+use mara.memory
+sdl :: use mara.sdl
+mix :: use mara.sdl_mixer
+
+#allocator Arena_Basic(1 * MB)
+
+// mara.sdl_mixer from the Linux package (release workflow): libSDL3 and
+// libSDL3_mixer copied beside the program, found there. Its decoders, then a
+// sine wave mixed into a buffer by a mixer with no device.
+main :: fun() -> err {
+	_ = sdl.SetHint("SDL_AUDIO_DRIVER", "dummy")
+	sdl.Init(sdl.Audio)?
+	mix.Init()?
+	print("version:", mix.Version())
+	for i in 0:mix.GetNumAudioDecoders() {
+		name := mix.GetAudioDecoder(i)
+		if name != void do print("decoder:", read_cstring(64, name))
+	}
+	out := sdl.AudioSpec{format = sdl.F32, channels = 2, freq = 48000}
+	offline := mix.CreateMixer(&out)?
+	beep := mix.CreateSineWaveAudio(offline, 440, 0.5, 100)?
+	mix.PlayAudio(offline, beep)?
+	samples : [1024!]f32
+	made := mix.Generate(offline, &samples[0], i32(samples.len * size_of(f32)))
+	sound := false
+	for s in samples {
+		if s != 0.0 do sound = true
+	}
+	print("generated:", made, "sound", sound)
+	mix.DestroyAudio(beep)
+	mix.DestroyMixer(offline)
+	mix.Quit()
+	sdl.Quit()
+}

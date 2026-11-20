@@ -24,6 +24,8 @@ Main feature of Mara is stack-like memory allocation. Everything in Mara lives u
 
 Ready-built compilers are on the [releases page](https://github.com/MagpieMcGraw/Mara/releases): `mara-windows-x64.zip` and `mara-linux-x64.tar.gz`. Unpack it anywhere and put its folder on PATH. On Windows that's all; on Linux, install clang and lld with your package manager. The Linux compiler needs glibc 2.34 or newer (Ubuntu 22.04, Debian 12); its window, `mara view`, needs 2.38 (Ubuntu 24.04).
 
+A program using SDL (`mara.sdl`, `mara.sdl_mixer`) needs SDL's libraries beside it: on Windows `SDL3.dll` and `SDL3_mixer.dll`, on Linux `libSDL3.so.0` and `libSDL3_mixer.so.0`. Copy them from the package's `code/SDL` and `code/SDL_mixer`.
+
 ## Building the compiler
 
 The Mara compiler is written in [Odin](https://odin-lang.org/). You need
