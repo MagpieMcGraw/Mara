@@ -130,7 +130,7 @@ ask_parse_query :: proc(words: []string) -> (q: Ask_Query, err: string) {
     }
     // A filter with no subject has nothing to act on; bare `mara ask` (no name,
     // no `at`, no filters) is the module map.
-    if q.target == "" && q.at == "" && (q.kind != "" || q.dir != "") {
+    if q.target == "" && q.at == "" && (q.kind != "" && q.kind != "stats" || q.dir != "") {
         return q, "mara ask: a filter needs a name — e.g. `mara ask <name> above`"
     }
     return q, ""
@@ -208,6 +208,7 @@ Ask_Session :: struct {
 ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string, found: bool) {
     here, _ := os.get_working_directory(context.temp_allocator)
     ask_run_from(here)
+    if q.kind == "stats" { return ask_stats(s, q, in_) }
     // Bare `mara ask` — the module map (the project at a glance). `at`
     // identifies a variable without a name, so it is not the bare form.
     if q.target == "" && q.at == "" {
@@ -264,6 +265,95 @@ ask_run :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string,
     s.checked.du.want_control = q.control   // the post-dominator pass, only when asked
     ask_flow_rows = max(int) if q.depth == ASK_DEPTH_ALL else ASK_FLOW_ROWS_SHOWN
     return ask(s.checked, q.target, q.kind, q.dir, in_.fn, q.at, s.pkg, in_.file, in_.module, q.depth)
+}
+
+// `<module> stats` (`stats`: the module here): how big a module is with all
+// it uses — each module's files, bytes, lines, tokens and tree nodes; your
+// code's summed, the stdlib's, then all of it.
+@(private="file")
+ask_stats :: proc(s: ^Ask_Session, q: Ask_Query, in_: Ask_Scopes) -> (out: string, found: bool) {
+    if q.dir != "" || q.at != "" || q.depth != ASK_DEPTH_OMITTED || q.control || in_ != {} {
+        return "mara ask: stats takes a module's name alone — `mara ask <module> stats`\n", false
+    }
+    root := q.target if q.target != "" else s.pkg
+    if root not_in s.files {
+        if root in s.all_files { return fmt.tprintf("mara ask: module '%s' isn't part of this program — %s (cwd) doesn't use it.\n", root, s.pkg), false }
+        return fmt.tprintf("mara ask: stats are a module's — no module '%s' here\n", root), false
+    }
+    // (What it uses: its files' uses, and theirs.)
+    reached := make(map[string]bool, allocator = context.temp_allocator)
+    queue := make([dynamic]string, context.temp_allocator)
+    append(&queue, root)
+    for len(queue) > 0 {
+        m := pop(&queue)
+        if reached[m] || m not_in s.files { continue }
+        reached[m] = true
+        for f in s.files[m] { append(&queue, ..f.imports[:]) }
+    }
+    Row :: struct { name: string, stdlib: bool, files, bytes, lines, tokens, nodes: int }
+    count :: proc(rows: []Row, name: string) -> Row {
+        sum := Row{name = name}
+        for r in rows { sum.files += r.files; sum.bytes += r.bytes; sum.lines += r.lines; sum.tokens += r.tokens; sum.nodes += r.nodes }
+        return sum
+    }
+    rows := make([dynamic]Row, context.temp_allocator)
+    for m in reached {
+        r := Row{name = m, stdlib = ask_is_stdlib(s.files[m][:]), files = len(s.files[m])}
+        for f in s.files[m] {
+            r.bytes += len(f.source)
+            r.lines += strings.count(f.source, "\n") + (1 if len(f.source) > 0 && f.source[len(f.source) - 1] != '\n' else 0)
+            for id in f.first_token ..< f.end_token {
+                if k := build_tokens[id].kind; k != .EOF && k != .Invalid { r.tokens += 1 }
+            }
+            if f.end_token > f.first_token {
+                lo, hi := tree_file_nodes(&build_tree, build_tokens[f.first_token].file)
+                r.nodes += int(hi - lo) + 1
+            }
+        }
+        append(&rows, r)
+    }
+    // (The module first, then your other modules, then the stdlib's: each by name.)
+    context.user_ptr = &root
+    slice.sort_by(rows[:], proc(a, b: Row) -> bool {
+        root := (^string)(context.user_ptr)^
+        if (a.name == root) != (b.name == root) { return a.name == root }
+        if a.stdlib != b.stdlib { return !a.stdlib }
+        return a.name < b.name
+    })
+    own := 0
+    for r in rows { if !r.stdlib { own += 1 } }
+    all := count(rows[:], "all")
+    width := len("all")
+    for r in rows { width = max(width, len(r.name)) }
+    digits := max(5, len(fmt.tprint(all.bytes)))
+    b := strings.builder_make(context.temp_allocator)
+    others := len(rows) - 1
+    uses := fmt.tprintf("the module and the %d it uses", others) if others > 0 else "the module alone"
+    fmt.sbprintf(&b, "%s: %s, %s\n\n", root, uses, ask_plural(all.files, "file"))
+    // (A row: its name, indented, in a column `width` past the 4 of a
+    // module's indent; then each count right-justified.)
+    line :: proc(b: ^strings.Builder, name: string, counts: [5]string, width, digits: int, indent: string) {
+        strings.write_string(b, indent)
+        strings.write_string(b, strings.left_justify(name, width + 4 - len(indent), " ", context.temp_allocator))
+        for c in counts { fmt.sbprintf(b, "  %s", strings.right_justify(c, digits, " ", context.temp_allocator)) }
+        strings.write_string(b, "\n")
+    }
+    row :: proc(b: ^strings.Builder, r: Row, width, digits: int, indent: string) {
+        counts: [5]string
+        for n, i in ([5]int{r.files, r.bytes, r.lines, r.tokens, r.nodes}) { counts[i] = fmt.tprint(n) }
+        line(b, r.name, counts, width, digits, indent)
+    }
+    line(&b, "", {"files", "bytes", "lines", "tokens", "nodes"}, width, digits, "    ")
+    groups := [2]struct { name: string, rows: []Row }{{"your code", rows[:own]}, {"stdlib", rows[own:]}}
+    for g in groups {
+        if len(g.rows) == 0 { continue }
+        fmt.sbprintf(&b, "  %s\n", g.name)
+        for r in g.rows { row(&b, r, width, digits, "    ") }
+        if len(g.rows) > 1 && len(g.rows) < len(rows) { row(&b, count(g.rows, "total"), width, digits, "    ") }
+    }
+    if len(rows) > 1 { row(&b, all, width, digits, "  ") }
+    strings.write_string(&b, "\nLines: newlines, a last line without one too. Tokens: the lexer's, newlines among them, no comments. Nodes: the parse tree's.\n")
+    return strings.to_string(b), true
 }
 
 // `#tokens`: every token Mara has (TOKEN_TEXTS) and how many times each is

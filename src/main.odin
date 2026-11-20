@@ -1747,6 +1747,9 @@ ASK_USAGE :: `Usage: mara ask <name> [types|call|flow] [above|below] [control] [
     #tokens        every token Mara has and how many times each is written, most
                    used first: in the module here, or 'in <module>' / 'in <file>'
                    (quote it in bash and PowerShell, where # starts a comment: '#tokens')
+    <module> stats how big a module is with all it uses: each module's files, bytes,
+                   lines, tokens and parse-tree nodes; your code's summed, the stdlib's,
+                   then all of it ('stats' alone: the module here)
     <shape>        where a type of that shape is written, and what's declared of it:
                    [N]T a list, [N!]T exactly N, [K]T an enum's array, []T, ^T;
                    sizes and elements made exact: [64]utf8, [N]Filename, ^[3!]f32

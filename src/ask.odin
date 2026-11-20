@@ -484,13 +484,13 @@ ask_keyword_hint :: proc(tok: string) -> (hint: string, ok: bool) {
     // is not dragged onto `call`.
     lower := strings.to_lower(tok)
     if len(lower) == 0 { return "", false }
-    KEYWORDS := []string{"types", "call", "flow", "above", "below", "control"}
+    KEYWORDS := []string{"types", "call", "flow", "stats", "above", "below", "control"}
     best, best_d := "", max(int)
     for k in KEYWORDS {
         if d := ask_levenshtein(lower, k); d < best_d { best_d, best = d, k }
     }
     if best_d > 0 && lower[0] == best[0] && 3 * best_d <= len(lower) {
-        return fmt.tprintf("unknown filter `%s` — did you mean `%s`? (filters: types|call|flow, above|below, control)", tok, best), true
+        return fmt.tprintf("unknown filter `%s` — did you mean `%s`? (filters: types|call|flow|stats, above|below, control)", tok, best), true
     }
     return "", false
 }
@@ -787,6 +787,7 @@ ask_canon_kind :: proc(s: string) -> (canon: string, ok: bool) {
     case "flow":                return "flow", true      // the dataflow slice (above = lineage / producer tree)
     case "what":                return "what", true      // what is at a point (`what at <file>:<line>:<col>`)
     case "cursor":              return "cursor", true    // what a window shows for an editor's cursor (`cursor at <file>@<byte>`)
+    case "stats":               return "stats", true     // how big a module is with what it uses (`<module> stats`)
     }
     return "", false
 }
