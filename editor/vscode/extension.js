@@ -234,7 +234,7 @@ function toCompletions(x) {
         const item = new vscode.CompletionItem(c.label, c.kind ? c.kind - 1 : undefined);
         item.detail = c.detail;
         item.sortText = c.sortText;
-        if (c.insertText) item.insertText = c.insertText;
+        if (c.insertText) item.insertText = c.insertTextFormat === 2 ? new vscode.SnippetString(c.insertText) : c.insertText;   // (a fun's call, its params to fill in)
         return item;
     }), !!x.isIncomplete);
 }

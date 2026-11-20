@@ -1,5 +1,6 @@
 package mara
 
+import "core:fmt"
 import "core:strings"
 
 // ---------------------------------------------------------------------------
@@ -32,7 +33,8 @@ Completion_Kind :: enum {
 Completion :: struct {
     label:  string,
     kind:   Completion_Kind,
-    detail: string,   // its type; a fun's signature
+    detail: string,         // its type; a fun's signature
+    fn:     ^Type_Scope,    // a fun's: its call written with its params (completion_call)
 }
 
 COMPLETION_KEYWORDS :: [?]string{
@@ -83,7 +85,7 @@ completion_named :: proc(c: ^Completions, checked: ^Checked_Program, name: strin
     if is_scope && kind == .Function && fs.kind != .Fun { kind = .Type }   // (a struct's constructor: the struct)
     detail := ""
     if t != nil { detail = completion_signature(fs) if is_scope && kind == .Function else type_name(t) }
-    completion_add(c, name, kind, detail)
+    completion_add(c, name, kind, detail, fs if is_scope && kind == .Function else nil)
 }
 
 Completions :: struct {
@@ -92,10 +94,10 @@ Completions :: struct {
 }
 
 // A name added, once: none of the compiler's own (`__tag`), not the placeholder.
-completion_add :: proc(c: ^Completions, label: string, kind: Completion_Kind, detail: string) {
+completion_add :: proc(c: ^Completions, label: string, kind: Completion_Kind, detail: string, fn: ^Type_Scope = nil) {
     if label == "" || label in c.seen || strings.has_prefix(label, "__") || strings.contains(label, COMPLETE_HERE) { return }
     c.seen[label] = true
-    append(&c.out, Completion{label, kind, detail})
+    append(&c.out, Completion{label, kind, detail, fn})
 }
 
 // An enum's or a union's variants, the type named (`Kind`) as their detail.
@@ -152,7 +154,7 @@ completion_scope_names :: proc(c: ^Completions, s: ^Type_Scope, methods := false
             if fn == nil || fn.source_name != "" && name != fn.source_name { continue }
             kind := Completion_Kind.Method if methods else .Function
             if fn.kind != .Fun { kind = .Type }   // (a struct's constructor: the struct)
-            completion_add(c, name, kind, completion_signature(fn))
+            completion_add(c, name, kind, completion_signature(fn), fn if kind != .Type else nil)
         }
     }
     for name, ty in s.types {
@@ -164,8 +166,9 @@ completion_scope_names :: proc(c: ^Completions, s: ^Type_Scope, methods := false
             if v.is_module { kind = .Module } else if v.kind == .Fun { kind = .Function }
         }
         detail := type_name(ty)
-        if fs, is_scope := ty.(^Type_Scope); is_scope && kind == .Function { detail = completion_signature(fs) }
-        completion_add(c, name, kind, detail)
+        fn: ^Type_Scope
+        if fs, is_scope := ty.(^Type_Scope); is_scope && kind == .Function { detail, fn = completion_signature(fs), fs }
+        completion_add(c, name, kind, detail, fn)
     }
 }
 
@@ -188,6 +191,25 @@ completion_signature :: proc(fn: ^Type_Scope) -> string {
         strings.write_string(&b, " -> " if i == 0 else ", ")
         strings.write_string(&b, type_name(r))
     }
+    return strings.to_string(b)
+}
+
+// A fun's call as the editor writes it (a snippet): its params without a
+// default to fill in, Tab from one to the next and out past the `)`. A
+// method's first param is its receiver, written before the dot. Only
+// defaults: the cursor between the parens.
+completion_call :: proc(name: string, fn: ^Type_Scope, method: bool) -> string {
+    b := strings.builder_make(context.temp_allocator)
+    strings.write_string(&b, name)
+    strings.write_string(&b, "(")
+    n := 0
+    for p, i in fn.params {
+        if method && i == 0 || p.default_node != 0 { continue }
+        n += 1
+        fmt.sbprintf(&b, "%s${{%d:%s}}", ", " if n > 1 else "", n, p.name if p.name != "" else type_name(p.type_))
+    }
+    if n == 0 && len(fn.params) > (1 if method else 0) { strings.write_string(&b, "$1") }
+    strings.write_string(&b, ")$0")
     return strings.to_string(b)
 }
 

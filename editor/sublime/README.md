@@ -41,7 +41,7 @@ LSP → Settings`:
 				"definition": true,    // Goto Definition (F12)
 				"references": true,    // Find References (shift+F12)
 				"symbols": true,       // Goto Symbol (ctrl+R): the file's definitions
-				"completion": true,    // the names that fit where you type, after `x.` too
+				"completion": true,    // the names that fit where you type, after `x.` too; a fun's call with its params to fill in (Tab to the next)
 				"renames": true        // Rename (F2); a declaration renamed by hand offers its uses
 			}
 		}

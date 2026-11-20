@@ -407,6 +407,12 @@ lsp_completion :: proc(s: ^Lsp, params: json.Value) -> string {
     if session.checked == nil || file == nil { return "null" }
     // (Where the placeholder starts: after what of the name is typed.)
     spec := fmt.tprintf("%s:%d:%d", filepath.base(path), line, col + 1)
+    // (A fun's call written with it — completion_call — unless the name
+    // typed has its `(` after it already.)
+    after := src[start + col:]
+    word := 0
+    for word < len(after) && is_word_byte(after[word]) { word += 1 }
+    called_already := strings.has_prefix(after[word:], "(")
     items := make([dynamic]string)
     for c in completions_at(&build_tree, session.all_files, session.checked.annot, session.checked, file.module, spec) {
         kind, rank := 6, 0
@@ -420,8 +426,12 @@ lsp_completion :: proc(s: ^Lsp, params: json.Value) -> string {
         case .Variant:  kind = 20
         case .Keyword:  kind, rank = 14, 2
         }
-        append(&items, fmt.tprintf(`{{"label":%s,"kind":%d,"detail":%s,"sortText":%s}}`,
-                                   json_str(c.label), kind, json_str(c.detail), json_str(fmt.tprintf("%d%s", rank, c.label))))
+        call := ""
+        if c.fn != nil && (c.kind == .Function || c.kind == .Method) && !called_already {
+            call = fmt.tprintf(`,"insertText":%s,"insertTextFormat":2`, json_str(completion_call(c.label, c.fn, c.kind == .Method)))
+        }
+        append(&items, fmt.tprintf(`{{"label":%s,"kind":%d,"detail":%s,"sortText":%s%s}}`,
+                                   json_str(c.label), kind, json_str(c.detail), json_str(fmt.tprintf("%d%s", rank, c.label)), call))
     }
     return strings.concatenate({`{"isIncomplete":false,"items":[`, strings.join(items[:], ","), "]}"})
 }

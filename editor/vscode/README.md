@@ -7,7 +7,7 @@ rename and its quick fixes), building and debugging a program, and the
 
 ## Install
 
-    code --install-extension mara-0.2.0.vsix
+    code --install-extension mara-0.2.1.vsix
 
 (Or the Extensions view's … menu → Install from VSIX.) `python pack.py`
 makes the .vsix again after the extension changes. The extension runs
