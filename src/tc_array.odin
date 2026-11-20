@@ -457,7 +457,12 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     lt, ht: Type = Type_Any{}, Type_Any{}
     if lo_n != 0 { lt = tc_check_count(k, lo_n) }
     if hi_n != 0 { ht = tc_check_count(k, hi_n) }
+    // (A call's several results may go into a run of elements — not bytes.)
+    call := tc_unparen(k, value)
+    several := !is_byte_buffer(tt) && index_elem_type(tt) != nil && tc_is_call(k, call)
+    if several { k.several_ok = call }
     vt := tc_check(k, value)
+    k.several_ok = 0
     if !is_numeric(lt) && !is_any(lt) {
         tc_error(k, span, TYPE_SLICE_LOWER_BOUND_NUMBER, type_name(lt))
     } else if !coerces_to_slice_width(lt) {
@@ -470,6 +475,13 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     }
     if pname, immutable := tc_write_root_param(k, target); immutable {
         tc_error(k, span, TYPE_CANNOT_SLICE_ASSIGN_INTO_IMMUTABLE, pname)
+    }
+    if _, bad := vt.(Type_Error); bad { return }   // (said where it went wrong)
+    if several {
+        if results := tc_call_returns(k, value); len(results) > 1 {
+            tc_results_into_run(k, span, lo_n, hi_n, tt, results)
+            return
+        }
     }
     if is_byte_buffer(tt) {
         // (Into bytes, a value's bytes — an array's too, not its elements:
@@ -523,5 +535,30 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
         if types_incompatible(fa.elem, v.elem) { tc_error(k, span, TYPE_CANNOT_SLICE_ASSIGN_INTO_2, type_name(v.elem), fa.size, type_name(fa.elem)) }
     case:
         if !is_any(vt) { tc_error(k, span, TYPE_SLICE_ASSIGNMENT_REQUIRES_ARRAY_SLICE, type_name(vt)) }
+    }
+}
+
+// `axis[0:3] = directions(q)` (tc_slice_assign): a call's several results
+// into a run, each of the elements' type. A run whose bounds are known is
+// exactly as long, so none is dropped; else the copy's run-time check, as
+// an array of them has (lw_results_into).
+tc_results_into_run :: proc(k: ^TC, span: Span, lo_n, hi_n: Tree_Id, tt: Type, results: []Type) {
+    te := index_elem_type(tt)
+    for r, i in results {
+        if types_incompatible(te, r) {
+            tc_error(k, span, TYPE_SLICE_ASSIGN_RESULT, type_name(te), i + 1, type_name(r))
+            return
+        }
+    }
+    lo, lo_known := i64(0), true
+    if lo_n != 0 { lo, lo_known = tc_comptime_int(k, lo_n) }
+    hi, hi_known := i64(0), false
+    if hi_n != 0 {
+        hi, hi_known = tc_comptime_int(k, hi_n)
+    } else if fa, fixed := distinct_base(tt).(^Type_Fixed_Array); fixed {
+        hi, hi_known = i64(fa.size), true
+    }
+    if lo_known && hi_known && hi - lo != i64(len(results)) {
+        tc_error(k, span, TYPE_SLICE_ASSIGN_RESULTS_COUNT, lo, hi, hi - lo, len(results))
     }
 }

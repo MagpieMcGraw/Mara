@@ -276,6 +276,10 @@ lw_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
         if hi_n != 0 { hi = lw_bound(k, hi_n, .Explicit, sl_span) }
         base := graph_base_of(b, lw_expr(k, base_n, .Place).v, tt, sl_span, is_self)
         place = graph_op_value(b, .Slice, .Explicit, sl_span, st, "", base, lo, hi)
+        if results := tc_call_returns(k, value); !bytes && len(results) > 1 {
+            lw_results_into(k, value, place, st, index_elem_type(tt), len(results), span)
+            return
+        }
         // (Bytes into bytes — `out[0:4] = bits.input[2:6]` — a copy, as any
         // slice's is: no bytes read as another type.)
         if !bytes || is_byte_buffer(vt) {
@@ -285,4 +289,24 @@ lw_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     }
     r := lw_expr(k, value, .Into, dest = Dest{kind = .At, at = NO_VALUE}, temp = true, temp_span = span)
     lw_store(k, value, vt, r, lw_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
+}
+
+// `axis[0:3] = directions(q)` (tc_results_into_run): the call, its results
+// into an array of them, in order, then the array copied into the run — as
+// an array value is, its length checked.
+lw_results_into :: proc(k: ^TC, value: Tree_Id, place: Operand, st, elem: Type, count: int, span: Span) {
+    b := k.gb
+    at := type_fixed_array(count, elem)
+    whole := graph_dest_var(graph_slot(b, "results", at, span), at)
+    mr := Graph_Destructure{on = true, span = span}
+    mr.names = make([]string, count, context.temp_allocator)
+    mr.stores = make([]bool, count, context.temp_allocator)
+    for i in 0..<count { mr.stores[i] = true }
+    mr.call = lw_expr(k, value, .Value).v
+    for i in 0..<count {
+        mr.place = graph_dest_place(b, Dest{kind = .Index, index = i, type_ = elem, parent = &whole}, span)
+        graph_build_destructure_write(b, &mr, i, distinct_base(elem))
+    }
+    run := graph_op_value(b, .Slice, .Implied, span, st, "", graph_dest_place(b, whole, span))
+    graph_build_write_at(b, place, run, span)
 }

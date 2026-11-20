@@ -780,7 +780,7 @@ tc_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
         defer k.recv = saved
         t = tc_call_core(k, n, tc_name(k, n), tree_list(k.t, k.t.a[n]))
     }
-    if !several { tc_one_value(k, n, len(tc_call_returns(k, n))) }
+    one := several || tc_one_value(k, n, len(tc_call_returns(k, n)))
     // (`E.from_text(s)` gives E's variant written `= 0` when s names none: E
     // must have one.)
     if callee := tc_callee(k, n); callee != nil {
@@ -788,6 +788,7 @@ tc_call :: proc(k: ^TC, n: Tree_Id, addressed := Tree_Id(0)) -> Type {
             tc_error(k, tree_span(k.t, n), TYPE_FROM_TEXT_NEEDS_ZERO, callee.name, type_name(fn_result(callee, 0)))
         }
     }
+    if !one { return Type_Error{} }   // (no errors after it about its first result alone)
     return t
 }
 
@@ -803,11 +804,12 @@ tc_takes_several :: proc(k: ^TC, n: Tree_Id) -> bool {
 
 // A call's (or a `?`'s) values, `count`, where one value goes: more than one
 // is an error — the others would be lost.
-tc_one_value :: proc(k: ^TC, n: Tree_Id, count: int) {
-    if count <= 1 { return }
+tc_one_value :: proc(k: ^TC, n: Tree_Id, count: int) -> bool {
+    if count <= 1 { return true }
     example := fmt.tprintf("%s(…)", tc_call_written(k, n))
     if k.t.tag[n] == .Try { example = fmt.tprintf("%s(…)?", tc_call_written(k, tc_unparen(k, Tree_Id(k.t.a[n])))) }
     tc_error(k, tree_span(k.t, n), TYPE_MULTI_RETURN_AS_ONE, count, example)
+    return false
 }
 
 // What a call's name refers to: a call's own; a method call's, its method
@@ -1598,7 +1600,7 @@ tc_try :: proc(k: ^TC, n: Tree_Id) -> Type {
         return Type_Error{}
     }
     if len(rets) == 1 { return Type_Void{} }
-    if !several { tc_one_value(k, n, len(rets) - 1) }
+    if !several && !tc_one_value(k, n, len(rets) - 1) { return Type_Error{} }
     return rets[0]
 }
 
