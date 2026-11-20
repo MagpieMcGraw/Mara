@@ -1826,6 +1826,16 @@ llvm_whole_array :: proc(e: ^Llvm, op: Node_Id) -> bool {
     return true
 }
 
+// Whether a slice assignment's source is a call's several results, gathered
+// for it (lw_results_into: the compiler's own `results`, viewed whole).
+@(private="file")
+llvm_call_results :: proc(e: ^Llvm, src: Node_Id) -> bool {
+    pg := e.pg
+    if !llvm_whole_array(e, src) { return false }
+    decl := graph_refers(pg, graph_operands(pg, src)[0].op)
+    return decl != NO_NODE && graph_written(pg, decl) == .Synthetic && graph_name(pg, decl) == "results"
+}
+
 // A slice of an array or a slice: the elements from lo up to hi — lo 0 and
 // hi the array's size or the slice's len when not given (a list's or slice's
 // slicing written with no hi is given its cap: lw_slice) — as a new header,
@@ -2147,7 +2157,10 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         emit_label(g, lo_ok)
     }
     // (A run written, lo:hi: src holds hi - lo elements, else the copy would
-    // read past its end. A longer src gives its first hi - lo.)
+    // read past its end. A longer src gives its first hi - lo — but a call's
+    // several results, each one the run's next place's (lw_results_into):
+    // exactly as many, none dropped. Bounds that are numbers the checker has
+    // counted already.)
     if run_given {
         have := from.bound if from.bound.kind != .None else llvm_hdr_len(e, src)
         if !can_elide_source_check(lo, hi, have) {
@@ -2155,6 +2168,16 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
             ir_bin(g, want, .Sub, w, hi, lo)
             src_ok, src_err := fresh_label(g, "slice.src.ok"), fresh_label(g, "slice.src.err")
             src_cmp := fresh_tmp(g)
+            if llvm_call_results(e, src) {
+                ir_icmp(g, src_cmp, .Ne, w, want, have)
+                emit_cond_br(g, src_cmp, src_err, src_ok)
+                emit_label(g, src_err)
+                emit_fail(g, fmt.tprintf("%s runtime error: slice assignment of %%lld elements into '%s', from a call that gives %%lld values: each needs its place\n", loc, name),
+                          fail_i64(want), fail_i64(have))
+                emit_label(g, src_ok)
+                src_ok, src_err = fresh_label(g, "slice.src.ok"), fresh_label(g, "slice.src.err")
+                src_cmp = fresh_tmp(g)
+            }
             ir_icmp(g, src_cmp, .Sgt, w, want, have)
             emit_cond_br(g, src_cmp, src_err, src_ok)
             emit_label(g, src_err)
