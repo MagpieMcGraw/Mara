@@ -56,6 +56,14 @@ max :: dispatch {
 	max_f64
 }
 
+// x kept between lo and hi: lo when it's below, hi when it's above.
+clamp :: dispatch {
+	clamp_int
+	clamp_u16
+	clamp_f32
+	clamp_f64
+}
+
 abs :: dispatch {
 	abs_int
 	abs_f32
@@ -70,6 +78,10 @@ max_int :: fun(a: i64, b: i64) -> i64 { @llvm.smax.i64 }
 max_u16 :: fun(a: u16, b: u16) -> u16 { @llvm.umax.i16 }
 max_f32 :: fun(a: f32, b: f32) -> f32 { @llvm.maxnum.f32 }
 max_f64 :: fun(a: f64, b: f64) -> f64 { @llvm.maxnum.f64 }
+clamp_int :: fun(x, lo, hi: i64) -> i64 { return min(max(x, lo), hi) }
+clamp_u16 :: fun(x, lo, hi: u16) -> u16 { return min(max(x, lo), hi) }
+clamp_f32 :: fun(x, lo, hi: f32) -> f32 { return min(max(x, lo), hi) }
+clamp_f64 :: fun(x, lo, hi: f64) -> f64 { return min(max(x, lo), hi) }
 
 // How many 0 bits come before the lowest 1 bit: 0 for an odd number, 3 for
 // 8. A 0 has no 1 bit, so it gives its width: 64 for a u64. One machine
