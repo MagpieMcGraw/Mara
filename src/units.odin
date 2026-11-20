@@ -45,12 +45,15 @@ units_find :: proc(k: ^TC, errors: []Token_Id) -> ^Units {
     u.def = make([]Token_Id, len(build_tokens))
     u.in_body = make([]bool, len(build_tokens))
     // (A definition's nodes come before its own: the outer ones first, each
-    // inner one over its part.)
+    // inner one over its part. A tree the parser read past an error into
+    // can hold two definitions of one name's tokens: one is never the
+    // other's outer — a chain that came back to its start would be walked
+    // for ever: units_within.)
     #reverse for tag, i in t.tag {
         if tag != .Define { continue }
         s := Tree_Id(i)
         decl := t.main[s]
-        if owner := u.def[t.first[s]]; owner != 0 { u.outer[decl] = owner }
+        if owner := u.def[t.first[s]]; owner != 0 && !units_within(u, owner, decl) { u.outer[decl] = owner }
         for tok in t.first[s] ..< t.end[s] { u.def[tok], u.in_body[tok] = decl, false }
         value := Tree_Id(t.b[s])
         if value == 0 || t.tag[value] != .Fun_Def { continue }
@@ -117,13 +120,30 @@ units_find :: proc(k: ^TC, errors: []Token_Id) -> ^Units {
     return u
 }
 
+// Whether definition `d` is `from` or one `from` is written in. Every walk
+// out through u.outer stops after as many steps as it has entries: one that
+// came back to its start would go round for ever.
+@(private="file")
+units_within :: proc(u: ^Units, from, d: Token_Id) -> bool {
+    o := from
+    for _ in 0 ..= len(u.outer) {
+        if o == 0 { return false }
+        if o == d { return true }
+        o = u.outer[o] or_else 0
+    }
+    return false
+}
+
 // Whether the code written at a token is broken: its file's own statements,
 // its definition, or one that definition is written in.
 @(private="file")
 units_broken_at :: proc(u: ^Units, tok: Token_Id) -> bool {
     if u.loose[build_tokens[tok].file] { return true }
-    for d := u.def[tok]; d != 0; d = u.outer[d] or_else 0 {
+    d := u.def[tok]
+    for _ in 0 ..= len(u.outer) {
+        if d == 0 { break }
         if u.head[d] || u.body[d] { return true }
+        d = u.outer[d] or_else 0
     }
     return false
 }
@@ -153,8 +173,11 @@ units_before :: proc(a, b: Token_Id) -> bool {
 @(private="file")
 units_name :: proc(u: ^Units, d: Token_Id) -> string {
     name := token_text(build_tokens[d])
-    for o := u.outer[d] or_else 0; o != 0; o = u.outer[o] or_else 0 {
+    o := u.outer[d] or_else 0
+    for _ in 0 ..= len(u.outer) {   // (units_within)
+        if o == 0 { break }
         name = strings.concatenate({token_text(build_tokens[o]), ".", name}, context.temp_allocator)
+        o = u.outer[o] or_else 0
     }
     return name
 }

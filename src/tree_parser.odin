@@ -134,10 +134,17 @@ tp_is_boundary :: proc(k: Token_Kind) -> bool {
 
 // A block's opening, its header read: a `{`, on the header's line or the
 // next; or, the header's line ending without one, none: the block runs to
-// `end`. Whether it's braced.
+// `end`. Whether it's braced. (More on the header's line: said. A `}` there
+// is the block's around it — `if` with nothing after it yet, the fun's `}`
+// next — and isn't taken for the `{`: taken, this block ran on past it to
+// the file's end, swallowing the definitions after.)
 tp_open :: proc(p: ^Tree_Parser) -> bool {
     if tp_kind(p) == .Left_Brace {
         tp_advance(p)
+        return true
+    }
+    if tp_kind(p) == .Right_Brace || tp_kind(p) == .EOF {
+        tp_error(p, tp_here(p), PARSE_EXPECTED_TOKEN, Token_Kind.Left_Brace, tp_kind(p), token_text(tp_tok(p)))
         return true
     }
     if tp_kind(p) != .Newline {
