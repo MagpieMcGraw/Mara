@@ -35,7 +35,9 @@ tc_field :: proc(k: ^TC, n: Tree_Id) -> Type {
     // what the base is; a `.len` or `.cap` read changes no list.)
     list_ok, list_index := n == k.list_ok, n == k.list_at
     if len(field) == 3 && (field == "len" || field == "cap") { k.list_ok = tc_unparen(k, base) }
+    k.type_name_ok = tc_unparen(k, base)   // (`Light.Red`, `S.field`: a type's name)
     bt := tc_check(k, base)
+    k.type_name_ok = 0
     // (A name into a scope — a module, a struct, a fun: its definition, the
     // name table's. A module has nothing else.)
     if tr.tag[n] == .Field && names_is_scope(k.names, k.names.refs[tc_unparen(k, base)]) {

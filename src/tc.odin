@@ -29,6 +29,7 @@ TC :: struct {
     // checked for the error — stops there.
     addressed_calls: map[Tree_Id]bool,
     several_ok:    Tree_Id,           // the call (or `?`) about to be checked where several results go — tc_call
+    type_name_ok:  Tree_Id,           // a type's name about to be checked where one is taken — a field's base, a loop's, or where a value is said to be none — tc_ident
     modules:       map[string][]Tree_Id,   // each module's files' roots, in path order
     module_nodes:  map[string]Tree_Id,     // each module's body's node: its files' statements (tree_module_scope)
     pkg:           string,            // the module being checked

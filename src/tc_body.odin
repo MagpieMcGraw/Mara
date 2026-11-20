@@ -139,9 +139,9 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
         if t.tag[e] == .Import { return }   // (`use m`: checked before its module — tc_check_uses)
         if tc_override(k, e) { return }
         k.several_ok = tc_unparen(k, e)   // (what it drops: said below)
-        k.dropped = k.several_ok
+        k.dropped, k.type_name_ok = k.several_ok, k.several_ok
         rt := tc_check(k, e)
-        k.several_ok, k.dropped = 0, 0
+        k.several_ok, k.dropped, k.type_name_ok = 0, 0, 0
         // A call's value, dropped: `_ = f()` says so.
         if tc_is_call(k, e) && rt != nil {
             _, is_void := rt.(Type_Void)
@@ -332,8 +332,9 @@ tc_decl_one :: proc(k: ^TC, s, target, value, ann_node: Tree_Id) {
     errors_before := k.c.errors
     // (One name for a call's several results: said below. A `?`'s, by it.)
     if tc_is_call(k, tc_unparen(k, value)) { k.several_ok = tc_unparen(k, value) }
+    if is_any(ann) { k.type_name_ok = tc_unparen(k, value) }   // (said below: tc_is_value)
     vt := tc_check(k, value)
-    k.several_ok = 0
+    k.several_ok, k.type_name_ok = 0, 0
     if is_any(ann) && !tc_is_value(k, value, vt, span) {
         tc_bind(k, name, Type_Error{}, ref)
         return
@@ -953,8 +954,9 @@ tc_for :: proc(k: ^TC, s: Tree_Id) {
         call := tc_unparen(k, v.collection)
         if tc_is_call(k, call) { k.several_ok = call }
         k.list_ok = call   // (looped over: no change to it)
+        k.type_name_ok = call   // (`for v in Mode`: a type's name)
         ct := tc_check(k, v.collection)
-        k.several_ok = 0
+        k.several_ok, k.type_name_ok = 0, 0
         tc_list_looped(k, call, ct)
         if loops_over_type(k, v.collection) {
             tc_loop_over_type(k, v, ct, span)

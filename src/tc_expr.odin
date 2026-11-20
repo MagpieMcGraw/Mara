@@ -301,6 +301,14 @@ tc_ident :: proc(k: ^TC, n: Tree_Id) -> Type {
     if ref.kind == .Local || ref.kind == .Field {
         #partial switch _ in t { case ^Type_Partial_Array, ^Type_Distinct: tc_list_use(k, ref.decl, t, n == k.list_ok, n == k.list_at, span) }
     }
+    // (A type's name where a value goes — `v = Vec3`, `f(Vec3)`: there's none
+    // to give, and nothing lowering could build. Where one is taken — a
+    // field's base, a loop's — or what it is is said otherwise, the place
+    // says so first: k.type_name_ok.)
+    if _, is_template := tc_template(k, ref); ref.kind == .Type && !is_template && k.type_name_ok != n {
+        tc_error(k, span, TYPE_TYPE_NOT_VALUE, name)
+        return Type_Error{}
+    }
     return t
 }
 
@@ -1150,7 +1158,11 @@ tc_builtin :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id) -> (Type, 
     }
     switch name {
     case "print":
-        each(k, args, &types)
+        for a in args {
+            k.type_name_ok = tc_unparen(k, a)   // (said below: tc_is_value)
+            append(&types, tc_arg(k, a))
+        }
+        k.type_name_ok = 0
         for a, i in args { tc_is_value(k, a, types[i], tree_span(k.t, a), printed = true) }
         // (A field reference printed: its name, llvm_print.)
         for a, i in args {
