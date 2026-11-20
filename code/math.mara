@@ -16,7 +16,13 @@ mul :: dispatch {
 	mat4_mul_vec4
 	vec3_mul
 	vec3_scale
+	f32_mul_vec3
 	quat_mul
+}
+
+overload / div
+div :: dispatch {
+	vec3_div_scalar
 }
 
 overload + add
@@ -974,6 +980,10 @@ vec3_scale :: fun(v: Vec3, s: f32) -> Vec3 {
 	result.z = v.z * s
 	return result
 }
+
+f32_mul_vec3 :: fun(s: f32, v: Vec3) -> Vec3 { return vec3_scale(v, s) }
+
+vec3_div_scalar :: fun(v: Vec3, s: f32) -> Vec3 { return Vec3{v.x / s, v.y / s, v.z / s} }
 
 vec3_negate :: fun(v: Vec3) -> Vec3 {
 	result : Vec3
