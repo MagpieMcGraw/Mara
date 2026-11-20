@@ -1219,6 +1219,10 @@ foreign static_lib "SDL3" prefix SDL_ fails Failed {
     fun BindAudioStream(device: u32, stream: AudioStream) -> err
     fun UnbindAudioStream(stream: AudioStream)
     fun GetAudioStreamAvailable(stream: AudioStream) -> i32
+    // How fast a stream plays, 0.01 to 100: below 1 slower and lower, above 1
+    // faster and higher. 1 is as it was recorded.
+    fun SetAudioStreamFrequencyRatio(stream: AudioStream, ratio: f32) -> err
+    fun GetAudioStreamFrequencyRatio(stream: AudioStream) -> f32
     // A .wav file's samples, in memory SDL gives: free them with free().
     fun LoadWAV(path: cstring, spec: ^AudioSpec, audio_buf: ^^byte, audio_len: ^u32) -> err
 }
