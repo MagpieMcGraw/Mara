@@ -1209,6 +1209,18 @@ foreign static_lib "SDL3" prefix SDL_ fails Failed {
     fun FlushAudioStream(stream: AudioStream) -> err
     fun SetAudioStreamGain(stream: AudioStream, gain: f32) -> err
     fun DestroyAudioStream(stream: AudioStream)
+    // Several sounds at once: a stream for each, bound to one device, which
+    // mixes them. OpenAudioDevice gives the device's id, 0 when it failed.
+    fun OpenAudioDevice(device: u32, spec: ^AudioSpec) -> u32
+    fun CloseAudioDevice(device: u32)
+    fun PauseAudioDevice(device: u32) -> err
+    fun ResumeAudioDevice(device: u32) -> err
+    fun CreateAudioStream(src_spec: ^AudioSpec, dst_spec: ^AudioSpec) -> AudioStream, err
+    fun BindAudioStream(device: u32, stream: AudioStream) -> err
+    fun UnbindAudioStream(stream: AudioStream)
+    fun GetAudioStreamAvailable(stream: AudioStream) -> i32
+    // A .wav file's samples, in memory SDL gives: free them with free().
+    fun LoadWAV(path: cstring, spec: ^AudioSpec, audio_buf: ^^byte, audio_len: ^u32) -> err
 }
 
 // gl_load takes a fun([]utf8), and only a foreign fun can take cstring, so this
