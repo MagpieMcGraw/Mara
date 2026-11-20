@@ -1310,6 +1310,24 @@ tc_call_returns :: proc(k: ^TC, n: Tree_Id) -> []Type {
     return nil
 }
 
+// What may give several results where they go (`[f()]`, `xs[0:2] = f()?`):
+// a call, or a `?` on one — what k.several_ok names; 0 for anything else.
+tc_results_giver :: proc(k: ^TC, n: Tree_Id) -> Tree_Id {
+    m := tc_unparen(k, n)
+    if tc_is_call(k, m) { return m }
+    if k.t.tag[m] == .Try && tc_is_call(k, tc_unparen(k, Tree_Id(k.t.a[m]))) { return m }
+    return 0
+}
+
+// Its results, once checked: a call's; a `?`'s, its call's but the err.
+tc_given_results :: proc(k: ^TC, n: Tree_Id) -> []Type {
+    m := tc_unparen(k, n)
+    if k.t.tag[m] != .Try { return tc_call_returns(k, m) }
+    rets := tc_call_returns(k, Tree_Id(k.t.a[m]))
+    if len(rets) == 0 || !is_err_type(rets[len(rets) - 1]) { return nil }
+    return rets[:len(rets) - 1]
+}
+
 // An argument as checked: its expression, where its names resolve — a
 // default's: its fun's defining scope, or (`#caller_name`) the call site,
 // `at`; a default one of a group's one value: its slot.

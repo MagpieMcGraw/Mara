@@ -352,11 +352,11 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
     // order — tc_literal_count.)
     types := make([dynamic]Type, 0, len(elems), context.temp_allocator)
     for e in elems {
-        if call := tc_unparen(k, e); tc_is_call(k, call) { k.several_ok = call }
+        if m := tc_results_giver(k, e); m != 0 { k.several_ok = m }
         t := elem_type(k, e, len(types), into_bytes, place)
         k.several_ok = 0
         _, failed := t.(Type_Error)
-        if results := tc_call_returns(k, e); len(results) > 1 && !failed {
+        if results := tc_given_results(k, e); len(results) > 1 && !failed {
             append(&types, ..results)
         } else {
             append(&types, t)
@@ -398,10 +398,10 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
 }
 
 // How many elements an array literal holds: a call's several results each
-// one (`[directions(q)]`), any other element one.
+// one (`[directions(q)]`, `[f()?]` but its err), any other element one.
 tc_literal_count :: proc(k: ^TC, n: Tree_Id) -> int {
     count := 0
-    for e in tree_list(k.t, k.t.a[n]) { count += max(1, len(tc_call_returns(k, e))) }
+    for e in tree_list(k.t, k.t.a[n]) { count += max(1, len(tc_given_results(k, e))) }
     return count
 }
 
@@ -481,9 +481,9 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     if lo_n != 0 { lt = tc_check_count(k, lo_n) }
     if hi_n != 0 { ht = tc_check_count(k, hi_n) }
     // (A call's several results may go into a run of elements — not bytes.)
-    call := tc_unparen(k, value)
-    several := !is_byte_buffer(tt) && index_elem_type(tt) != nil && tc_is_call(k, call)
-    if several { k.several_ok = call }
+    giver := tc_results_giver(k, value)
+    several := !is_byte_buffer(tt) && index_elem_type(tt) != nil && giver != 0
+    if several { k.several_ok = giver }
     vt := tc_check(k, value)
     k.several_ok = 0
     if !is_numeric(lt) && !is_any(lt) {
@@ -501,7 +501,7 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
     }
     if _, bad := vt.(Type_Error); bad { return }   // (said where it went wrong)
     if several {
-        if results := tc_call_returns(k, value); len(results) > 1 {
+        if results := tc_given_results(k, value); len(results) > 1 {
             tc_results_into_run(k, span, lo_n, hi_n, tt, results)
             return
         }

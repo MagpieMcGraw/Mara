@@ -189,7 +189,8 @@ example_fun :: fun() {
 // they fit the function's; `return f()?` passes on only a failure. A run of
 // elements takes them one each, `xs[0:2] = f()`, all of the elements' type.
 // In an array literal each result is an element: `[f()]` is an array of
-// them, so `&list ++ [f()]` appends them all.
+// them, so `&list ++ [f()]` appends them all. With `?`, the results but
+// its err: `[f()?]`, `xs[0:2] = f()?`.
 example_return :: fun() {
 	sign :: fun(n: i64) -> i64 {
 		if n < 0 do return -1

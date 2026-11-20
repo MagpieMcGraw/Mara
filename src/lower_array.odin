@@ -134,13 +134,13 @@ lw_array_literal :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest:
     }
     slot := 0
     for e in elems {
-        if results := tc_call_returns(k, e); len(results) > 1 {
+        if results := tc_given_results(k, e); len(results) > 1 {
             // (A call's several results: the call, then each into its slot.)
             mr := Graph_Destructure{on = true, span = span}
             mr.names = make([]string, len(results), context.temp_allocator)
             mr.stores = make([]bool, len(results), context.temp_allocator)
             for &s in mr.stores { s = true }
-            mr.call = lw_expr(k, e, .Value).v
+            mr.call = lw_several_call(k, e)
             for r, i in results {
                 mr.place = graph_dest_place(b, graph_build_array_elem(b, ga, slot, first, lit_t), span)
                 graph_build_destructure_write(b, &mr, i, distinct_base(solidify_type(r)))
@@ -296,7 +296,7 @@ lw_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
         if hi_n != 0 { hi = lw_bound(k, hi_n, .Explicit, sl_span) }
         base := graph_base_of(b, lw_expr(k, base_n, .Place).v, tt, sl_span, is_self)
         place = graph_op_value(b, .Slice, .Explicit, sl_span, st, "", base, lo, hi)
-        if results := tc_call_returns(k, value); !bytes && len(results) > 1 {
+        if results := tc_given_results(k, value); !bytes && len(results) > 1 {
             lw_results_into(k, value, place, st, index_elem_type(tt), len(results), span)
             return
         }
@@ -322,7 +322,7 @@ lw_results_into :: proc(k: ^TC, value: Tree_Id, place: Operand, st, elem: Type, 
     mr.names = make([]string, count, context.temp_allocator)
     mr.stores = make([]bool, count, context.temp_allocator)
     for i in 0..<count { mr.stores[i] = true }
-    mr.call = lw_expr(k, value, .Value).v
+    mr.call = lw_several_call(k, value)
     for i in 0..<count {
         mr.place = graph_dest_place(b, Dest{kind = .Index, index = i, type_ = elem, parent = &whole}, span)
         graph_build_destructure_write(b, &mr, i, distinct_base(elem))

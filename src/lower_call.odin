@@ -85,27 +85,32 @@ lw_destructure :: proc(k: ^TC, s: Tree_Id, targets: []Tree_Id, value: Tree_Id, i
     types := make([]Type, len(targets), context.temp_allocator)
     for _, i in targets { if i < len(returns) { types[i] = distinct_base(solidify_type(returns[i])) } }
     mr: Graph_Destructure
-    if is_try || of_call { mr = graph_build_destructure(b, span, names, toks, stores, is_decl, types) }
-    if is_try {
-        call := tc_unparen(k, Tree_Id(t.a[v]))
-        r := lw_expr(k, call, .Value)
-        if mr.on {
-            if !r.ok { lw_fail(k, v, "a `?` on no call built") }
-            graph_retype(b, r.v.op, nil)
-            at := lw_at(k, v)   // (the `?`'s branch and return: its)
-            mr.call = graph_try_after(b, tree_span(t, v), r.v, k.checked.err_passed, lw_err_pass(k, v))
-            b.at = at
-        }
-    } else {
-        r: Built
-        if of_call { r = lw_expr(k, value, .Value) }
-        mr.call = r.v
+    if is_try || of_call {
+        mr = graph_build_destructure(b, span, names, toks, stores, is_decl, types)
+        mr.call = lw_several_call(k, value)
     }
     for tg, i in targets {
         rt := solidify_type(returns[i])
         if names[i] == "" { mr.place = lw_expr(k, tg, .Place).v }
         if mr.on { graph_build_destructure_write(b, &mr, i, distinct_base(rt)) }
     }
+}
+
+// A call of several results — a destructure's, `[f()]`, `xs[0:2] = f()` — or
+// a `?` on one (tc_results_giver): built, a `?`'s branch passing its failure
+// on, and the operand its results are read from.
+lw_several_call :: proc(k: ^TC, value: Tree_Id) -> Operand {
+    t := k.t
+    b := k.gb
+    v := tc_unparen(k, value)
+    if t.tag[v] != .Try { return lw_expr(k, value, .Value).v }
+    r := lw_expr(k, tc_unparen(k, Tree_Id(t.a[v])), .Value)
+    if !r.ok { lw_fail(k, v, "a `?` on no call built") }
+    graph_retype(b, r.v.op, nil)
+    at := lw_at(k, v)   // (the `?`'s branch and return: its)
+    out := graph_try_after(b, tree_span(t, v), r.v, k.checked.err_passed, lw_err_pass(k, v))
+    b.at = at
+    return out
 }
 
 // `a, b = v`, `x, y := v` (tc_broadcast): v to each target, each a statement
