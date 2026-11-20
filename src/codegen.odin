@@ -1036,10 +1036,10 @@ emit_slice_bounds_check :: proc(g: ^Codegen, lo, hi, bound: Val, name: string, s
     emit_label(g, ok_label)
 }
 
-// True when a slice assignment's value surely holds the run it fills: lo, hi
-// and the value's length all integer constants, hi - lo no more than it.
+// True when a slice assignment's value surely is as long as the run it
+// fills: lo, hi and the value's length all integer constants, hi - lo it.
 can_elide_source_check :: proc(lo, hi, have: Val) -> bool {
-    return lo.kind == .Int && hi.kind == .Int && have.kind == .Int && hi.n - lo.n <= have.n
+    return lo.kind == .Int && hi.kind == .Int && have.kind == .Int && hi.n - lo.n == have.n
 }
 
 // True when a span written into bytes surely is the value's size: lo and hi

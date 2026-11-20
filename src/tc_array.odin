@@ -520,14 +520,14 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
         // into f32s: an array of f32s, tc_settle.)
         if elem := index_elem_type(tt); elem != nil { tc_settle(k, v, type_slice(elem)) }
     }
-    // (A run lo:hi, both known, from an array shorter than it: said now —
-    // else the copy would stop the program, its value run past.)
+    // (A run lo:hi and an array exactly as long: both known, said now — else
+    // the copy stops the program. No hi: as many as the value has.)
     if hi_n != 0 {
         lo, lo_known := i64(0), true
         if lo_n != 0 { lo, lo_known = tc_comptime_int(k, lo_n) }
         hi, hi_known := tc_comptime_int(k, hi_n)
-        if va, from_array := distinct_base(vt).(^Type_Fixed_Array); from_array && lo_known && hi_known && hi - lo > i64(va.size) {
-            tc_error(k, span, TYPE_SLICE_ASSIGN_VALUE_SHORT, lo, hi, hi - lo, va.size)
+        if va, from_array := distinct_base(vt).(^Type_Fixed_Array); from_array && lo_known && hi_known && hi - lo != i64(va.size) {
+            tc_error(k, span, TYPE_SLICE_ASSIGN_VALUE_LENGTH, lo, hi, hi - lo, va.size)
         }
     }
     fa, is_array := distinct_base(tt).(^Type_Fixed_Array)
@@ -562,9 +562,9 @@ tc_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
 }
 
 // `axis[0:3] = directions(q)` (tc_slice_assign): a call's several results
-// into a run, each of the elements' type. A run whose bounds are known is
-// exactly as long, so none is dropped; else the copy's run-time check, as
-// an array of them has (lw_results_into).
+// into a run, each of the elements' type — as many as the run has places,
+// as any value's: bounds known, said now; else the copy's run-time check
+// (lw_results_into). No hi: as many as there are results.
 tc_results_into_run :: proc(k: ^TC, span: Span, lo_n, hi_n: Tree_Id, tt: Type, results: []Type) {
     te := index_elem_type(tt)
     for r, i in results {
@@ -573,14 +573,10 @@ tc_results_into_run :: proc(k: ^TC, span: Span, lo_n, hi_n: Tree_Id, tt: Type, r
             return
         }
     }
+    if hi_n == 0 { return }
     lo, lo_known := i64(0), true
     if lo_n != 0 { lo, lo_known = tc_comptime_int(k, lo_n) }
-    hi, hi_known := i64(0), false
-    if hi_n != 0 {
-        hi, hi_known = tc_comptime_int(k, hi_n)
-    } else if fa, fixed := distinct_base(tt).(^Type_Fixed_Array); fixed {
-        hi, hi_known = i64(fa.size), true
-    }
+    hi, hi_known := tc_comptime_int(k, hi_n)
     if lo_known && hi_known && hi - lo != i64(len(results)) {
         tc_error(k, span, TYPE_SLICE_ASSIGN_RESULTS_COUNT, lo, hi, hi - lo, len(results))
     }

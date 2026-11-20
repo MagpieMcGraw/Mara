@@ -490,7 +490,7 @@ TYPE_BYTE_SLICE_WRITE_BYTES_SLICE :: "byte slice write: %s is %d bytes, but slic
 TYPE_BYTE_ARRAY_WRITE_BYTES_SLICE :: "byte array write: %s is %d bytes, but slice span is %d bytes"
 TYPE_CANNOT_SLICE_ASSIGN_INTO :: "cannot slice-assign [%d!]%s into [%d!]%s"
 TYPE_CANNOT_SLICE_ASSIGN_INTO_2 :: "cannot slice-assign []%s into [%d!]%s"
-TYPE_SLICE_ASSIGN_VALUE_SHORT :: "slice assignment [%d:%d] fills %d elements, but the value has %d"
+TYPE_SLICE_ASSIGN_VALUE_LENGTH :: "slice assignment [%d:%d] fills %d elements, but the value has %d"
 TYPE_SLICE_ASSIGN_ELEMENTS :: "cannot slice-assign []%s into a run of %s"
 TYPE_SLICE_ASSIGN_RESULT :: "a call's results go into a run of %s, but its result %d is %s"
 TYPE_SLICE_ASSIGN_RESULTS_COUNT :: "slice assignment [%d:%d] fills %d elements, but the call gives %d values"
