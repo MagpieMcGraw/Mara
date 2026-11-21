@@ -368,6 +368,10 @@ example_break :: fun() {
 // `Circle c`, c is the variant's fields. Every variant needs an arm, or an
 // `else` arm takes the rest — a variant left out doesn't build. See
 // unions.mara.
+//
+// `match a, b` takes several values, unions or enums: each arm lists a
+// variant for each, between commas, `_` for any (`Circle c, _`). The first
+// arm that fits runs, and every combination needs one, or an `else`.
 example_match :: fun() {
 	shape_area :: fun(s: Shape) -> f64 {
 		match s {
@@ -381,6 +385,16 @@ example_match :: fun() {
 	}
 	print(shape_area(Square{side = 3}))    // 9
 	print(shape_area(.Dot))                // 0
+
+	both :: fun(a, b: Shape) -> f64 {
+		match a, b {
+		Circle c, Circle d do return c.r + d.r
+		Square s, _ do return s.side
+		else do return 0
+		}
+	}
+	print(both(Circle{r = 1}, Circle{r = 2}))    // 3
+	print(both(Square{side = 4}, .Dot))         // 4
 }
 
 Shape :: union {

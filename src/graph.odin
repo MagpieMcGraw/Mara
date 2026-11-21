@@ -2964,6 +2964,145 @@ graph_build_match_end :: proc(b: ^Graph_Builder, gm: ^Graph_Match) {
     b.code.run = gm.join
 }
 
+// A match on several values (lw_match_many): each value's place, as one
+// value's match holds it (graph_build_subject); the switches on their tags,
+// value by value, each case on to the next value's — a value no arm left
+// names is not switched on — and the last to the first arm that fits; then
+// each arm's run and block; the code after it joins.
+Graph_Match_Many :: struct {
+    subjects: []^Graph_Match,
+    used:     []bool,   // (a value's place taken: its first use takes it, the rest walk it again)
+    counts:   []int,    // each value's variants: when every one is named, its switch has no other case
+    arms:     []^Run,
+    join:     ^Run,
+    span:     Span,
+}
+
+Graph_Many_Subject :: struct {
+    slot:     Node_Id,
+    subject:  Operand,
+    t:        Type,
+    is_self:  bool,
+    variants: int,
+}
+
+// An arm's tag for a value it takes any variant of.
+GRAPH_ANY_TAG :: min(int)
+
+// `plan`: each arm's tag for each value (GRAPH_ANY_TAG: any); an else is a
+// row of any, last.
+graph_build_match_many :: proc(b: ^Graph_Builder, span: Span, subjects: []Graph_Many_Subject, plan: [][]int) -> ^Graph_Match_Many {
+    gm := new(Graph_Match_Many, context.temp_allocator)
+    gm.span = span
+    gm.subjects = make([]^Graph_Match, len(subjects), context.temp_allocator)
+    gm.used = make([]bool, len(subjects), context.temp_allocator)
+    gm.counts = make([]int, len(subjects), context.temp_allocator)
+    for s, i in subjects {
+        m := new(Graph_Match, context.temp_allocator)
+        m.slot, m.subject, m.t, m.is_self, m.span = s.slot, s.subject, s.t, s.is_self, span
+        _, m.is_union = distinct_base(s.t).(^Type_Union)
+        gm.subjects[i], gm.counts[i] = m, s.variants
+    }
+    gm.arms = make([]^Run, len(plan), context.temp_allocator)
+    all := make([]int, len(plan), context.temp_allocator)
+    for _, i in plan { all[i] = i }
+    graph_match_decide(b, gm, plan, 0, all)
+    gm.join = graph_run_new(b)
+    return gm
+}
+
+@(private="file")
+graph_many_place :: proc(b: ^Graph_Builder, gm: ^Graph_Match_Many, i: int) -> Operand {
+    p := graph_build_subject(b, gm.span, gm.subjects[i], first = !gm.used[i])
+    gm.used[i] = true
+    return p
+}
+
+@(private="file")
+graph_many_arm_run :: proc(b: ^Graph_Builder, gm: ^Graph_Match_Many, i: int) -> ^Run {
+    if gm.arms[i] == nil { gm.arms[i] = graph_run_new(b) }
+    return gm.arms[i]
+}
+
+// The arms `cands` still fit the values before `p`: a switch on value p's
+// tag, a case for each tag one of them names (and one for the others, when
+// some go unnamed), each on with those that fit it.
+@(private="file")
+graph_match_decide :: proc(b: ^Graph_Builder, gm: ^Graph_Match_Many, plan: [][]int, p: int, cands: []int) {
+    span := gm.span
+    if p == len(gm.subjects) {
+        if len(cands) == 0 { graph_fatal(span, "a match's combination of variants that no arm takes") }
+        graph_jump(b, graph_many_arm_run(b, gm, cands[0]), .Synthetic, span)
+        return
+    }
+    named := make([dynamic]int, context.temp_allocator)
+    each: for c in cands {
+        v := plan[c][p]
+        if v == GRAPH_ANY_TAG { continue }
+        for n in named { if n == v { continue each } }
+        append(&named, v)
+    }
+    if len(named) == 0 {
+        graph_match_decide(b, gm, plan, p + 1, cands)
+        return
+    }
+    m := gm.subjects[p]
+    ops := make([dynamic]Operand, 0, len(named) + 1, context.temp_allocator)
+    place := graph_many_place(b, gm, p)
+    append(&ops, place if m.is_union else graph_read(b, place, m.t, span))
+    t := graph_tag_type(m.t) if m.is_union else m.t
+    for v in named { append(&ops, graph_const(b, .Implied, span, t, "", Const_Value{int = i128(v)})) }
+    others := len(named) < gm.counts[p]
+    runs := make([]^Run, len(named) + (1 if others else 0), context.temp_allocator)
+    for &r in runs { r = graph_run_new(b) }
+    graph_switch(b, ops[:], runs, span)
+    for r, j in runs {
+        b.code.run = r
+        sub := make([dynamic]int, context.temp_allocator)
+        for c in cands {
+            v := plan[c][p]
+            if v == GRAPH_ANY_TAG || j < len(named) && v == named[j] { append(&sub, c) }
+        }
+        graph_match_decide(b, gm, plan, p + 1, sub[:])
+    }
+}
+
+// A value's fields an arm binds: the value's place in the match, the
+// variant, the name and its token, the variant's struct.
+Graph_Bind :: struct {
+    place:     int,
+    variant:   string,
+    bound:     string,
+    bound_tok: Token_Id,
+    payload:   Type,
+}
+
+graph_build_many_arm :: proc(b: ^Graph_Builder, gm: ^Graph_Match_Many, i: int, label: string, binds: []Graph_Bind, arena: bool) -> Graph_Block {
+    span := gm.span
+    b.code.run = graph_many_arm_run(b, gm, i)
+    k := Graph_Block{n = graph_node(b, .Block, .Explicit, b.code.block, label, nil, span), outer = b.code.block, span = span}
+    b.code.block = k.n
+    graph_scope_open(b, k.n, span, arena)
+    for bd in binds {
+        if bd.payload == nil { graph_fatal(span, "match arm '%s' has no resolved variant", bd.variant) }
+        bound := graph_node(b, .Local, .Explicit, k.n, bd.bound, bd.payload, span)
+        // The binding is the payload's place, not a copy.
+        payload := graph_op(b, .Variant, .Explicit, span, bd.payload, bd.bound, graph_many_place(b, gm, bd.place))
+        b.g.binds[payload] = bound
+        graph_declare(b, bound, bd.bound_tok)
+    }
+    return k
+}
+
+graph_build_many_arm_end :: proc(b: ^Graph_Builder, gm: ^Graph_Match_Many, k: Graph_Block) {
+    graph_build_block_close(b, k)
+    if graph_reachable(b) { graph_jump(b, gm.join, .Synthetic, k.span) }
+}
+
+graph_build_match_many_end :: proc(b: ^Graph_Builder, gm: ^Graph_Match_Many) {
+    b.code.run = gm.join
+}
+
 // A defer's block: its code of its own — a run entered from
 // the block, ending in a return — built as its statements are checked, then
 // registered with the scope it is in (Run_Defer runs it at every exit; a

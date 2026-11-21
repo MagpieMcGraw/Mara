@@ -605,6 +605,7 @@ line_lead :: proc(t: Token) -> (lead: string, first: bool) {
 tp_match_arm_start :: proc(p: ^Tree_Parser) -> bool {
     k := tp_kind(p)
     if k == .Right_Brace || k == .End || k == .EOF { return true }
+    if (k == .Identifier || k == .Dot) && tp_tuple_arm_ahead(p) { return true }
     if k == .Dot && tp_peek(p) == .Identifier { return true }
     if k == .Identifier {
         #partial switch tp_peek(p) {
@@ -670,6 +671,18 @@ tp_match :: proc(p: ^Tree_Parser) -> Tree_Id {
     } else {
         subject = tp_condition(p)
     }
+    // (Several values, `match a, b`: each arm a pattern for each.)
+    many := subject != 0 && tp_kind(p) == .Comma
+    if many {
+        first, main := int(p.t.first[subject]), p.t.main[subject]
+        subjects := tp_items()
+        append(&subjects, subject)
+        for tp_kind(p) == .Comma {
+            tp_advance(p)
+            append(&subjects, tp_condition(p))
+        }
+        subject = tp_node(p, .Subjects, main, first, tp_list(p, subjects))
+    }
     braced := tp_open(p)
     tp_skip_newlines(p)
     arms := tp_items()
@@ -680,6 +693,8 @@ tp_match :: proc(p: ^Tree_Parser) -> Tree_Id {
         if tp_kind(p) == .Else {
             kw := tp_advance(p)
             append(&arms, tp_node(p, .Arm_Else, kw, arm_start, tp_arm_body(p)))
+        } else if many || tp_tuple_arm_ahead(p) {
+            append(&arms, tp_arm_tuple(p))
         } else if tp_kind(p) == .Dot && tp_peek(p) == .Identifier {
             tp_advance(p)
             variant := tp_advance(p)
@@ -702,6 +717,51 @@ tp_match :: proc(p: ^Tree_Parser) -> Tree_Id {
     }
     tp_close(p, braced)
     return tp_node(p, .Match, kw, start, u32(subject), tp_list(p, arms))
+}
+
+// An arm of a match on several values: a pattern for each value — its
+// variant (`V`, `.V`), with a name for its fields (`V v`), or `_` for any —
+// between commas, then its body.
+tp_arm_tuple :: proc(p: ^Tree_Parser) -> Tree_Id {
+    start := p.pos
+    pats := tp_items()
+    for {
+        at := p.pos
+        if tp_kind(p) == .Dot { tp_advance(p) }
+        if tp_kind(p) != .Identifier {
+            tp_error(p, tp_here(p), PARSE_MATCH_PATTERN, token_text(tp_tok(p)))
+            for k := tp_kind(p); k != .Newline && k != .Do && k != .Right_Brace && k != .EOF; k = tp_kind(p) { tp_advance(p) }
+            break
+        }
+        variant := tp_advance(p)
+        binding: Token_Id
+        if tp_kind(p) == .Identifier { binding = tp_advance(p) }
+        append(&pats, tp_node(p, .Pattern, variant, at, 0, u32(binding)))
+        if tp_kind(p) != .Comma { break }
+        tp_advance(p)
+    }
+    main := p.t.main[pats[0]] if len(pats) > 0 else Token_Id(start)
+    body := tp_arm_body(p)
+    return tp_node(p, .Arm_Tuple, main, start, body, tp_list(p, pats))
+}
+
+// Whether an arm of a match on several values starts here: patterns —
+// `.`, a name, a name for its fields — between commas, up to where an
+// arm's body starts (`do`, a line break, a `{`).
+tp_tuple_arm_ahead :: proc(p: ^Tree_Parser) -> bool {
+    pos, commas := p.pos, 0
+    kind :: proc(p: ^Tree_Parser, pos: int) -> Token_Kind { return p.tokens[pos].kind if pos < len(p.tokens) else .EOF }
+    for {
+        if kind(p, pos) == .Dot { pos += 1 }
+        if kind(p, pos) != .Identifier { return false }
+        pos += 1
+        if kind(p, pos) == .Identifier { pos += 1 }
+        #partial switch kind(p, pos) {
+        case .Comma:                     commas += 1; pos += 1; continue
+        case .Do, .Newline, .Left_Brace: return commas > 0
+        }
+        return false
+    }
 }
 
 // A dot arm's body is always its lines (no `do` form).

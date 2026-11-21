@@ -1,5 +1,6 @@
 package mara
 
+import "core:fmt"
 import "core:strings"
 
 // Lowering the rest of the statements and expressions: match, the builtins
@@ -17,6 +18,10 @@ lw_match :: proc(k: ^TC, s: Tree_Id) {
     subj := Tree_Id(tr.a[s])
     arms := tree_list(tr, tr.b[s])
     if subj == 0 { return }
+    if tr.tag[subj] == .Subjects {
+        lw_match_many(k, s)
+        return
+    }
     slot := NO_NODE
     subject := NO_VALUE
     st := tc_node_type(k, subj)
@@ -73,6 +78,72 @@ lw_match :: proc(k: ^TC, s: Tree_Id) {
         lw_scope(k, a.body)
         for u in checked { delete_key(&k.lower.bind_checks, u) }
         graph_build_arm_end(b, gm, blk)
+    }
+}
+
+// `match a, b { V, W … }` (tc_match_many): each value held as one value's
+// match holds it — a plain place, walked where it is needed; else held in a
+// local made first — then the switches on their tags to the first arm that
+// fits (graph_build_match_many), then each arm's block, its values' fields
+// bound in place.
+lw_match_many :: proc(k: ^TC, s: Tree_Id) {
+    tr := k.t
+    b := k.gb
+    span := tree_span(tr, s)
+    subjects := tree_list(tr, tr.a[tr.a[s]])
+    arms := tree_list(tr, tr.b[s])
+    subs := make([]Graph_Many_Subject, len(subjects), context.temp_allocator)
+    for subj, i in subjects {
+        sub := Graph_Many_Subject{slot = NO_NODE, t = tc_node_type(k, subj), is_self = tr.tag[tc_unparen(k, subj)] == .Self}
+        if !lw_pure_place(k, subj) {
+            sub.slot = graph_slot(b, "subject", nil, span)
+            sub.t = lw_store_into(k, subj, graph_dest_var(sub.slot, nil), span)
+            graph_build_typed(b, sub.slot, sub.t)
+        } else {
+            sub.subject = lw_expr(k, subj, .Place).v
+        }
+        sub.variants = len(tc_variant_names(sub.t))
+        subs[i] = sub
+    }
+    // (Each arm's tag for each value; an else's, any.)
+    plan := make([][]int, len(arms), context.temp_allocator)
+    for arm, i in arms {
+        plan[i] = make([]int, len(subjects), context.temp_allocator)
+        for &v in plan[i] { v = GRAPH_ANY_TAG }
+        if tr.tag[arm] != .Arm_Tuple { continue }
+        for pat, j in tree_list(tr, tr.b[arm]) {
+            if name := tc_text(tr.main[pat]); name != "_" { plan[i][j] = lw_variant_value(subs[j].t, name) }
+        }
+    }
+    gm := graph_build_match_many(b, span, subs, plan)
+    defer graph_build_match_many_end(b, gm)
+    for arm, i in arms {
+        body := tree_list(tr, tr.a[arm])
+        binds := make([dynamic]Graph_Bind, context.temp_allocator)
+        label := "else"
+        if tr.tag[arm] == .Arm_Tuple {
+            pats := tree_list(tr, tr.b[arm])
+            names := make([]string, len(pats), context.temp_allocator)
+            for pat, j in pats {
+                a := tc_pattern(k, subjects[j], pat, subs[j].t)
+                names[j] = a.variant if a.variant != "" else "_"
+                ut, is_union := distinct_base(subs[j].t).(^Type_Union)
+                if !is_union || a.variant == "" || a.bound == "" || ut.variant_structs[a.variant] == nil { continue }
+                append(&binds, Graph_Bind{place = j, variant = a.variant, bound = a.bound, bound_tok = a.bound_tok, payload = lw_variant_struct(ut, a.variant)})
+            }
+            label = fmt.aprintf("arm %s", strings.join(names, ", ", context.temp_allocator))
+        }
+        blk := graph_build_many_arm(b, gm, i, label, binds[:], lw_scope_arena(k, body, b.body.returned))
+        // (A binding of a value in place: its uses that need it, checked.)
+        checked := make([dynamic]Tree_Id, context.temp_allocator)
+        for bd in binds {
+            if subs[bd.place].slot != NO_NODE { continue }
+            check := LW_Bind_Check{union_t = subs[bd.place].t, variant = bd.variant, tag = lw_variant_value(subs[bd.place].t, bd.variant)}
+            append(&checked, ..lw_bind_checks(k, subjects[bd.place], body, bd.bound_tok, check))
+        }
+        lw_scope(k, body)
+        for u in checked { delete_key(&k.lower.bind_checks, u) }
+        graph_build_many_arm_end(b, gm, blk)
     }
 }
 
@@ -216,7 +287,7 @@ lw_fun_facts :: proc(k: ^TC) -> ^LW_Fun_Facts {
             }
         case .Method_Call:   // (a method taking ^Self: the receiver's address)
             if r, _ := lw_place_root(k, method_view(t, n).receiver); r != 0 { f.addressed[r] = true }
-        case .Arm_Variant:
+        case .Arm_Variant, .Pattern:
             if tok := Token_Id(t.b[n]); tok != 0 { f.views[tok] = true }
         case .Decl:
             v := decl_view(t, n)

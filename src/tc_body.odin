@@ -1477,6 +1477,10 @@ tc_match :: proc(k: ^TC, s: Tree_Id) {
     subj := Tree_Id(tr.a[s])
     arms := tree_list(tr, tr.b[s])
     if subj == 0 { return }
+    if tr.tag[subj] == .Subjects {
+        tc_match_many(k, s)
+        return
+    }
     st := tc_check(k, subj)
     // (A named union — `type U`, `distinct U` — matched as U is.)
     sb := distinct_base(st)
@@ -1495,6 +1499,10 @@ tc_match :: proc(k: ^TC, s: Tree_Id) {
     }
     covered := make(map[string]bool, context.temp_allocator)
     for arm in arms {
+        if tr.tag[arm] == .Arm_Tuple {
+            tc_error(k, tree_span(tr, arm), TYPE_MATCH_ARM_PATTERNS, len(tree_list(tr, tr.b[arm])), 1)
+            continue
+        }
         a := tc_match_arm(k, subj, arm, et, ut)
         name := a.variant
         tc_match_arm_ref(k, arm, a, st)
@@ -1610,6 +1618,159 @@ tc_match_arm :: proc(k: ^TC, subj, arm: Tree_Id, et: ^Type_Enum, ut: ^Type_Union
         }
     }
     return
+}
+
+// `match a, b { V, W … }`: several values, each a union or an enum (an
+// err's variants have no end); each arm a pattern for each — a variant of
+// its type, a union's fields bound where the arm names them (or to a value
+// that is a name, as one value's arm does), `_` for any; the first arm that
+// fits runs; every combination of variants covered, unless an else says
+// otherwise.
+tc_match_many :: proc(k: ^TC, s: Tree_Id) {
+    tr := k.t
+    span := tree_span(tr, s)
+    subjects := tree_list(tr, tr.a[tr.a[s]])
+    arms := tree_list(tr, tr.b[s])
+    types := make([]Type, len(subjects), context.temp_allocator)
+    ok, has_else := true, false
+    for subj, i in subjects {
+        types[i] = tc_check(k, subj)
+        #partial switch _ in distinct_base(types[i]) {
+        case ^Type_Union, ^Type_Enum:
+        case Type_Error: ok = false
+        case:
+            tc_error(k, tree_span(tr, subj), TYPE_MATCH_MANY_SUBJECT, type_name(types[i]))
+            ok = false
+        }
+    }
+    for arm, i in arms {
+        if tr.tag[arm] != .Arm_Else { continue }
+        has_else = true
+        if i != len(arms) - 1 { tc_error(k, span, TYPE_LAST_ARM_MATCH) }
+    }
+    // (Each arm's variants, a value's each: "" for any.)
+    rows := make([dynamic][]string, context.temp_allocator)
+    Restore :: struct { tok: Token_Id, was: Type, had: bool }
+    for arm in arms {
+        body := tree_list(tr, tr.a[arm])
+        if tr.tag[arm] != .Arm_Tuple {
+            tc_scope(k, body)
+            continue
+        }
+        pats := tree_list(tr, tr.b[arm])
+        if len(pats) != len(subjects) {
+            tc_error(k, tree_span(tr, arm), TYPE_MATCH_ARM_PATTERNS, len(pats), len(subjects))
+            ok = false
+            continue
+        }
+        row := make([]string, len(pats), context.temp_allocator)
+        restores := make([dynamic]Restore, context.temp_allocator)
+        for pat, i in pats {
+            if !ok { break }
+            a := tc_pattern(k, subjects[i], pat, types[i])
+            row[i] = a.variant
+            name := tc_text(tr.main[pat])
+            named := Token_Id(tr.b[pat])
+            ut, is_union := distinct_base(types[i]).(^Type_Union)
+            et, _ := distinct_base(types[i]).(^Type_Enum)
+            switch {
+            case name == "_":
+                if named != 0 { tc_error(k, tree_span(tr, pat), TYPE_PATTERN_ANY_NAMED, tc_text(named)) }
+                continue
+            case is_union && name not_in ut.tag_map:
+                tc_error(k, tree_span(tr, pat), TYPE_UNION_VARIANT, type_name(ut), name)
+                continue
+            case !is_union && name not_in et.variants:
+                tc_error(k, tree_span(tr, pat), TYPE_ENUM_VARIANT, type_name(et), name)
+                continue
+            case !is_union && named != 0:
+                tc_error(k, tree_span(tr, pat), TYPE_PATTERN_ENUM_NAMED, name, type_name(et), tc_text(named))
+            }
+            if decl := variant_decl(types[i], name); decl != 0 { tc_set_ref(k, pat, {decl, .Variant}) }
+            // (A union's fields bound in place, as one value's arm binds them.)
+            vs := ut.variant_structs[name] if is_union else nil
+            if vs == nil || a.bound == "" { continue }
+            was, had := tc_bound(k, a.bound_tok)
+            append(&restores, Restore{a.bound_tok, was, had})
+            tc_bind(k, a.bound, vs, {a.bound_tok, .Local})
+            k.lists[a.bound_tok] += {.View}
+            if a.bound_tok == tr.main[tc_unparen(k, subjects[i])] { k.lists[a.bound_tok] += {.Read} }
+        }
+        tc_scope(k, body)
+        #reverse for r in restores { tc_bound_restore(k, r.tok, r.was, r.had) }
+        append(&rows, row)
+    }
+    if has_else || !ok { return }
+    // (Every combination of the values' variants: a row's, or one in each
+    // place it says any.)
+    names := make([][]string, len(subjects), context.temp_allocator)
+    for t, i in types { names[i] = tc_variant_names(t) }
+    path := make([dynamic]string, context.temp_allocator)
+    all := make([]int, len(rows), context.temp_allocator)
+    for _, i in rows { all[i] = i }
+    if tc_match_gap(rows[:], names, 0, all, &path) {
+        shown := make([]string, len(types), context.temp_allocator)
+        for t, i in types { shown[i] = type_name(t) }
+        tc_error(k, span, TYPE_MATCH_MISSING_COMBINATION, strings.join(shown, ", ", context.temp_allocator), strings.join(path[:], ", ", context.temp_allocator))
+    }
+}
+
+// One value's pattern in an arm of a match on several: the variant it names
+// ("": `_`, any) and the name its fields are bound to with the token
+// declaring it — its own, or a value that is a name (tc_match_arm's rule).
+tc_pattern :: proc(k: ^TC, subj, pat: Tree_Id, t: Type) -> (a: Match_Arm) {
+    tr := k.t
+    name := tc_text(tr.main[pat])
+    if name == "_" { return }
+    a.variant = name
+    if bt := Token_Id(tr.b[pat]); bt != 0 {
+        a.bound, a.bound_tok = tc_text(bt), bt
+    } else if su := tc_unparen(k, subj); tr.tag[su] == .Ident {
+        a.bound, a.bound_tok = tc_name(k, su), tr.main[su]
+    }
+    return
+}
+
+// A union's or an enum's variants, in the order they're declared.
+tc_variant_names :: proc(t: Type) -> []string {
+    #partial switch v in distinct_base(t) {
+    case ^Type_Union:
+        return v.variants[:]
+    case ^Type_Enum:
+        out := make([dynamic]string, context.temp_allocator)
+        for name in v.variants { append(&out, name) }
+        decls := v.variant_decls
+        context.user_ptr = &decls
+        slice.sort_by(out[:], proc(x, y: string) -> bool {
+            d := (^map[string]Token_Id)(context.user_ptr)
+            return d[x] < d[y]
+        })
+        return out[:]
+    }
+    return nil
+}
+
+// Whether some combination of variants — one of each value's, from `p` on
+// — is taken by none of the arms `cands` (a row each: a variant, or "" for
+// any): `path` then says it. The variants no arm names in a place are
+// alike there: the first stands for them all.
+tc_match_gap :: proc(rows: [][]string, names: [][]string, p: int, cands: []int, path: ^[dynamic]string) -> bool {
+    if p == len(names) { return len(cands) == 0 }
+    other := false
+    for v in names[p] {
+        named := false
+        for c in cands { if rows[c][p] == v { named = true; break } }
+        if !named {
+            if other { continue }
+            other = true
+        }
+        sub := make([dynamic]int, context.temp_allocator)
+        for c in cands { if rows[c][p] == v || rows[c][p] == "" { append(&sub, c) } }
+        append(path, v)
+        if tc_match_gap(rows, names, p + 1, sub[:], path) { return true }
+        pop(path)
+    }
+    return false
 }
 
 // A struct's field initializer handing `#self` to anything — a call, an

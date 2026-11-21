@@ -59,6 +59,9 @@ Tree_Tag :: enum u8 {
     Arm_Dot,        // `.V`: main: the variant; a: list — the body
     Arm_Variant,    // `V`, `V binding`: main: the variant; a: list — the body; b: the binding
     Arm_Value,      // a: the value; b: list — the body
+    Subjects,       // a match's several values, `match a, b`: a: list — the values
+    Arm_Tuple,      // an arm of a match on several values: a: list — the body; b: list — the patterns
+    Pattern,        // one value's pattern in it: main: the variant, or `_`; b: the binding
     For_Range,      // `for i [: T] in lo..hi`, `for lo..hi`: a: rec {var (0: none), type, lo, hi, body: list}; b: its `..` or `:`
     For_Each,       // `for e[, i, …] [: T] in c`: a: rec {elem, the names after it: tokens, type, collection, body: list}
     For_C,          // `for init; cond; post`: a: rec {init, cond, post, body: list}
@@ -177,6 +180,9 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .Arm_Dot        = {a = .List},
     .Arm_Variant    = {a = .List, b = .Token},
     .Arm_Value      = {a = .Node, b = .List},
+    .Subjects       = {a = .List},
+    .Arm_Tuple      = {a = .List, b = .List},
+    .Pattern        = {b = .Token},
     .For_Range      = {a = .Rec, b = .Token, rec = {0 = .Token, 1 = .Node, 2 = .Node, 3 = .Node, 4 = .List}},
     .For_Each       = {a = .Rec, b = .Token, rec = {0 = .Token, 1 = .Tokens, 2 = .Node, 3 = .Node, 4 = .List}},
     .For_C          = {a = .Rec, rec = {0 = .Node, 1 = .Node, 2 = .Node, 3 = .List}},

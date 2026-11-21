@@ -334,7 +334,14 @@ lw_pure_place :: proc(k: ^TC, n: Tree_Id) -> bool {
     t := k.t
     #partial switch t.tag[n] {
     case .Paren: return lw_pure_place(k, Tree_Id(t.a[n]))
-    case .Ident, .Self: return true
+    case .Self: return true
+    case .Ident:
+        // (A type's name, a module's, a constant's, a variant's: no place —
+        // `Color.Red` a value.)
+        #partial switch tc_ref(k, n).kind {
+        case .Const, .Variant, .Fun, .Type, .Module, .Builtin: return false
+        }
+        return true
     case .Field, .Deref: return lw_pure_place(k, Tree_Id(t.a[n]))
     case .Index:
         #partial switch t.tag[tc_unparen(k, Tree_Id(t.b[n]))] {

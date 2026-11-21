@@ -665,7 +665,7 @@ point_hits :: proc(t: ^Tree, all_files: map[string][dynamic]^Source_File, spec: 
 @(private="file")
 ref_name_token :: proc(t: ^Tree, n: Tree_Id, name: string) -> (Token_Id, bool) {
     #partial switch t.tag[n] {
-    case .Arm_Dot, .Arm_Variant:   // (The variant a match's arm names; its body's last token is its body's.)
+    case .Arm_Dot, .Arm_Variant, .Pattern:   // (The variant a match's arm names; its body's last token is its body's.)
         return t.main[n], token_text(build_tokens[t.main[n]]) == name
     }
     if token_text(build_tokens[t.end[n] - 1]) == name { return t.end[n] - 1, true }
@@ -957,7 +957,7 @@ hit_op_calls :: proc(t: ^Tree, a: ^Annotations, hits: []Tree_Id, at: int) -> []T
 @(private="file")
 hit_variant_matched :: proc(t: ^Tree, n: Tree_Id) -> bool {
     #partial switch t.tag[n] {
-    case .Arm_Dot, .Arm_Variant: return true
+    case .Arm_Dot, .Arm_Variant, .Pattern: return true
     }
     cur := n
     for {

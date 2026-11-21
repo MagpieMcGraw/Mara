@@ -1099,6 +1099,20 @@ record_stmt :: proc(r: ^Name_Table, s: Tree_Id) {
                 record_leave(r)
             case .Arm_Value:
                 record_block(r, tree_list(t, t.b[arm]))
+            case .Arm_Tuple:
+                // (A value's binding, as one value's arm has it.)
+                record_enter(r, .Block, end = t.end[arm])
+                from := record_from_body(r, tree_list(t, t.a[arm]), t.end[arm])
+                subjects := tree_list(t, t.a[t.a[s]]) if t.tag[t.a[s]] == .Subjects else nil
+                for pat, i in tree_list(t, t.b[arm]) {
+                    if b := Token_Id(t.b[pat]); b != 0 {
+                        record_declare(r, tc_text(b), {b, .Local}, from)
+                    } else if i < len(subjects) && t.tag[subjects[i]] == .Ident && tc_text(t.main[pat]) != "_" {
+                        record_declare(r, tc_text(t.main[subjects[i]]), {t.main[subjects[i]], .Local}, from)
+                    }
+                }
+                record_body(r, tree_list(t, t.a[arm]))
+                record_leave(r)
             }
         }
     case .For_Range, .For_Each, .For_C:
