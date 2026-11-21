@@ -59,8 +59,3 @@ memory.txt
 view/layout.txt
 view/editor.txt
 view/colors.txt
-
-
-# A compiler folder for other projects (sox's update_compiler.bat copies it; release.sh made it)
-release/
-
