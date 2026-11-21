@@ -137,6 +137,10 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     case .Expr_Stmt:
         e := Tree_Id(t.a[s])
         if t.tag[e] == .Import { return }   // (`use m`: checked before its module — tc_check_uses)
+        if t.tag[e] == .Hash_Name && tc_text(Token_Id(t.a[e])) == "setter" {
+            tc_setter_mark(k, s)
+            return
+        }
         if tc_override(k, e) { return }
         k.several_ok = tc_unparen(k, e)   // (what it drops: said below)
         k.dropped, k.type_name_ok = k.several_ok, k.several_ok

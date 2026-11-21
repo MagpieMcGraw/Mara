@@ -83,6 +83,8 @@ TC :: struct {
     list_at:       Tree_Id,
     list_indexed:  [dynamic]List_Indexed,
     var_decls:     [dynamic]Token_Id,   // each local's declaration (List_Flag.Var)
+    setters:       [dynamic]Setter_Mark,   // each `#setter` fun (tc_setters_report) ...
+    field_writes:  [dynamic]Field_Write,   // ... and every field written, anywhere
     write_at:      Tree_Id,             // the name about to be checked as a write's root: no read of it
     no_read:       bool,                // tc_ref_type asked what a written name is
     lists_raw:     map[^Type_Scope]bool,   // structs read out of raw memory, seen (tc_lists_raw)
@@ -674,6 +676,7 @@ tc_check_finish :: proc(k: ^TC) -> ^Checked_Program {
     tc_validate_main(k, main)
     tc_validate_field_refs(k)
     tc_lists_report(k)
+    tc_setters_report(k)
     tc_blocks_end(k)
     diagnostics_sort(diagnosed)
 

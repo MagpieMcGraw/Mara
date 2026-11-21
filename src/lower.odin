@@ -473,6 +473,7 @@ lw_stmt :: proc(k: ^TC, s: Tree_Id) {
     case .Expr_Stmt:
         e := Tree_Id(t.a[s])
         if t.tag[e] == .Import { return }   // (`use m`: no code)
+        if t.tag[e] == .Hash_Name { return }   // (`#setter`: the checker's, no code)
         if lw_override(k, e) { return }
         // (A big result dropped: built in a temporary of its own, on the arena.)
         if _, held := lw_big_held(k, e, tc_node_type(k, e), .Explicit, tree_span(t, s)); held { return }

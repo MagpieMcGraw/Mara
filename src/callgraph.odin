@@ -181,7 +181,6 @@ cg_prints :: proc(t: ^Tree, n: Tree_Id) -> bool {
 // Where code runs: each node's innermost body or constant value the checker
 // checked (Annotations.bodies), by instance; and each default argument a
 // call takes, with those calls (Annotations.args).
-@(private="file")
 Cg_Runs :: struct {
     a:          ^Annotations,
     bodies:     map[Instance_Id][]Cg_Body,        // an instance's bodies, by where they begin (cg_owner)
@@ -199,7 +198,6 @@ Cg_Body :: struct {
     i, up:  i32,
 }
 
-@(private="file")
 cg_runs_make :: proc(a: ^Annotations, t: ^Tree) -> Cg_Runs {
     rc := Cg_Runs{a = a}
     // (Each instance's bodies, by where they begin — the wider first of two
@@ -237,7 +235,6 @@ cg_runs_make :: proc(a: ^Annotations, t: ^Tree) -> Cg_Runs {
     return rc
 }
 
-@(private="file")
 cg_runs_free :: proc(rc: ^Cg_Runs) {
     for _, list in rc.bodies { delete(list) }
     for _, list in rc.defaults { delete(list) }
@@ -265,7 +262,6 @@ cg_owner :: proc(rc: ^Cg_Runs, inst: Instance_Id, n: Tree_Id) -> int {
 // call takes it (`implied`); else the fun or struct whose body is innermost
 // around it, in its instance — none, in a constant's value or outside any
 // body.
-@(private="file")
 cg_runs_in :: proc(rc: ^Cg_Runs, key: Syntax_Id) -> (callers: []^Type_Scope, implied: bool) {
     inst, n := annot_split(key)
     if def, in_default := rc.in_default[n]; in_default {

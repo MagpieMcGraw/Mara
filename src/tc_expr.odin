@@ -1400,6 +1400,9 @@ tc_hash_name :: proc(k: ^TC, n: Tree_Id) -> Type {
         return Type_Atom{}
     case "web", "native", "windows", "linux", "mac", "profile_memory":
         return Type_Bool{}
+    case "setter":
+        tc_error(k, tree_span(k.t, n), TYPE_SETTER_NOT_IN_FUN)
+        return Type_Error{}
     }
     tc_unsupported(k, n, "this compiler name")
     return Type_Error{}
