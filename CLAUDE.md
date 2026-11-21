@@ -5,19 +5,16 @@ The goal is a production ready compiler for under 50k lines.
 
 # Building and running
 
-The compiler's source is in src/; both builds go in the repo root, beside code/, runtime/ and tools/.
+The compiler's source is in src/; the exe goes in the repo root, beside code/, runtime/ and tools/.
 
 The compiler (mara.exe, optimized — the one on the path):
 odin build src -o:speed -out:mara.exe
 
-The dev build beside it (mara_dev.exe, debug — what the test scripts run;
-MARA_EXE=... names another):
-odin build src -debug -out:mara_dev.exe
-
 Mara code:
 mara build game    	# build module "game" from all .mara files with `module game`
-mara build         	# build the module in the current directory (of several, the one named as the directory; else it asks which)
-mara build tools   	# with a build.mara here (`module build`, constants of code/build.mara's Build): the build named tools — its module, extra search dirs, out name, icon, flags
+mara build         	# build the module in the current directory. If there are several, tries to build the one named as the folder.
+
+"build.mara" file can be used to provide command line arguments to mara build.
 
 # Workflow
 
@@ -28,9 +25,7 @@ When implementing a feature, prefer hard errors over silent fallbacks for unhand
 
 # Testing
 
-The tests live beside the repo, in C:\Code\test (not in git). Always build tests from inside that folder so the resulting `test.exe` and `output.ll` land there instead of polluting the repo root.
-
-The test suite (run.sh in the tests' folder) must not block work. Once a change passes the tests aimed at it, rebuild mara.exe (keep the old one as mara.prev.exe) and commit. Then run the suite in the background against a git worktree of that commit (MARA_ROOT and MARA_EXE pointed at it, a copy of the tests' folder), with JOBS=4. Keep working meanwhile. Fix whatever it finds in a new commit. One run covers a batch of small changes.
+We don't do any.
 
 # Surprise
 
@@ -38,62 +33,4 @@ I may make small edits to various files while you are working. Usually touching 
 
 # Analyzer (`mara ask`)
 
-A graph-based code analyzer that reveals the structure and data flow of Mara
-programs. Call from cwd where you have your module.
-
-MODULES ANALYSIS ONLY RETURNS BASIC OVERVIEWS FOR NOW
-ANALYSIS DEFAULTS TO WHAT'S NATIVE TO THE NAME
-
-mara ask                # info about the modules in cwd
-mara ask name           # info about a module, struct, function, or variable
-
-3 types of analysis: type and call and flow
-2 types of direction: above and below
-
-For type analysis:
-above|bfor - what I contain, what I need to be constructed
-below|aftr - who contains me after I have been constructed
-
-For call analysis:
-above|bfor - Function calls that supply me, what I call
-below|aftr - Function calls that I supply, who calls me
-
-For flow analysis:
-above|bfor - the tree of variables that supply me, inlcuding across function calls
-below|aftr - the tree of variables that I supply, including across function calls
-
-Other arguments:
-mara ask name 2					# number - limit analysis depth: a call or type tree defaults to 1 (`all` for every level), flow to infinite
-mara ask name in scope 			# limit analysis to scope
-mara ask name at scope or file 	# location of name
-UPDATE TOOL TO NEW VERSIONS OF in AND at
-
-
-Argument matrix
-
-module type above   # structs this module imports and uses
-module type below   # structs defined in this module, imported and used elsewhere
-struct type above   # structs that are fields of this struct
-struct type below   # structs that this struct is a field of
-fun    type above   # the type analysis of this function's arguments
-fun    type below   # the type analysis of this function's return values
-var    type above   # flowy - the types of variables that supply me
-var    type below   # flowy - the types of variables that I supply
-
-module call above   # functions this module imports and calls
-module call below   # functions defined in this module, imported and called elsewhere
-struct call above   # functions that need to be called to make this struct
-struct call below   # functions that take this struct as an arg
-fun    call above   # functions called by this function
-fun    call below   # functions that call this function, and dispatch blocks
-var    call above   # function calls which supply this variable
-var    call below   # function calls this variable supplies
-
-var    flow above   # chain of variables and operations that supply this variable
-var    flow below   # chain of variables and operations that this variable supplies
-fun    flow above   # `flow above` on all call sites of this function
-fun    flow below   # `flow below` on all call sites of this function
-struct flow above   # `flow above` on all fields of all instances of this struct
-struct flow below   # `flow below` on all fields of all instances of this struct
-module flow above   # `flow above` on all instances of everything in the module
-module flow below   # `flow below` on all instances of everything in the module
+It provides various data, including forward and backward slice. Use "mara ask help" for the full guide.
