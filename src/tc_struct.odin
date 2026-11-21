@@ -722,6 +722,10 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
 tc_entry_field :: proc(k: ^TC, e: Tree_Id, sd: ^Scope_Body, span: Span) -> (Struct_Type_Field, bool) {
     path := entry_path(k.t, e)
     f := sd.fields[sd.field_map[path[0]]]
+    // (The fields past the first, kept for the tools: what `mara ask` lists
+    // as written — Annotations.entry_fields.)
+    more: [dynamic]Token_Id
+    defer if len(more) > 0 { k.annot.entry_fields[tc_sid(k, e)] = more[:] }
     for name in path[1:] {
         if fa, is_array := distinct_base(f.type_).(^Type_Fixed_Array); is_array && len(name) == 1 && is_swizzle_field(name, fa.size) {
             f = Struct_Type_Field{name = name, type_ = fa.elem}
@@ -738,6 +742,7 @@ tc_entry_field :: proc(k: ^TC, e: Tree_Id, sd: ^Scope_Body, span: Span) -> (Stru
             return {}, false
         }
         f = ts.fields[idx]
+        append(&more, f.decl)
     }
     return f, true
 }

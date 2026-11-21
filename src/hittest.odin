@@ -1220,8 +1220,9 @@ hit_holds_field :: proc(ty: Type, decl: Token_Id, known: ^map[^Type_Scope]bool) 
 }
 
 // Where the field declared at `decl` is written without being named: a value
-// that holds it assigned whole, a literal's entry by position. Only those on
-// the places asked about (none: every value of its struct).
+// that holds it assigned whole, a literal's entry by position — or named past
+// a literal entry's first name, `Holder() {obj.scale = v}` (entry_fields).
+// Only those on the places asked about (none: every value of its struct).
 @(private="file")
 hit_field_writes :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, uses: ^[dynamic]Hit_Use, here: u16, f: ^Place_Finder, asked: []Place) {
     known := make(map[^Type_Scope]bool, allocator = context.temp_allocator)
@@ -1259,6 +1260,13 @@ hit_field_writes :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id, uses: ^[dyna
                 }
                 for e, at in entries {
                     if at < len(user) && user[at].decl == decl { entry(uses, t, f, asked, decl, n, e, Instance_Id(i), here) }
+                }
+            case .Named_Entry:
+                for d in a.entry_fields[annot_key(Instance_Id(i), n)] or_else nil {
+                    if d == decl {
+                        entry(uses, t, f, asked, decl, t.parent[n], n, Instance_Id(i), here)
+                        break
+                    }
                 }
             }
         }

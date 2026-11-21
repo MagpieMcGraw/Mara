@@ -111,6 +111,7 @@ Annotations :: struct {
     err_returns: map[Syntax_Id]u32,          // an err value returned, `return …, e`: its site's atom + 1
     size_of:    map[Syntax_Id]Type,          // a size_of's type
     dot_bases:  map[Syntax_Id]Tree_Id,       // a `.len` in a subscript: the subscript's base
+    entry_fields: map[Syntax_Id][]Token_Id,  // a named entry's path past its first name, `obj.scale = v`: each field it writes in part or whole after obj (its ref), in order
     known:      map[Syntax_Id]Known_Value,   // a field whose value the checker knows: an enum's variant, an array's length, a text constant's; a generic's size param named as a value
 
     // Each fun's and struct's variables, in the order its body binds them.
