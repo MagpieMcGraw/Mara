@@ -70,6 +70,11 @@ next_item :: fun(list: ^[]$T) -> ^T {
 	return &list[n]
 }
 
+// Whether list has room for one more item: its len is under its cap.
+has_space :: fun(list: []$T) -> bool {
+	return list.len < list.cap
+}
+
 // A new list: a's items, then b's — of a's own type, its room (a Path
 // joined is a Path: `cwd ++ "/code"`), a itself as it was. `a ++ b`. Past the
 // room, the program stops, as an add does. (`&a ++ b` adds into a itself.)
