@@ -366,15 +366,14 @@ tc_alias_sight :: proc(k: ^TC, s: Tree_Id, owner: ^Type_Scope) {
 }
 
 // Ok is 0 in every error set, the one no-error value: `.Ok` that only error
-// sets name is theirs, not an ambiguity — the first set's, the same one
-// every build.
+// sets name is theirs, not an ambiguity — the set first by name, the same
+// one every build and every check (sets are numbered in the order checked).
 tc_error_ok :: proc(k: ^TC, name: string, owners: ^[dynamic]string) {
     if name != "Ok" || len(owners) < 2 { return }
     first := owners[0]
     for o in owners {
-        et := k.table.enums[o]
-        if !et.is_error_kind { return }
-        if et.error_set_id < k.table.enums[first].error_set_id { first = o }
+        if !k.table.enums[o].is_error_kind { return }
+        if o < first { first = o }
     }
     clear(owners)
     append(owners, first)

@@ -1066,24 +1066,37 @@ hit_write_variants :: proc(b: ^strings.Builder, t: ^Tree, a: ^Annotations, decls
 }
 
 // A variant's value, the variant its declaring token `decl` names: its enum's
-// or error set's number for it, or its union's tag; and the tag's type, ""
-// for the default (i64). ok false: no type has it, or no program was checked.
-hit_variant_value :: proc(checked: ^Checked_Program, decl: Token_Id) -> (value: int, tag_type: string, ok: bool) {
+// number for it, or its union's tag; and the tag's type, "" for the default
+// (i64). An error set's variant: its place instead, 1 up, and `of` how many
+// the set has (its number holds the set's, which is the order sets were
+// checked in — serve's differs from a build's). ok false: no type has it, or
+// no program was checked.
+hit_variant_value :: proc(checked: ^Checked_Program, decl: Token_Id) -> (value: int, tag_type: string, of: int, ok: bool) {
     if checked == nil || decl == 0 { return }
     name := token_text(build_tokens[decl])
     for _, e in checked.table.enums {
-        if d, has := e.variant_decls[name]; has && d == decl { return e.variants[name], e.tag_type, true }
+        d, has := e.variant_decls[name]
+        if !has || d != decl { continue }
+        if e.is_error_kind { return e.variants[name] & 0xFFFF, "", len(e.variant_decls), true }
+        return e.variants[name], e.tag_type, 0, true
     }
     for _, u in checked.table.unions {
-        if vs := u.variant_structs[name] or_else nil; vs != nil && vs.decl == decl { return u.tag_map[name], u.tag_type, true }
+        if vs := u.variant_structs[name] or_else nil; vs != nil && vs.decl == decl { return u.tag_map[name], u.tag_type, 0, true }
     }
     return
 }
 
-// ", value 3" (", value 3 (u8)" for a tag type of its own) — "" when unknown.
+// ", value 3" (", value 3 (u8)" for a tag type of its own), an error set's
+// ", 2nd of 5" — "" when unknown.
 hit_variant_value_text :: proc(checked: ^Checked_Program, decl: Token_Id) -> string {
-    value, tag_type, ok := hit_variant_value(checked, decl)
+    value, tag_type, of, ok := hit_variant_value(checked, decl)
     if !ok { return "" }
+    if of > 0 {
+        SUFFIX := [4]string{"th", "st", "nd", "rd"}
+        suffix := "th"
+        if (value % 100 < 11 || value % 100 > 13) && value % 10 < 4 { suffix = SUFFIX[value % 10] }
+        return fmt.tprintf(", %d%s of %d", value, suffix, of)
+    }
     if tag_type != "" { return fmt.tprintf(", value %d (%s)", value, tag_type) }
     return fmt.tprintf(", value %d", value)
 }
