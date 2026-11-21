@@ -3,7 +3,7 @@ package mara
 import "core:slice"
 import "core:strings"
 
-// `#setter` in a fun's body: the fields it writes — it or a helper only it
+// `set_x :: #setter (…) {…}`: the fields it writes — it or a helper only it
 // calls — are written by it alone. Anywhere else, a write of one is warned:
 // it skips what the setter keeps in step (`set_scale` writes scale and
 // radius). The struct's own constructor may write them; a field has one
@@ -12,15 +12,10 @@ import "core:strings"
 Setter_Mark :: struct { fun: ^Type_Scope, span: Span }
 Field_Write :: struct { decl: Token_Id, at: Syntax_Id }   // (its place: at's node)
 
-// `#setter` as a statement: the fun whose body it is in, a setter.
-tc_setter_mark :: proc(k: ^TC, s: Tree_Id) {
-    span := tree_span(k.t, s)
-    if k.body == nil || k.body.kind != .Fun {
-        tc_error(k, span, TYPE_SETTER_NOT_IN_FUN)
-        return
-    }
-    for m in k.setters { if m.fun == k.body { return } }
-    append(&k.setters, Setter_Mark{k.body, span})
+// A fun marked `#setter` (span: the mark), its body about to be checked.
+tc_setter_mark :: proc(k: ^TC, fun: ^Type_Scope, span: Span) {
+    for m in k.setters { if m.fun == fun { return } }
+    append(&k.setters, Setter_Mark{fun, span})
 }
 
 // A write's target: each field it writes, its own or one it is part of

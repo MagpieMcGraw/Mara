@@ -988,15 +988,14 @@ example_atom :: fun() {
 // `#setter`: a fun that alone writes the fields it writes.
 //
 // Fields that must change together, like a scale and the radius made from
-// it, are written by one fun marked `#setter`. A write of them anywhere
+// it, are written by one fun marked `#setter` after its `::`. A write of them anywhere
 // else is warned; the struct's own body and helpers only the setter calls
 // may write them too. A field has one setter.
 example_setter :: fun() {
 	Ball :: struct {
 		scale: f32 = 1
 		radius: f32 = 0.5
-		set_scale :: (b: ^Ball, s: f32) {
-			#setter
+		set_scale :: #setter (b: ^Ball, s: f32) {
 			b.scale = s
 			b.radius = s / 2
 		}

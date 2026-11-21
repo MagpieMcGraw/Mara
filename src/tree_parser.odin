@@ -256,9 +256,11 @@ tp_stmt :: proc(p: ^Tree_Parser) -> Tree_Id {
             return tp_node(p, .Allocator, hash, start, u32(arena))
         }
         if tp_peek(p) == .Identifier && tp_text(p, 1) == "setter" {
-            // `#setter` in a fun's body: what it writes, written by it alone (tc_setter_mark).
-            e := tp_primary(p)
-            return tp_node(p, .Expr_Stmt, Token_Id(start), start, u32(e))
+            // (In a body, where it once went: said where it goes now.)
+            tp_error(p, tp_here(p), PARSE_SETTER_PLACE)
+            hash := tp_advance(p)
+            tp_advance(p)   // `setter`
+            return tp_node(p, .Expr_Stmt, hash, start)
         }
         if tp_peek(p) == .Identifier && tp_text(p, 1) == "packed" {
             tp_error(p, tp_here(p), PARSE_PACKED_NEEDS_STRUCT_DECL)
@@ -958,6 +960,19 @@ tp_try_assign :: proc(p: ^Tree_Parser) -> (Tree_Id, bool) {
                 tp_advance(p)   // `packed`
                 if tp_kind(p) != .Struct { tp_error(p, hash, PARSE_PACKED_NEEDS_STRUCT_DECL) }
                 value = tp_scope_def(p, .Struct_Def, hash)
+            } else if tp_peek(p) == .Identifier && tp_text(p, 1) == "setter" {
+                // (`set_x :: #setter (o: ^T, v: V) {…}`: what it writes, written
+                // by it alone — tc_setter_mark.)
+                hash := tp_advance(p)
+                tp_advance(p)   // `setter`
+                #partial switch tp_kind(p) {
+                case .Fun:        value = tp_scope_def(p, .Fun_Def, hash)
+                case .Left_Paren: if tp_paren_starts_fun(p) { value = tp_scope_def(p, .Fun_Def, hash, bare = true) }
+                }
+                if value == 0 {
+                    tp_error(p, hash, PARSE_SETTER_PLACE)
+                    if tp_kind(p) == .Struct { value = tp_scope_def(p, .Struct_Def, 0) }   // (read on as written)
+                }
             }
         }
         if value == 0 && tp_kind(p) == .Identifier && tp_text(p) == "type" {
@@ -2356,7 +2371,10 @@ tp_primary :: proc(p: ^Tree_Parser, allow_dot := true) -> Tree_Id {
                 inner := tp_primary(p, allow_dot)
                 if tag := p.t.tag[inner]; tag != .Index && tag != .Slice { tp_error(p, hash, PARSE_BIG_ENDIAN_NEEDS_BYTE_READ) }
                 result = tp_node(p, .Big_Endian, hash, start, u32(inner))
-            case "caller_name", "caller_span", "web", "native", "windows", "linux", "mac", "profile_memory", "setter":
+            case "caller_name", "caller_span", "web", "native", "windows", "linux", "mac", "profile_memory":
+                result = tp_node(p, .Hash_Name, hash, start, u32(name))
+            case "setter":
+                tp_error(p, hash, PARSE_SETTER_PLACE)
                 result = tp_node(p, .Hash_Name, hash, start, u32(name))
             case:
                 tp_error(p, hash, PARSE_UNKNOWN_INTRINSIC, token_text(build_tokens[name]))

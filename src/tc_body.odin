@@ -32,6 +32,7 @@ tc_scope_body :: proc(k: ^TC, sc: ^TC_Scope) {
         k.body, k.vars, k.in_defer, k.loops = outer, outer_vars, outer_defer, outer_loops
     }
     append(&k.annot.bodies, Annot_Body{ts, tc_instance(k, sc.node), tree_lo(k.t, sc.node), sc.node})
+    if v.setter != 0 { tc_setter_mark(k, ts, Span{at = v.setter, tok = v.setter, end = v.setter + 2}) }
     tc_register_defs(k, sc)
     // (Its params and named results — locals: its variables, an intrinsic's
     // too, though no code of its reads them. Bound before its constants: a
@@ -137,10 +138,6 @@ tc_stmt :: proc(k: ^TC, s: Tree_Id) {
     case .Expr_Stmt:
         e := Tree_Id(t.a[s])
         if t.tag[e] == .Import { return }   // (`use m`: checked before its module — tc_check_uses)
-        if t.tag[e] == .Hash_Name && tc_text(Token_Id(t.a[e])) == "setter" {
-            tc_setter_mark(k, s)
-            return
-        }
         if tc_override(k, e) { return }
         k.several_ok = tc_unparen(k, e)   // (what it drops: said below)
         k.dropped, k.type_name_ok = k.several_ok, k.several_ok
