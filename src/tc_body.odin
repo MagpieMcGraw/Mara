@@ -1300,10 +1300,9 @@ tc_array_assign :: proc(k: ^TC, span: Span, name: string, fa: ^Type_Fixed_Array,
     }
     #partial switch v in vt {
     case ^Type_Fixed_Array:
+        // (Its room: tc_value_at's, as at every use.)
         if types_incompatible(fa.elem, v.elem) {
             tc_error(k, span, TYPE_CANNOT_ASSIGN_VARIABLE_TYPE, type_name(vt), name, type_name(fa))
-        } else if v.size > 0 && v.size > fa.size {
-            tc_error(k, span, TYPE_ARRAY_ELEMENTS_CAPACITY, v.size, name, fa.size)
         }
     case ^Type_Partial_Array:
         size := v.size

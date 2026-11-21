@@ -251,6 +251,7 @@ tc_index_assign :: proc(k: ^TC, s, target, value: Tree_Id, op_tok: Token_Id = 0)
     }
     vt := tc_store_at(k, value, op_tok, target, s)
     tc_settle(k, diag, elem)
+    tc_array_room(k, vt, elem, span)
     if !is_numeric(it) && !is_any(it) {
         tc_error(k, span, TYPE_ARRAY_INDEX_NUMBER, type_name(it))
     } else if !coerces_to_index_width(it) {

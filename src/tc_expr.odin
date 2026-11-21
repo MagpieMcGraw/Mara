@@ -1056,14 +1056,22 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
 tc_value_at :: proc(k: ^TC, n: Tree_Id, vt, t: Type, span: Span) {
     tc_flow_use(k, vt, t, span)
     if is_infer(vt) { tc_literal_overflow(k, n, t, span) }
-    // (A fixed array into a list, `ints : [2]i64 = [1, 2, 3]`: its items
-    // must fit in the list's room, known now.)
-    if pa, to_list := distinct_base(t).(^Type_Partial_Array); to_list && pa.text == 0 {
-        if fa, from_fixed := distinct_base(vt).(^Type_Fixed_Array); from_fixed && fa.size > pa.size {
-            tc_error(k, span, TYPE_ARRAY_PAST_LIST_ROOM, fa.size, type_name(t), pa.size)
-        }
-    }
+    tc_array_room(k, vt, t, span)
     tc_settle(k, n, t)
+}
+
+// A fixed array into a list or a fixed array — `ints : [2]i64 = [1, 2, 3]`,
+// `xs = [three(n)]`, an argument, a field, an element: its items must fit,
+// known now. A shorter one leaves the rest zero.
+tc_array_room :: proc(k: ^TC, vt, t: Type, span: Span) {
+    fa, from_fixed := distinct_base(vt).(^Type_Fixed_Array)
+    if !from_fixed { return }
+    #partial switch to in distinct_base(t) {
+    case ^Type_Partial_Array:
+        if to.text == 0 && fa.size > to.size { tc_error(k, span, TYPE_ARRAY_PAST_LIST_ROOM, fa.size, type_name(t), to.size) }
+    case ^Type_Fixed_Array:
+        if fa.size > to.size && !types_incompatible(to, fa) { tc_error(k, span, TYPE_ARRAY_PAST_LIST_ROOM, fa.size, type_name(t), to.size) }
+    }
 }
 
 // Every flow is a use of a binding of no written width (unify_infer_concrete):
