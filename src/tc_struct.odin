@@ -672,10 +672,7 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
             for f, i in sd.fields {
                 if fits && types_incompatible(f.type_, returns[i]) { fits = false }
             }
-            if fits {
-                for f in sd.fields { tc_note_field_write(k, f.decl, entries[0]) }
-                return
-            }
+            if fits { return }
             tc_one_value(k, call, len(returns))   // (no spread: its values into one field)
         }
         user := sd.fields[first_user_field(sd):]
@@ -684,7 +681,6 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
         }
         for e, i in entries {
             if i >= len(user) { break }
-            tc_note_field_write(k, user[i].decl, e)
             tc_literal_field(k, e, user[i], i, "", span, positional = true, probed = probed if i == 0 else nil)
         }
         return
@@ -726,7 +722,6 @@ tc_literal_fields :: proc(k: ^TC, n: Tree_Id, entries: []Tree_Id, sd: ^Scope_Bod
 tc_entry_field :: proc(k: ^TC, e: Tree_Id, sd: ^Scope_Body, span: Span) -> (Struct_Type_Field, bool) {
     path := entry_path(k.t, e)
     f := sd.fields[sd.field_map[path[0]]]
-    tc_note_field_write(k, f.decl, e)   // (each field on the path written, in part or whole: tc_setters_report)
     for name in path[1:] {
         if fa, is_array := distinct_base(f.type_).(^Type_Fixed_Array); is_array && len(name) == 1 && is_swizzle_field(name, fa.size) {
             f = Struct_Type_Field{name = name, type_ = fa.elem}
@@ -743,7 +738,6 @@ tc_entry_field :: proc(k: ^TC, e: Tree_Id, sd: ^Scope_Body, span: Span) -> (Stru
             return {}, false
         }
         f = ts.fields[idx]
-        tc_note_field_write(k, f.decl, e)
     }
     return f, true
 }

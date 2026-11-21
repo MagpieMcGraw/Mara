@@ -72,7 +72,7 @@ Tree_Tag :: enum u8 {
 
     // --- definitions: a Define's value ---
     Fun_Def,        // main: `fun`; a: rec {generics: list, params: list, returns: list,
-                    // body: list, intrinsic}; b: `#setter`'s `#`
+                    // body: list, intrinsic}
     Struct_Def,     // main: `struct`/`class`; a: as Fun_Def's; b: `#packed`'s `#`
     Intrinsic_Body, // `{ @llvm.a.b }`: main: `@`; a: tokens — the name's parts
     Param_Group,    // `a, b: T = x, y`, `a := x`: main: the first name; a: tokens — the
@@ -532,7 +532,6 @@ Scope_View :: struct {
     generics, params, returns, body: []Tree_Id,
     intrinsic:                       Tree_Id,
     packed:                          Token_Id,   // a struct's `#packed`
-    setter:                          Token_Id,   // a fun's `#setter`
 }
 
 scope_view :: proc(t: ^Tree, n: Tree_Id) -> Scope_View {
@@ -547,7 +546,6 @@ scope_view :: proc(t: ^Tree, n: Tree_Id) -> Scope_View {
         intrinsic = Tree_Id(r[4]),
     }
     if t.tag[n] == .Struct_Def { v.packed = Token_Id(t.b[n]) }
-    if t.tag[n] == .Fun_Def { v.setter = Token_Id(t.b[n]) }
     return v
 }
 

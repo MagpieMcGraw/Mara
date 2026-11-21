@@ -150,7 +150,6 @@ tc_write_root :: proc(k: ^TC, target: Tree_Id) -> Tree_Id {
 // A write to `target`, checked: the local it's rooted at is written — or
 // read, when the write goes through a pointer, a view, or to a slice's items.
 tc_var_written :: proc(k: ^TC, target: Tree_Id) {
-    tc_note_field_writes(k, target)
     tr := k.t
     cur := target
     through := false

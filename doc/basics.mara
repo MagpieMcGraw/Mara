@@ -985,28 +985,6 @@ example_atom :: fun() {
 	print(who, size_of(atom))              // example_atom 4
 }
 
-// `#setter`: a fun that alone writes the fields it writes.
-//
-// Fields that must change together, like a scale and the radius made from
-// it, are written by one fun marked `#setter` after its `::`. A write of them anywhere
-// else is warned; the struct's own body and helpers only the setter calls
-// may write them too. A field has one setter.
-example_setter :: fun() {
-	Ball :: struct {
-		scale: f32 = 1
-		radius: f32 = 0.5
-		set_scale :: #setter (b: ^Ball, s: f32) {
-			b.scale = s
-			b.radius = s / 2
-		}
-	}
-	ball : Ball
-	p := &ball
-	p.set_scale(4)
-	print(ball.radius)                     // 2
-	// ball.scale = 3                      // warned: radius not kept in step
-}
-
 // `#allocator`: the program's arena, where values of 1 KB or more live —
 // named once, at the top of the module main is in or among main's own
 // statements (see arenas.mara). main's command line is its parameter,
@@ -1116,7 +1094,6 @@ main :: fun() {
 	example_slice()
 	example_cstring()
 	example_atom()
-	example_setter()
 	example_allocator()
 	example_Self()
 	example_void()
