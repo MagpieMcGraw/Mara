@@ -1056,21 +1056,35 @@ tc_call_core :: proc(k: ^TC, n: Tree_Id, name: string, args: []Tree_Id,
 tc_value_at :: proc(k: ^TC, n: Tree_Id, vt, t: Type, span: Span) {
     tc_flow_use(k, vt, t, span)
     if is_infer(vt) { tc_literal_overflow(k, n, t, span) }
-    tc_array_room(k, vt, t, span)
+    tc_array_room(k, n, vt, t, span)
     tc_settle(k, n, t)
 }
 
-// A fixed array into a list or a fixed array — `ints : [2]i64 = [1, 2, 3]`,
-// `xs = [three(n)]`, an argument, a field, an element: its items must fit,
-// known now. A shorter one leaves the rest zero.
-tc_array_room :: proc(k: ^TC, vt, t: Type, span: Span) {
+// A fixed array (value n) into a list or a fixed array — `ints : [2]i64 =
+// [1, 2, 3]`, `xs = [three(n)]`, an argument, a field, an element: its items
+// must fit, known now. A shorter literal leaves the rest zero; any other
+// fixed array goes only where one of its length goes (the user's call), a
+// slice copying part of one.
+tc_array_room :: proc(k: ^TC, n: Tree_Id, vt, t: Type, span: Span) {
     fa, from_fixed := distinct_base(vt).(^Type_Fixed_Array)
     if !from_fixed { return }
     #partial switch to in distinct_base(t) {
     case ^Type_Partial_Array:
         if to.text == 0 && fa.size > to.size { tc_error(k, span, TYPE_ARRAY_PAST_LIST_ROOM, fa.size, type_name(t), to.size) }
     case ^Type_Fixed_Array:
-        if fa.size > to.size && !types_incompatible(to, fa) { tc_error(k, span, TYPE_ARRAY_PAST_LIST_ROOM, fa.size, type_name(t), to.size) }
+        if fa.size == to.size || types_incompatible(to, fa) { return }
+        literal := n == 0
+        if n != 0 {
+            #partial switch k.t.tag[tc_unparen(k, n)] {
+            case .Array, .Literal, .Broadcast, .String: literal = true
+            }
+        }
+        if !literal {
+            least := min(fa.size, to.size)
+            tc_error(k, span, TYPE_FIXED_ARRAY_OTHER_LENGTH, type_name(vt), type_name(t), least, least)
+        } else if fa.size > to.size {
+            tc_error(k, span, TYPE_ARRAY_PAST_LIST_ROOM, fa.size, type_name(t), to.size)
+        }
     }
 }
 

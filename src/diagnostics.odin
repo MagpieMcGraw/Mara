@@ -456,6 +456,7 @@ TYPE_INDEX_OUT_OF_BOUNDS_CONST :: "index %d out of bounds — array has %d eleme
 TYPE_INDEX_OTHER_KIND :: "'%s' is indexed by %s, but '%s' is of type %s: index it with %s's values or an integer"
 TYPE_INDEX_OTHER_KIND_NEAR :: "'%s' is indexed by %s, but '%s' is of type %s — did you mean '%s'?"
 TYPE_ARRAY_PAST_LIST_ROOM :: "%d items don't fit in a %s: it has room for %d"
+TYPE_FIXED_ARRAY_OTHER_LENGTH :: "a %s doesn't go where a %s goes: fixed arrays of different lengths — copy through a slice, `x[0:%d] = v[0:%d]`"
 TYPE_FLOAT_DOESNT_FIT_CONST ::"%v doesn't fit in %s"
 TYPE_SHIFT_COUNT_CONST :: "shift by %d, outside 0..%d for %s"
 TYPE_SLICE_OUT_OF_BOUNDS_CONST :: "slice [%d:%d] out of bounds — array has %d elements (needs 0 <= low <= high <= %d)"
