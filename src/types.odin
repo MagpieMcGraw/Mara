@@ -170,8 +170,8 @@ types_put :: proc(h: Types_Held) {
 }
 
 // The tables as they are, copied (a check's kept part's), and back to that:
-// the shapes made since forgotten, the array bindings since dropped. (The
-// copy stays the caller's, to go back to again.)
+// the shapes made since freed, the array bindings since dropped. (The copy
+// stays the caller's, to go back to again.)
 types_copy :: proc() -> (h: Types_Held) {
     heap := runtime.heap_allocator()
     h.shapes = make(map[Type_Shape]rawptr, max(len(g_type_shapes), 16), heap)
@@ -182,6 +182,10 @@ types_copy :: proc() -> (h: Types_Held) {
 }
 
 types_back_to :: proc(h: Types_Held) {
+    // (What named those made since is gone: the arena put back, serve_put_back.)
+    held := make(map[rawptr]bool, len(h.shapes), context.temp_allocator)
+    for _, p in h.shapes { held[p] = true }
+    for _, p in g_type_shapes { if !held[p] { free(p, runtime.heap_allocator()) } }
     clear(&g_type_shapes)
     for shape, made in h.shapes { g_type_shapes[shape] = made }
     resize(&g_infer_arrays, len(h.arrays))
