@@ -96,21 +96,24 @@ contexts:
 
   functions-and-declarations:
     # name :: fun(...) — function definition, however the name is capitalized
-    - match: '\b([[:alpha:]_][[:alnum:]_]*)\s*(:)\s*(:)\s*(fun)'
+    # (`name :: #setter fun(...)` too)
+    - match: '\b([[:alpha:]_][[:alnum:]_]*)\s*(:)\s*(:)\s*(?:(#setter)\s*)?(fun)'
       captures:
         1: meta.function.mara entity.name.function.mara
         2: keyword.operator.mara
         3: keyword.operator.mara
-        4: storage.type.mara
+        4: keyword.other.directive.mara
+        5: storage.type.mara
 
     # name :: (params) — a function definition, its `fun` left off:
     # the ( opens params — (), ($T…, (name: …, (a, b: …, or the line's end —
-    # not a constant's parens, N :: (2 + 3) * 4
-    - match: '\b([[:alpha:]_][[:alnum:]_]*)\s*(:)\s*(:)\s*(?=\(\s*(\)|\$|[[:alpha:]_][[:alnum:]_]*\s*[:,](?!:)|$))'
+    # not a constant's parens, N :: (2 + 3) * 4 (`name :: #setter (params)` too)
+    - match: '\b([[:alpha:]_][[:alnum:]_]*)\s*(:)\s*(:)\s*(?:(#setter)\s*)?(?=\(\s*(\)|\$|[[:alpha:]_][[:alnum:]_]*\s*[:,](?!:)|$))'
       captures:
         1: meta.function.mara entity.name.function.mara
         2: keyword.operator.mara
         3: keyword.operator.mara
+        4: keyword.other.directive.mara
 
     # fun/fn used as anonymous or type
     - match: (fun)\s*[\(]
