@@ -350,7 +350,8 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         return t
     }
     // (A call's several results, `[directions(q)]`: each an element, in
-    // order — tc_literal_count.)
+    // order — tc_literal_count. Each one in its place's room, as a value
+    // anywhere: rows of a fixed array its length.)
     types := make([dynamic]Type, 0, len(elems), context.temp_allocator)
     for e in elems {
         if m := tc_results_giver(k, e); m != 0 { k.several_ok = m }
@@ -359,8 +360,10 @@ tc_array_literal :: proc(k: ^TC, n: Tree_Id) -> Type {
         _, failed := t.(Type_Error)
         if results := tc_given_results(k, e); len(results) > 1 && !failed {
             append(&types, ..results)
+            if place != nil { for r in results { tc_array_room(k, e, r, place, tree_span(tr, e)) } }
         } else {
             append(&types, t)
+            if place != nil && !failed { tc_array_room(k, e, t, place, tree_span(tr, e)) }
         }
     }
     count := len(types)

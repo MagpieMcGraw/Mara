@@ -666,6 +666,7 @@ TYPE_IN_NEEDS_ITEMS :: "`in` takes a range, `x in lo .. hi`, or something with i
 TYPE_IN_ITEM_TYPE :: "can't look for a %s among %s items: `==` doesn't compare them"
 WARN_LIST_STAYS_EMPTY :: "'%s' is %s, but nothing gives it a len: it stays an empty list, and %s runs no times. Append to it with `++`, or declare it a fixed array, `[n!]T`"
 WARN_VAR_NEVER_USED :: "'%s' is never used (name it `_` if that's meant)"
+WARN_ARRAY_LITERAL_SHORT :: "%d items for a %s: it holds %d, and the rest are left zero (write them out if that's meant)"
 WARN_VAR_NEVER_READ :: "'%s' is written, but nothing reads it"
 WARN_LOOP_COPY_WRITTEN :: "'%s' is a copy of each item: what's written to it is lost when the loop moves on. To change the items, loop with `for &%s in ...`"
 WARN_VARS_MORE :: "%d more locals are never read (the first %d are listed)"

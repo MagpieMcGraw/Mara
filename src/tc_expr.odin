@@ -1061,10 +1061,11 @@ tc_value_at :: proc(k: ^TC, n: Tree_Id, vt, t: Type, span: Span) {
 }
 
 // A fixed array (value n) into a list or a fixed array — `ints : [2]i64 =
-// [1, 2, 3]`, `xs = [three(n)]`, an argument, a field, an element: its items
-// must fit, known now. A shorter literal leaves the rest zero; any other
-// fixed array goes only where one of its length goes (the user's call), a
-// slice copying part of one.
+// [1, 2, 3]`, `xs = [three(n)]`, an argument, a field, an element, a row:
+// its items must fit, known now. A shorter literal leaves the rest zero,
+// warned (likely a slip; `[]` zeroes all, meant); any other fixed array
+// goes only where one of its length goes (the user's call), a slice
+// copying part of one.
 tc_array_room :: proc(k: ^TC, n: Tree_Id, vt, t: Type, span: Span) {
     fa, from_fixed := distinct_base(vt).(^Type_Fixed_Array)
     if !from_fixed { return }
@@ -1084,6 +1085,8 @@ tc_array_room :: proc(k: ^TC, n: Tree_Id, vt, t: Type, span: Span) {
             tc_error(k, span, TYPE_FIXED_ARRAY_OTHER_LENGTH, type_name(vt), type_name(t), least, least)
         } else if fa.size > to.size {
             tc_error(k, span, TYPE_ARRAY_PAST_LIST_ROOM, fa.size, type_name(t), to.size)
+        } else if fa.size > 0 && n != 0 && k.t.tag[tc_unparen(k, n)] == .Array {
+            check_warning(k.c, span, WARN_ARRAY_LITERAL_SHORT, fa.size, type_name(t), to.size)
         }
     }
 }
