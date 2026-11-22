@@ -868,6 +868,8 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
             }
         } else {
             hit_declared(&sb, t, r.decl)
+            // (A struct's name, or a call of its constructor: where its values are made.)
+            if (r.kind == .Type || r.kind == .Fun) && hit_is_struct(t, r.decl) { hit_write_made(&sb, t, a, r.decl) }
         }
         return strings.to_string(sb), true
     }
@@ -1047,6 +1049,84 @@ hit_write_variants :: proc(b: ^strings.Builder, t: ^Tree, a: ^Annotations, decls
     }
     if len(never) > 0 {
         fmt.sbprintf(b, "  nothing names: %s\n", strings.join(never[:], ", ", context.temp_allocator))
+    }
+}
+
+// --- a struct's values made ----------------------------------------------------
+
+// Whether a struct named at node n makes a value of it, running its body: its
+// constructor called (`T(…)`), a literal (`T{…}`, or a `{…}` a declaration of
+// T takes), a declaration with no value (`x : T`; a field's, when its struct
+// is made; `= void` runs nothing) — each item of a fixed array of them too
+// (`[4!]T`). Not where it's only a type: a param's, a pointer's, a list's.
+@(private="file")
+hit_makes :: proc(t: ^Tree, n: Tree_Id) -> bool {
+    #partial switch t.tag[n] {
+    case .Call, .Method_Call, .Literal: return true
+    }
+    cur := n
+    for {
+        p := t.parent[cur]
+        #partial switch t.tag[p] {
+        case .Type_Paren:
+            cur = p
+            continue
+        case .Type_Array:
+            if Tree_Id(t.b[p]) != cur { return false }
+            cur = p
+            continue
+        case .Literal:
+            return Tree_Id(t.a[p]) == cur
+        case .Decl:
+            v := decl_view(t, p)
+            if v.type_ != cur { return false }
+            if len(v.values) == 0 { return true }
+            return len(v.values) == 1 && t.tag[v.values[0]] == .Literal && t.a[v.values[0]] == 0
+        }
+        return false
+    }
+}
+
+// Every place a value of the struct `decl` declares is made (hit_makes), each
+// once, in source order.
+hit_made :: proc(t: ^Tree, a: ^Annotations, decl: Token_Id) -> []Hit_Use {
+    if len(t.parent) != len(t.tag) { tree_parents(t) }
+    out := make([dynamic]Hit_Use, context.temp_allocator)
+    seen := make(map[Tree_Id]bool, allocator = context.temp_allocator)
+    name := token_text(build_tokens[decl])
+    for u in annot_uses(a, decl) {
+        if k := annot_use_ref(a, u).kind; k != .Type && k != .Fun { continue }
+        if seen[u.node] || !hit_makes(t, u.node) { continue }
+        seen[u.node] = true
+        tok, named := ref_name_token(t, u.node, name)
+        if !named { tok = t.main[u.node] }
+        hit_add_use(&out, tok, u.node, .Written, 0)
+    }
+    slice.sort_by(out[:], proc(x, y: Hit_Use) -> bool {
+        if x.path != y.path { return x.path < y.path }
+        return x.tok < y.tok
+    })
+    return out[:]
+}
+
+// Whether `decl` declares a struct: `T :: struct {…}`.
+hit_is_struct :: proc(t: ^Tree, decl: Token_Id) -> bool {
+    def := tree_define_at(t, decl)
+    return def != 0 && t.tag[Tree_Id(t.b[def])] == .Struct_Def
+}
+
+HIT_MADE_ROWS :: 20   // the places a struct is made, listed at most
+
+// Where a struct's values are made: its constructor run (hit_made).
+hit_write_made :: proc(b: ^strings.Builder, t: ^Tree, a: ^Annotations, decl: Token_Id) {
+    made := hit_made(t, a, decl)
+    fmt.sbprintf(b, "\nmade %d\n", len(made))
+    for u, i in made {
+        if i == HIT_MADE_ROWS {
+            fmt.sbprintf(b, "  (%d more)\n", len(made) - i)
+            break
+        }
+        fmt.sbprintf(b, "  %s  %s  %s\n", ask_loc(token_span(build_tokens[u.tok])), hit_holder_name(t, u.node), hit_source_line(build_tokens[u.tok]))
     }
 }
 

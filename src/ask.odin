@@ -1022,6 +1022,11 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
         }
     }
     if bare_type { hit_write_variants(&b, &build_tree, checked.annot, ask_variants_of(subject.type_), subject.label, ask_is_error_set(subject.type_)) }
+    if bare_type {
+        if ts, is_scope := subject.type_.(^Type_Scope); is_scope && ts.kind == .Struct && ts.decl != 0 && hit_is_struct(&build_tree, ts.decl) {
+            hit_write_made(&b, &build_tree, checked.annot, ts.decl)
+        }
+    }
     if show_below && show_call {
         if is_fn { render_fn_calls(&b, checked, ft, depth, forward = false) }
         else     { render_struct_calls(&b, checked, subject.type_, .Takes, "below") }
