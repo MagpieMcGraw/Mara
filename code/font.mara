@@ -15,6 +15,19 @@ Glyph :: struct {
 Line_Metrics :: struct {
 	ascent, descent, line_gap : f32
 }
+Font256 :: class {
+	ideal_size : f32
+	metrics: Line_Metrics
+	glyphs: [256]Glyph
+}
+load_raster256 :: (name: []utf8, pixels: f32) -> Font256, Font_Pixels, err {
+	ttf_file : [2 * MB]byte = void
+	read_entire_file(name, &ttf_file)?
+	check_ttf(&ttf_file)?
+	ttf := TTF(&ttf_file)
+	scale := pixels / f32(ttf.head.units_per_em)
+}
+
 Font :: class(start := 0, $n := 256) {
 	first := start
 	ideal_size: f32
@@ -31,12 +44,12 @@ Font :: class(start := 0, $n := 256) {
 	}
 }
 
-/*Raster_Pixels :: struct {
-	width, height: i64
-	data: [RASTER_ATLAS * RASTER_ATLAS!]byte
+Font_Pixels :: struct {
+	width, height, ch: i64
+	data: [24 * MB]byte
 }
 
-load_raster :: fun(name: []utf8, pixels: f32, i64, u64) -> (font: Font, atlas: Raster_Pixels, e: err) {
+/*load_raster :: fun(name: []utf8, pixels: f32, i64, u64) -> (font: Font, atlas: Raster_Pixels, e: err) {
 	if range.last < range.first or i64(range.last - range.first) >= FONT_GLYPHS do return font, atlas, Too_Many_Chars
 	ttf_file : [2 * MB]byte = void
 	read_entire_file(name, &ttf_file)?
@@ -96,8 +109,8 @@ load_raster :: fun(name: []utf8, pixels: f32, i64, u64) -> (font: Font, atlas: R
 raster_glyph_index :: fun(ttf: ^TTF, range: Char_Range, i: i64, n: i64) -> u16 {
 	if i == n - 1 do return 0
 	return char_glyph(ttf, range.first + u32(i))
-}*/
-
+}
+*/
 // A glyph's box at `scale` pixels a font unit, whole pixels with one of room
 // around it, and its advance; not yet placed. A space: no box.
 raster_box :: fun(ttf: ^TTF, outline: ^Outline, index: u16, scale: f32) -> Glyph, err {
