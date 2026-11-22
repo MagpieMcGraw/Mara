@@ -20,12 +20,55 @@ Font256 :: class {
 	metrics: Line_Metrics
 	glyphs: [256]Glyph
 }
-load_raster256 :: (name: []utf8, pixels: f32) -> Font256, Font_Pixels, err {
-	ttf_file : [2 * MB]byte = void
-	read_entire_file(name, &ttf_file)?
-	check_ttf(&ttf_file)?
-	ttf := TTF(&ttf_file)
-	scale := pixels / f32(ttf.head.units_per_em)
+load_raster256 :: (name: []utf8, pixel_size: f32) -> Font256, Font_Pixels, err {
+	ttf_data : [2 * MB]byte = void
+	read_entire_file(name, &ttf_data)?
+	check_ttf(&ttf_data)?
+	ttf := TTF(&ttf_data)
+	scale := pixel_size / f32(ttf.head.units_per_em)
+
+	this_font : Font256
+	pix : Font_Pixels
+
+	this_font.ideal_size = pixel_size
+	this_font.metrics.ascent   = f32(ttf.hhea.ascent)   * scale
+	this_font.metrics.descent  = f32(ttf.hhea.descent)  * scale
+	this_font.metrics.line_gap = f32(ttf.hhea.line_gap) * scale
+
+	// Each character's box first, then the smallest square that packs them
+	// all, then each one drawn in its place.
+	this_font.glyphs.len = 256
+	outline : Outline
+	for c in 0:256 {
+		index := char_glyph(&ttf, u32(c))
+		parse_glyph(&ttf, index, &outline)?
+		this_font.glyphs[c] = raster_box(&ttf, &outline, index, scale)?
+	}
+	side : i64 = 64
+	for not raster_packs(&this_font.glyphs, side) {
+		side *= 2
+		if side * side > pix.data.cap do return this_font, pix, Atlas_Full
+	}
+
+	pix.width = side
+	pix.height = side
+	pix.ch = 1
+	pix.data.len = side * side
+	acc : [(COVERAGE_CELL + 2) * COVERAGE_CELL]f32
+	cell : [COVERAGE_CELL * COVERAGE_CELL]byte
+	for c in 0:256 {
+		g := this_font.glyphs[c]
+		if g.w == 0 do continue   // (a space: nothing drawn)
+		parse_glyph(&ttf, char_glyph(&ttf, u32(c)), &outline)?
+		w, h := i64(g.w), i64(g.h)
+		rasterize_coverage(&outline, scale, -g.bearing_x, g.bearing_y, w, h, &acc, &cell)
+		for y in 0:h {
+			for x in 0:w {
+				pix.data[(i64(g.y) + y) * side + i64(g.x) + x] = cell[y * w + x]
+			}
+		}
+	}
+	return this_font, pix
 }
 
 Font :: class(start := 0, $n := 256) {
