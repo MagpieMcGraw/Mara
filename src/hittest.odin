@@ -869,7 +869,12 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
         } else {
             hit_declared(&sb, t, r.decl)
             // (A struct's name, or a call of its constructor: where its values are made.)
-            if (r.kind == .Type || r.kind == .Fun) && hit_is_struct(t, r.decl) { hit_write_made(&sb, t, a, r.decl) }
+            if (r.kind == .Type || r.kind == .Fun) && hit_is_struct(t, r.decl) {
+                hit_write_made(&sb, t, a, r.decl)
+                if checked != nil {
+                    if ty, bound := checked_binding(checked, r, name); bound { hit_write_type_uses(&sb, t, a, ty) }
+                }
+            }
         }
         return strings.to_string(sb), true
     }
@@ -1135,6 +1140,106 @@ hit_write_made :: proc(b: ^strings.Builder, t: ^Tree, a: ^Annotations, decl: Tok
             break
         }
         fmt.sbprintf(b, "  %s  %s  %s\n", ask_loc(token_span(build_tokens[u.tok])), hit_holder_name(t, u.node), hit_source_line(build_tokens[u.tok]))
+    }
+}
+
+// --- a struct's values used ----------------------------------------------------
+
+// Every place a value of struct type `ty` is used by a name — a variable, a
+// param, a field, an item of a list of them, what a pointer to one points at
+// — and what it does there: written (assigned, declared from a value, a
+// field of it written; through a pointer too), its address taken or a
+// pointer to it handed on, or read. Each node once, in source order.
+hit_type_uses :: proc(t: ^Tree, a: ^Annotations, ty: Type) -> []Hit_Use {
+    if len(t.parent) != len(t.tag) { tree_parents(t) }
+    out := make([dynamic]Hit_Use, context.temp_allocator)
+    seen := make(map[Tree_Id]bool, allocator = context.temp_allocator)
+    for i in annot_listed(a) {
+        inst := a.instances[i]
+        for n := inst.lo; n <= inst.hi; n += 1 {
+            #partial switch t.tag[n] {
+            case .Ident, .Field, .Index:
+            case: continue
+            }
+            if seen[n] { continue }
+            nt := annot_type(a, i, n)
+            if nt == nil { continue }
+            through := false   // (a pointer to one)
+            if !types_equal(nt, ty) {
+                pt, is_ptr := distinct_base(nt).(^Type_Ptr)
+                if !is_ptr || pt.elem == nil || !types_equal(pt.elem, ty) { continue }
+                through = true
+            }
+            seen[n] = true
+            kind := hit_pointee_use(t, a, i, n) if through else hit_use_kind(t, a, i, n)
+            if !through && kind == .Read && hit_self_by_pointer(t, a, i, n) { kind = .Pointer }
+            tok := Token_Id(t.b[n]) if t.tag[n] == .Field else t.main[n]
+            hit_add_use(&out, tok, n, kind, 0)
+        }
+    }
+    slice.sort_by(out[:], proc(x, y: Hit_Use) -> bool {
+        if x.path != y.path { return x.path < y.path }
+        return x.tok < y.tok
+    })
+    return out[:]
+}
+
+// What a use of a pointer does to what it points at: a field or item reached
+// through it, or what it points at whole (`p^`), as a name's own use is;
+// the pointer handed on, its address given.
+@(private="file")
+hit_pointee_use :: proc(t: ^Tree, a: ^Annotations, i: Instance_Id, n: Tree_Id) -> Use_Kind {
+    cur := n
+    for t.tag[t.parent[cur]] == .Paren { cur = t.parent[cur] }
+    p := t.parent[cur]
+    #partial switch t.tag[p] {
+    case .Field, .Index, .Deref:
+        if Tree_Id(t.a[p]) == cur { return hit_use_kind(t, a, i, p) }
+    }
+    return .Pointer
+}
+
+// Whether a value named at n is a method's receiver, handed to it by its
+// address (`x.grow()`, grow taking ^Self).
+@(private="file")
+hit_self_by_pointer :: proc(t: ^Tree, a: ^Annotations, i: Instance_Id, n: Tree_Id) -> bool {
+    p := t.parent[n]
+    if t.tag[p] != .Method_Call || method_view(t, p).receiver != n { return false }
+    callee := a.callees[annot_key(i, p)] or_else nil
+    if callee == nil || len(callee.params) == 0 { return false }
+    _, is_ptr := fn_param(callee, 0).type_.(^Type_Ptr)
+    return is_ptr
+}
+
+HIT_TYPE_ROWS :: 12   // each kind of use's places, listed at most
+
+// How widely a struct's values are used (hit_type_uses): in how many funs,
+// then each kind of use's places, a line once.
+hit_write_type_uses :: proc(b: ^strings.Builder, t: ^Tree, a: ^Annotations, ty: Type) {
+    uses := hit_type_uses(t, a, ty)
+    funs := make(map[string]bool, allocator = context.temp_allocator)
+    for u in uses { funs[hit_holder_name(t, u.node)] = true }
+    fmt.sbprintf(b, "\nused in %d funs\n", len(funs))
+    for kind in Use_Kind {
+        rows := make([dynamic]Hit_Use, context.temp_allocator)
+        last: Token
+        for u in uses {
+            if u.kind != kind { continue }
+            tok := build_tokens[u.tok]
+            if len(rows) > 0 && tok.file == last.file && token_line(tok) == token_line(last) { continue }
+            append(&rows, u)
+            last = tok
+        }
+        if len(rows) == 0 { continue }
+        word := "written" if kind == .Written else "pointer taken" if kind == .Pointer else "read"
+        fmt.sbprintf(b, "%s %d\n", word, len(rows))
+        for u, i in rows {
+            if i == HIT_TYPE_ROWS {
+                fmt.sbprintf(b, "  (%d more)\n", len(rows) - i)
+                break
+            }
+            fmt.sbprintf(b, "  %s  %s  %s\n", ask_loc(token_span(build_tokens[u.tok])), hit_holder_name(t, u.node), hit_source_line(build_tokens[u.tok]))
+        }
     }
 }
 

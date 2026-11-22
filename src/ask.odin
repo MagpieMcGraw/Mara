@@ -1025,6 +1025,7 @@ ask :: proc(checked: ^Checked_Program, target, kind, dir, scope, at, pkg, scope_
     if bare_type {
         if ts, is_scope := subject.type_.(^Type_Scope); is_scope && ts.kind == .Struct && ts.decl != 0 && hit_is_struct(&build_tree, ts.decl) {
             hit_write_made(&b, &build_tree, checked.annot, ts.decl)
+            hit_write_type_uses(&b, &build_tree, checked.annot, subject.type_)
         }
     }
     if show_below && show_call {
