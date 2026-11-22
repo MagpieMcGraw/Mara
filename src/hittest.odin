@@ -273,7 +273,7 @@ hit_name_row :: proc(sb: ^strings.Builder, t: ^Tree, a: ^Annotations, r: Ref, n:
     case .Local, .Param, .Result, .Field, .Const:
         if ty := hit_type(a, n) if t.tag[n] >= .Number else ""; ty != "" { fmt.sbprintf(sb, " : %s", ty) }
     }
-    if r.decl != 0 { fmt.sbprintf(sb, "   declared %s", ask_loc(token_span(build_tokens[r.decl]))) }
+    if r.decl != 0 { fmt.sbprintf(sb, "   %s %s", hit_def_word(t, r.decl), ask_loc(token_span(build_tokens[r.decl]))) }
     strings.write_byte(sb, '\n')
 }
 
@@ -903,12 +903,20 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
     return strings.to_string(sb), true
 }
 
-// Where decl is declared, and its definition's first line: a fun's signature, a
-// struct's params.
+// What bringing a name in is called: a definition (`::`, `x : T : v` — a
+// type, a fun, a constant) defines it; anything else declares it (`:`, `:=`,
+// a param, a loop's or a match's name, a variant).
+hit_def_word :: proc(t: ^Tree, decl: Token_Id) -> string {
+    return "defined" if tree_define_at(t, decl) != 0 else "declared"
+}
+
+// Where decl is defined (or declared), and its definition's first line: a
+// fun's signature, a struct's params.
 @(private="file")
 hit_declared :: proc(sb: ^strings.Builder, t: ^Tree, decl: Token_Id) {
-    fmt.sbprintf(sb, "  declared  %s\n", ask_loc(token_span(build_tokens[decl])))
-    if def := tree_define_at(t, decl); def != 0 {
+    def := tree_define_at(t, decl)
+    fmt.sbprintf(sb, "  %s  %s\n", "defined" if def != 0 else "declared", ask_loc(token_span(build_tokens[decl])))
+    if def != 0 {
         first := span_text(source_of(build_tokens[decl]), tree_span(t, def))
         // (On several lines: up to its body, joined — a result on the next.)
         if strings.has_suffix(first, " …") { first = ask_signature(decl) }
@@ -1489,7 +1497,7 @@ hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_
         fmt.sbprintf(&sb, "%s\n", span_text(p.src.source, tree_span(t, named_at)) if t.tag[named_at] == .Field else name)
     }
     if types != "" { fmt.sbprintf(&sb, "%s\n", types) }
-    fmt.sbprint(&sb, "\ndeclared\n")
+    fmt.sbprintf(&sb, "\n%s\n", hit_def_word(t, r.decl))
     hit_write_place(&sb, t, r.decl, tree_node_at(t, r.decl))
     for maybe in ([2]bool{false, true}) {
         for kind in Use_Kind {

@@ -50,7 +50,7 @@ appears in an output panel with every `file:line` clickable.
     field used through a value lists that value's uses, followed through locals
     and params, with any it can't be sure of under `maybe`; at the field's
     declaration, every value's. For anything else named, what it is, its type and
-    where it's declared; an operator, the function it calls.
+    where it's defined; an operator, the function it calls.
 
   The plugin sends one byte, the cursor's place in the saved file (`mara ask
   -cursor cursor at <file>@<byte>`; a **highlight** on one line, two), and the
