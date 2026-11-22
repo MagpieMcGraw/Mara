@@ -869,22 +869,7 @@ hit_what :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, uses: bool, title: st
         } else {
             hit_declared(&sb, t, r.decl)
         }
-        // (A type's name: what a value of it can do.)
-        if checked != nil && r.kind == .Type {
-            if ty, bound := checked_binding(checked, r, name); bound {
-                if fs, is_scope := ty.(^Type_Scope); !is_scope || fs.kind == .Struct {
-                    can_do(&sb, checked, ty, Token_Id(p.at))
-                }
-            }
-        } else if checked != nil && r.kind == .Builtin {
-            if ty, is_type := tc_primitive_named(name); is_type { can_do(&sb, checked, ty, Token_Id(p.at)) }
-        }
         return strings.to_string(sb), true
-    }
-
-    // (A type's keyword, `i64`: what a value of it can do.)
-    if checked != nil {
-        if ty, is_type := tc_primitive_named(name); is_type { can_do(&sb, checked, ty, Token_Id(p.at)) }
     }
 
     // The expressions around it, innermost first: each one line, to the
@@ -1424,15 +1409,6 @@ hit_uses_answer :: proc(t: ^Tree, a: ^Annotations, p: ^Hit_Point, r: Ref, named_
         fmt.sbprintf(&sb, "%s\n", span_text(p.src.source, tree_span(t, named_at)) if t.tag[named_at] == .Field else name)
     }
     if types != "" { fmt.sbprintf(&sb, "%s\n", types) }
-    if checked != nil {
-        // (What it can do: its type's, the node naming it or a use's.)
-        ty := completion_type_of(a, named_at)
-        for u in uses {
-            if ty != nil { break }
-            ty = completion_type_of(a, u.node)
-        }
-        can_do(&sb, checked, ty, Token_Id(p.at))
-    }
     fmt.sbprint(&sb, "\ndeclared\n")
     hit_write_place(&sb, t, r.decl, tree_node_at(t, r.decl))
     for maybe in ([2]bool{false, true}) {

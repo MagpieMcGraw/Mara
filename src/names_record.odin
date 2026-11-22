@@ -864,36 +864,6 @@ names_overloads_in :: proc(r: ^Name_Table, homes: []string, op: Token_Kind) -> [
     return out[:]
 }
 
-// A module in sight at a point, as what's listed there sees it (can_do_funs):
-// its name, what its names are called with (`s.` for `s :: use m`, else ""),
-// its definitions and its dispatch groups.
-Seen_Module :: struct {
-    name, prefix: string,
-    defs:         map[string]Ref,
-    dispatches:   map[string][dynamic]Token_Id,
-}
-
-// The modules in sight where `at` is: its file's own first, then its uses,
-// then those it names.
-names_modules_in_sight :: proc(r: ^Name_Table, at: Token_Id) -> []Seen_Module {
-    sight, ok := record_sight_at(r, at)
-    if !ok || sight.module == nil { return nil }
-    out := make([dynamic]Seen_Module, context.temp_allocator)
-    seen :: proc(m: ^Scope, prefix: string) -> Seen_Module { return {m.name, prefix, m.defs, m.dispatches} }
-    append(&out, seen(sight.module, ""))
-    for u in sight.uses { if u != sight.module { append(&out, seen(u, "")) } }
-    for n in sight.named { append(&out, seen(n.module, fmt.tprintf("%s.", n.name))) }
-    return out[:]
-}
-
-// The names of the dispatch groups behind operators (`overload + add`), every
-// module's.
-names_overload_names :: proc(r: ^Name_Table) -> map[string]bool {
-    out := make(map[string]bool, allocator = context.temp_allocator)
-    for _, m in r.modules { for f in m.parts { for o in f.overloads { out[tc_text(o.name)] = true } } }
-    return out
-}
-
 // The use that keeps `name` behind a name where `at` is (`s :: use mara.string`,
 // for `trimmed`): what that name is, and the module's.
 names_named_use_of :: proc(r: ^Name_Table, at: Token_Id, name: string) -> (alias, module: string, ok: bool) {
