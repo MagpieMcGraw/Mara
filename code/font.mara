@@ -24,6 +24,8 @@ Font_Pixels :: struct {
 	width, height, ch: i64
 	data: [24 * MB]byte
 }
+COVERAGE_CELL :: 128
+
 load_raster256 :: (name: []utf8, px_size: f32) -> Font256, Font_Pixels, err {
 	ttf_data : [2 * MB]byte = void
 	read_entire_file(name, &ttf_data)?
@@ -73,120 +75,6 @@ load_raster256 :: (name: []utf8, px_size: f32) -> Font256, Font_Pixels, err {
 	return this_font, pix
 }
 
-raster_box :: fun(ttf: ^TTF, outline: ^Outline, index: u16, scale: f32)
- -> Glyph, err
-{
-	g := Glyph{all 0}
-	m := min(index, ttf.hhea.num_of_long_hor_metrics - 1)
-	g.advance = f32(ttf.hmtx.long_metrics[m].advance_width) * scale
-	if outline.contour_end_pts.len == 0 do return g
-	left   := floor_f32(f32(outline.header.x_min) * scale) - 1.0
-	right  := ceil_f32(f32(outline.header.x_max) * scale) + 1.0
-	top    := ceil_f32(f32(outline.header.y_max) * scale) + 1.0
-	bottom := floor_f32(f32(outline.header.y_min) * scale) - 1.0
-	if right - left > COVERAGE_CELL or top - bottom > COVERAGE_CELL
-	{return g, Glyph_Too_Big}
-	g.w = i32(right - left)
-	g.h = i32(top - bottom)
-	g.bearing_x = left
-	g.bearing_y = top
-	return g
-}
-
-raster_packs :: fun(glyphs: ^[]Glyph, side: i64) -> bool {
-	sky := Skyline(side, side)
-	for i in 0:glyphs.len {
-		g := &glyphs[i]
-		if g.w == 0 do continue
-		x, y, ok := pack_rect(&sky, i64(g.w), i64(g.h))
-		if not ok do return false
-		g.x = i32(x)
-		g.y = i32(y)
-	}
-	return true
-}
-
-MSDF_ATLAS :: 1024   // an MSDF atlas's side, in pixels (3 bytes each)
-
-// The atlas's cells: the bytes they're written into (bytes, a mutable
-// slice of them), how big a glyph's em is in them.
-Atlas :: struct (bytes: ^[]byte, u_per_em: u16) {
-	size := MSDF_ATLAS
-	pixels := 32 // used to scale em to pixels
-	pad : f32 = 4
-	px_scale := f32(pixels) / f32(u_per_em)
-	data := bytes^
-}
-
-// A font's glyphs as multi-channel signed distance fields (MSDF), for text
-// drawn at any size: characters first .. first + glyphs.cap - 1, glyphs[i]
-// for first + i, packed into `atlas` (MSDF_ATLAS pixels a side, 3 bytes a
-// pixel: the median of the three is the distance to the outline, 128 on it,
-// more inside, MSDF_PX_RANGE pixels from 0 to 255), each one's place there
-// and metrics in glyphs; the font's line metrics in metrics. In the atlas's
-// pixels, 32 to the em, y down. (For text at one size, load_raster256 is
-// sharper.)
-load_glyphs_and_metrics :: fun(
-	font: []utf8,
-	glyphs: ^[]Glyph,
-	metrics: ^Line_Metrics,
-	pixels: ^[]byte,
-	first: u32 = 0) -> err
-{
-	if pixels.cap < MSDF_ATLAS * MSDF_ATLAS * 3 do return Atlas_Too_Small
-	ttf_file : [2 * MB]byte = void
-	read_entire_file(font, &ttf_file)?
-	check_ttf(&ttf_file)?
-	ttf := TTF(&ttf_file)
-
-	pixels.len = MSDF_ATLAS * MSDF_ATLAS * 3
-	for i in 0:pixels.len {
-		pixels[i] = u8(0)
-	}
-	cells := Atlas(pixels, ttf.head.units_per_em)
-	sky := Skyline(cells.size, cells.size)
-
-	metrics.ascent   = f32(ttf.hhea.ascent)   * cells.px_scale
-	metrics.descent  = f32(ttf.hhea.descent)  * cells.px_scale
-	metrics.line_gap = f32(ttf.hhea.line_gap) * cells.px_scale
-
-	// Fill the whole provided buffer. Callers pass a partial array (len 0,
-	// cap = glyph count); mark it full so downstream lookups see every slot.
-	glyphs.len = glyphs.cap
-	outline : Outline
-	for i in 0:glyphs.len {
-		glyph_index := char_glyph(&ttf, first + u32(i))
-		parse_glyph(&ttf, glyph_index, &outline)?
-
-		// Its cell packed first: rasterize_msdf draws at glyphs[i].x/y. An
-		// empty glyph (no contours) packs at (0,0) with w=h=0 and touches nothing.
-		w, h := msdf_cell(&outline, &cells)
-		px, py, ok := pack_rect(&sky, i64(w), i64(h))
-		if not ok do return Atlas_Full
-		//glyphs[i] = Glyph{all 0}
-		glyphs[i].x = i32(px)
-		glyphs[i].y = i32(py)
-
-		// hmtx holds full {advance, lsb} records only for the first
-		// num_of_long_hor_metrics glyphs; everything past that shares the
-		// last record's advance (the array degrades to 2-byte lsb entries).
-		m := min(glyph_index, ttf.hhea.num_of_long_hor_metrics - 1)
-		advance := f32(ttf.hmtx.long_metrics[m].advance_width)
-		glyphs[i].advance = advance * cells.px_scale
-
-		rasterize_msdf(&outline, &glyphs[i], &cells)?
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Coverage: glyphs at one pixel size, pixel for pixel
-// ---------------------------------------------------------------------------
-
-COVERAGE_CELL :: 128   // the biggest glyph bitmap, each side, in pixels
-
-// A font's glyphs for drawing text `pixels` high (its em), pixel for pixel,
-// glyphs[i] for chars[i]: load_raster256 for any characters (— → ∞), into
-// an atlas `size` pixels a side, one byte a pixel.
 load_coverage_chars :: fun(
 	font: []utf8,
 	pixels: f32,
@@ -227,13 +115,52 @@ load_coverage_chars :: fun(
 		if g.w == 0 do continue
 		parse_glyph(&ttf, char_glyph(&ttf, chars[i]), &outline)?
 		w, h := i64(g.w), i64(g.h)
-		rasterize_coverage(&outline, scale, -g.bearing_x, g.bearing_y, w, h, &acc, &cell)
+		rasterize_coverage(&outline, scale, -g.bearing_x, g.bearing_y,
+						   w, h, &acc, &cell)
 		for y in 0:h {
 			row := (i64(g.y) + y) * size + i64(g.x)
 			atlas[row : row + w] = cell[y * w : y * w + w]
 		}
 	}
 }
+
+raster_box :: fun(ttf: ^TTF, outline: ^Outline, index: u16, scale: f32)
+ -> Glyph, err
+{
+	g := Glyph{all 0}
+	m := min(index, ttf.hhea.num_of_long_hor_metrics - 1)
+	g.advance = f32(ttf.hmtx.long_metrics[m].advance_width) * scale
+	if outline.contour_end_pts.len == 0 do return g
+	left   := floor_f32(f32(outline.header.x_min) * scale) - 1.0
+	right  := ceil_f32(f32(outline.header.x_max) * scale) + 1.0
+	top    := ceil_f32(f32(outline.header.y_max) * scale) + 1.0
+	bottom := floor_f32(f32(outline.header.y_min) * scale) - 1.0
+	if right - left > COVERAGE_CELL or top - bottom > COVERAGE_CELL
+	{return g, Glyph_Too_Big}
+	g.w = i32(right - left)
+	g.h = i32(top - bottom)
+	g.bearing_x = left
+	g.bearing_y = top
+	return g
+}
+
+raster_packs :: fun(glyphs: ^[]Glyph, side: i64) -> bool {
+	sky := Skyline(side, side)
+	for i in 0:glyphs.len {
+		g := &glyphs[i]
+		if g.w == 0 do continue
+		x, y, ok := pack_rect(&sky, i64(g.w), i64(g.h))
+		if not ok do return false
+		g.x = i32(x)
+		g.y = i32(y)
+	}
+	return true
+}
+
+
+// A font's glyphs for drawing text `pixels` high (its em), pixel for pixel,
+// glyphs[i] for chars[i]: load_raster256 for any characters (— → ∞), into
+// an atlas `size` pixels a side, one byte a pixel.
 
 // A glyph's coverage bitmap: how much of each pixel its outline covers, 0
 // to 255. The outline at `scale` pixels a font unit, its origin (the pen,
@@ -418,6 +345,77 @@ coverage_line :: fun(acc: ^[]f32, w: i64, h: i64, x0: f32, y0: f32, x1: f32, y1:
 	}
 }
 
+MSDF_ATLAS :: 1024   // an MSDF atlas's side, in pixels (3 bytes each)
+
+// The atlas's cells: the bytes they're written into (bytes, a mutable
+// slice of them), how big a glyph's em is in them.
+Atlas :: struct (bytes: ^[]byte, u_per_em: u16) {
+	size := MSDF_ATLAS
+	pixels := 32 // used to scale em to pixels
+	pad : f32 = 4
+	px_scale := f32(pixels) / f32(u_per_em)
+	data := bytes^
+}
+
+// A font's glyphs as multi-channel signed distance fields (MSDF), for text
+// drawn at any size: characters first .. first + glyphs.cap - 1, glyphs[i]
+// for first + i, packed into `atlas` (MSDF_ATLAS pixels a side, 3 bytes a
+// pixel: the median of the three is the distance to the outline, 128 on it,
+// more inside, MSDF_PX_RANGE pixels from 0 to 255), each one's place there
+// and metrics in glyphs; the font's line metrics in metrics. In the atlas's
+// pixels, 32 to the em, y down. (For text at one size, load_raster256 is
+// sharper.)
+load_glyphs_and_metrics :: fun(
+	font: []utf8,
+	glyphs: ^[]Glyph,
+	metrics: ^Line_Metrics,
+	pixels: ^[]byte,
+	first: u32 = 0) -> err
+{
+	if pixels.cap < MSDF_ATLAS * MSDF_ATLAS * 3 do return Atlas_Too_Small
+	ttf_file : [2 * MB]byte = void
+	read_entire_file(font, &ttf_file)?
+	check_ttf(&ttf_file)?
+	ttf := TTF(&ttf_file)
+
+	pixels.len = MSDF_ATLAS * MSDF_ATLAS * 3
+	for i in 0:pixels.len {
+		pixels[i] = u8(0)
+	}
+	cells := Atlas(pixels, ttf.head.units_per_em)
+	sky := Skyline(cells.size, cells.size)
+
+	metrics.ascent   = f32(ttf.hhea.ascent)   * cells.px_scale
+	metrics.descent  = f32(ttf.hhea.descent)  * cells.px_scale
+	metrics.line_gap = f32(ttf.hhea.line_gap) * cells.px_scale
+
+	// Fill the whole provided buffer. Callers pass a partial array (len 0,
+	// cap = glyph count); mark it full so downstream lookups see every slot.
+	glyphs.len = glyphs.cap
+	outline : Outline
+	for i in 0:glyphs.len {
+		glyph_index := char_glyph(&ttf, first + u32(i))
+		parse_glyph(&ttf, glyph_index, &outline)?
+
+		// Its cell packed first: rasterize_msdf draws at glyphs[i].x/y. An
+		// empty glyph (no contours) packs at (0,0) with w=h=0 and touches nothing.
+		w, h := msdf_cell(&outline, &cells)
+		px, py, ok := pack_rect(&sky, i64(w), i64(h))
+		if not ok do return Atlas_Full
+		//glyphs[i] = Glyph{all 0}
+		glyphs[i].x = i32(px)
+		glyphs[i].y = i32(py)
+
+		// hmtx holds full {advance, lsb} records only for the first
+		// num_of_long_hor_metrics glyphs; everything past that shares the
+		// last record's advance (the array degrades to 2-byte lsb entries).
+		m := min(glyph_index, ttf.hhea.num_of_long_hor_metrics - 1)
+		advance := f32(ttf.hmtx.long_metrics[m].advance_width)
+		glyphs[i].advance = advance * cells.px_scale
+
+		rasterize_msdf(&outline, &glyphs[i], &cells)?
+	}
+}
 
 MSDF_PX_RANGE   :: 4.0      // signed-distance range (px) mapped onto 0..1 / 0..255
 MSDF_MAX_EDGES  :: 8192     // a glyph's outline in straight pieces, at most
