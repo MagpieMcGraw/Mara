@@ -37,6 +37,7 @@ Storage :: struct {
     swapped:  map[Node_Id]bool,             // a swap's held locals: no storage
     done:     map[Node_Id]bool,             // operations a swap does: nothing to do where they are
     temps:    [dynamic]Storage_Temp,        // its big temporaries: on the arena from its entry until it returns (main's, its run's)
+    addressed: map[Node_Id]bool,            // a local some pointer or view may reach: its address taken, a view of it made (storage_views)
     calls:    map[Node_Id]Call_Place,       // a call's aggregate result: where it's built (none: a temporary of its own)
     out_at:   map[Operand]Node_Id,          // one of several results, an aggregate: the declared variable it's built in (none: a temporary)
     placed:   bool,                         // the temporaries built in place are known (storage_in_result)
@@ -69,6 +70,7 @@ storage_of :: proc(checked: ^Checked_Program, pg: ^Program_Graph, summaries: ^Re
     storage_variables(s)
     storage_in_place_updates(s)
     storage_carved(s)
+    storage_views(s)
     if sret != nil || rets != nil { storage_result_slot(s, rets) }
     storage_in_place(s)
     storage_swaps(s)
@@ -384,6 +386,346 @@ storage_cannot_reach :: proc(s: ^Storage, a: Operand, d: Place_Where) -> bool {
     if graph_op_of(pg, a.op) != .Read { return false }
     w := storage_where(s, graph_operands(pg, a.op)[0].op)
     return w.root != NO_NODE && !d.via_ptr && !w.via_ptr && w.root != d.root
+}
+
+// --- views ----------------------------------------------------------------------
+
+// Which locals are the place they're copied from, copying nothing: a struct
+// or array bigger than two registers, written once — `x := place`, a loop's
+// `for x in xs` — from a place, then only read (storage_view_only_read), and
+// nothing that could change that place runs from the write to its last read
+// (storage_view_unchanged). Such a local is that place, as a match arm's
+// binding is its payload (s.bound); its write does nothing (s.done).
+@(private="file")
+storage_views :: proc(s: ^Storage) {
+    pg := s.pg
+    storage_view_addressed(s)
+    for r, ri in s.runs[:s.own] {
+        for w, at in graph_run(pg, int(r)) {
+            if graph_op_of(pg, w) != .Write { continue }
+            wops := graph_operands(pg, w)
+            x, v := wops[0].op, wops[1].op
+            if !graph_is_leaf(x) || v == NO_NODE || wops[1].out != 0 || graph_op_of(pg, v) != .Read { continue }
+            d := graph_refers(pg, x)
+            if d <= 0 || d > pg.end || graph_kind_of(pg, d) != .Local || pg.written[d] != .Explicit { continue }
+            t := graph_type(pg, d)
+            if !llvm_aggregate(t) || type_size(t) <= 16 { continue }
+            if d in s.result || d in s.arena || d in s.bound || d in s.carved || s.held[d] { continue }
+            if s.user[graph_ix(pg, v)] != w { continue }
+            p := graph_operands(pg, v)[0].op
+            if p == NO_NODE || graph_is_const(p) || p >= READ { continue }
+            // (A temporary read into it: built there instead, storage_in_place.)
+            if graph_is_leaf(p) {
+                src := graph_refers(pg, p)
+                if src <= 0 || src > pg.end || graph_kind_of(pg, src) == .Local && pg.written[src] == .Synthetic { continue }
+            }
+            if ot, _ := storage_view_object(s, storage_view_where(s, p)); ot == nil { continue }
+            if !storage_view_only_read(s, d, w) || !storage_view_unchanged(s, d, ri, at, p) { continue }
+            s.bound[d] = p
+            s.done[w] = true
+        }
+    }
+}
+
+// Which locals some pointer or view may reach: a place rooted at one has its
+// address taken, a view or a slice made of it, memory carved from it, or is
+// handed to a fun that may keep it (storage_view_arg_kept). Any other local's
+// own storage nothing reaches but its name.
+@(private="file")
+storage_view_addressed :: proc(s: ^Storage) {
+    pg := s.pg
+    for r in s.runs {
+        for op in graph_run(pg, int(r)) {
+            kind := graph_op_of(pg, op)
+            for o, k in graph_operands(pg, op) {
+                if o.op == NO_NODE || graph_is_const(o.op) || o.op >= READ { continue }
+                pw := storage_view_where(s, o.op)
+                if pw.via_ptr || pw.root <= 0 || pw.root > pg.end || graph_kind_of(pg, pw.root) != .Local { continue }
+                #partial switch kind {
+                case .Address, .Slice, .View, .Carve:
+                    s.addressed[pw.root] = true
+                case .Call, .Construct:
+                    if (kind != .Construct || k > 0) && storage_view_arg_kept(s, op, k) { s.addressed[pw.root] = true }
+                }
+            }
+        }
+    }
+}
+
+// Where a place lives, as storage_where says — through the places locals
+// view (s.bound) — read with care: a pointer's value read, a constant, no
+// place (root unknown; past a pointer, its region still known).
+@(private="file")
+storage_view_where :: proc(s: ^Storage, p: Node_Id) -> Place_Where {
+    pg := s.pg
+    w := Place_Where{root = NO_NODE}
+    for id := p; id != NO_NODE; {
+        if graph_is_leaf(id) {
+            if v, bound := s.bound[graph_refers(pg, id)]; bound {
+                id = v
+                continue
+            }
+            w.root = graph_refers(pg, id)
+            return w
+        }
+        if id >= CONST || graph_kind_of(pg, id) != .Op { return w }
+        ops := graph_operands(pg, id)
+        #partial switch graph_op_of(pg, id) {
+        case .Deref:
+            if pg.written[id] != .Implied { w.explicit = true }
+            if !w.via_ptr { w.via_ptr, w.region = true, graph_type(pg, id) }
+            id = ops[0].op
+        case .Index:
+            if _, is_slice := distinct_base(graph_type(pg, ops[0].op)).(^Type_Slice); is_slice && !w.via_ptr {
+                w.via_ptr, w.region = true, graph_type(pg, id)
+            }
+            id = ops[0].op
+        case .Field, .Swizzle, .Variant, .Slice:
+            id = ops[0].op
+        case:
+            return w
+        }
+    }
+    return w
+}
+
+// The object a place lives in and whether it is a local's own storage: past
+// a pointer, the region it lands in; a param's, the caller's object of its
+// type; a local's, its variable. nil: not known (a carved local is bytes
+// somewhere, the result slot the caller's).
+@(private="file")
+storage_view_object :: proc(s: ^Storage, w: Place_Where) -> (t: Type, own: bool) {
+    pg := s.pg
+    if w.explicit { return nil, false }
+    if w.via_ptr { return w.region, false }
+    r := w.root
+    if r <= 0 || r > pg.end || r in s.carved || r in s.result { return nil, false }
+    #partial switch graph_kind_of(pg, r) {
+    case .Local: return graph_type(pg, r), true
+    case .Param: return graph_type(pg, r), false
+    }
+    return nil, false
+}
+
+// Whether writing place x may change place p: one variable's own storage
+// spelled apart (places_disjoint) never; two variables' own storage only if
+// they're one; else by the objects they live in — one can be inside the
+// other only if its type can hold the other's, and nothing is inside a
+// local's own storage but what its type holds.
+@(private="file")
+storage_view_overlaps :: proc(s: ^Storage, p, x: Node_Id) -> bool {
+    if places_disjoint(s.pg, s.bound, p, x) { return false }
+    pw, xw := storage_view_where(s, p), storage_view_where(s, x)
+    pt, pown := storage_view_object(s, pw)
+    xt, xown := storage_view_object(s, xw)
+    if pt == nil || xt == nil { return true }
+    switch {
+    case pown && xown: return pw.root == xw.root
+    case pown:         return pw.root in s.addressed && type_can_contain(pt, xt)
+    case xown:         return xw.root in s.addressed && type_can_contain(xt, pt)
+    }
+    return type_can_contain(pt, xt) || type_can_contain(xt, pt)
+}
+
+// Whether local d, past its write w, is only read: every place rooted at it
+// read, its parts' places read, a pointer in it followed — a whole value
+// read copied (written elsewhere, returned, compared, printed) or passed to
+// a fun whose result can't hold it. Never written, its address never taken,
+// no view of it made.
+@(private="file")
+storage_view_only_read :: proc(s: ^Storage, d, w: Node_Id) -> bool {
+    pg := s.pg
+    rooted :: proc(s: ^Storage, o, d: Node_Id) -> bool {
+        if o == NO_NODE || graph_is_const(o) || o >= READ { return false }
+        pw := storage_view_where(s, o)
+        return pw.root == d && !pw.via_ptr
+    }
+    for r in s.runs {
+        for op in graph_run(pg, int(r)) {
+            kind := graph_op_of(pg, op)
+            for o, k in graph_operands(pg, op) {
+                if !rooted(s, o.op, d) || op == w && k == 0 { continue }
+                #partial switch kind {
+                case .Field, .Index, .Swizzle, .Variant, .Deref:
+                    if k == 0 { continue }   // (a part of it, or a pointer in it: its own uses met in turn)
+                case .Switch, .Compare, .Print, .Assert, .Return:
+                    continue   // (read where it is)
+                case .Read:
+                    if storage_view_read_kept(s, op) { return false }
+                    continue
+                case .Call, .Construct:
+                    if storage_view_arg_kept(s, op, k) { return false }
+                    continue
+                }
+                return false
+            }
+        }
+    }
+    return true
+}
+
+// Whether a read of a viewed local (or a part) may outlive the read: a
+// number is a value; a struct or array read is its storage, copied by a
+// write, a return, a compare, a print — or passed to a fun that may keep it.
+@(private="file")
+storage_view_read_kept :: proc(s: ^Storage, read: Node_Id) -> bool {
+    pg := s.pg
+    if llvm_scalar(graph_type(pg, read)) { return false }
+    u := s.user[graph_ix(pg, read)]
+    if u == -1 { return false }
+    if u < 0 { return true }
+    #partial switch graph_op_of(pg, u) {
+    case .Write:
+        return graph_operands(pg, u)[0].op == read   // (a value written, not where)
+    case .Return, .Compare, .Print, .Assert:
+        return false
+    case .Call, .Construct:
+        for o, k in graph_operands(pg, u) {
+            if o.op == read && storage_view_arg_kept(s, u, k) { return true }
+        }
+        return false
+    }
+    return true
+}
+
+// Whether a call's k-th operand, a viewed local's storage, may be kept past
+// it: a fun with no code of its own (foreign, an intrinsic), one through a
+// fun value, or one whose result may hold that param.
+@(private="file")
+storage_view_arg_kept :: proc(s: ^Storage, op: Node_Id, k: int) -> bool {
+    pg := s.pg
+    callee := graph_called(pg, op)
+    if callee == nil { return true }
+    if _, src := callee.origin.(Origin_Source); !src { return true }
+    first := 1 if graph_op_of(pg, op) == .Construct else 0
+    i := k - first
+    sum := reach_summary(s.pc, s.summaries, callee)
+    return i < 0 || i >= len(sum.returned) || sum.returned[i]
+}
+
+// Whether nothing that could change place p runs while local d views it:
+// from its write (`wat` in run `wri`) to its last read — each operation after
+// the write in its run, and each in a run the write's run reaches, not
+// through it again, that reaches one of d's reads (storage_view_may_change).
+// A read in a defer's block: not known when it runs.
+@(private="file")
+storage_view_unchanged :: proc(s: ^Storage, d: Node_Id, wri, wat: int, p: Node_Id) -> bool {
+    pg := s.pg
+    n := s.own
+    at := make(map[i32]int, n, context.temp_allocator)
+    for r, i in s.runs[:n] { at[r] = i }
+    succ := make([][dynamic]int, n, context.temp_allocator)
+    pred := make([][dynamic]int, n, context.temp_allocator)
+    uses := make([]bool, n, context.temp_allocator)
+    for r, i in s.runs {
+        ops := graph_run(pg, int(r))
+        for op in ops {
+            for o in graph_operands(pg, op) {
+                if o.op == NO_NODE || graph_is_const(o.op) || o.op >= READ { continue }
+                if pw := storage_view_where(s, o.op); pw.root != d || pw.via_ptr { continue }
+                if i >= n { return false }
+                uses[i] = true
+            }
+        }
+        if i >= n || len(ops) == 0 { continue }
+        for edge in graph_out(pg, ops[len(ops) - 1]) {
+            if edge.to == NO_NODE { return false }
+            if j, ok := at[graph_run_starting(pg, edge.to)]; ok {
+                append(&succ[i], j)
+                append(&pred[j], i)
+            }
+        }
+    }
+    walk :: proc(next: [][dynamic]int, from: []int, skip: int, seen: []bool) {
+        todo := make([dynamic]int, context.temp_allocator)
+        for f in from { if f != skip && !seen[f] { seen[f] = true; append(&todo, f) } }
+        for len(todo) > 0 {
+            i := pop(&todo)
+            for j in next[i] { if j != skip && !seen[j] { seen[j] = true; append(&todo, j) } }
+        }
+    }
+    after := make([]bool, n, context.temp_allocator)    // reached from the write's run
+    before := make([]bool, n, context.temp_allocator)   // reaching a read
+    walk(succ, succ[wri][:], wri, after)
+    starts := make([dynamic]int, context.temp_allocator)
+    for u, i in uses { if u { append(&starts, i) } }
+    walk(pred, starts[:], wri, before)
+    for op in graph_run(pg, int(s.runs[wri]))[wat + 1:] {
+        if storage_view_may_change(s, op, p) { return false }
+    }
+    for i in 0 ..< n {
+        if i == wri || !after[i] || !before[i] { continue }
+        for op in graph_run(pg, int(s.runs[i])) {
+            if storage_view_may_change(s, op, p) { return false }
+        }
+    }
+    return true
+}
+
+// Whether an operation may change place p: a write whose place may overlap
+// it, a call handed storage it may write through that may hold it, a
+// defer's block, an arena reset, a `let` carving memory.
+@(private="file")
+storage_view_may_change :: proc(s: ^Storage, op: Node_Id, p: Node_Id) -> bool {
+    pg := s.pg
+    if op >= CONST { return false }   // (a read)
+    #partial switch graph_op_of(pg, op) {
+    case .Write, .Zero, .Fill, .Byte_Read:
+        return storage_view_overlaps(s, p, graph_operands(pg, op)[0].op)
+    case .Construct:
+        return storage_view_overlaps(s, p, graph_operands(pg, op)[0].op) || storage_view_call_writes(s, op, p, 1)
+    case .Call:
+        return storage_view_call_writes(s, op, p, 0)
+    case .Carve, .Run_Defer, .Arena_Reset:
+        return true
+    }
+    return false
+}
+
+// Whether a call may write p through what it's handed: a param it reaches
+// through that is a pointer (a param of a fun with no code: any handed
+// storage) — the place `&place` hands over, or the object a pointer's value
+// points at, plain data apart from p. A call through a fun value: anything.
+@(private="file")
+storage_view_call_writes :: proc(s: ^Storage, op: Node_Id, p: Node_Id, first: int) -> bool {
+    pg := s.pg
+    callee := graph_called(pg, op)
+    if callee == nil { return true }
+    _, src := callee.origin.(Origin_Source)
+    sum := reach_summary(s.pc, s.summaries, callee)
+    ops := graph_operands(pg, op)[first:]
+    if len(ops) != len(sum.reaches) || len(ops) != len(callee.params) { return true }
+    for o, k in ops {
+        if !sum.reaches[k] || o.op == NO_NODE || graph_is_const(o.op) { continue }
+        pt := fn_param(callee, k).type_
+        _, is_ptr := pt.(^Type_Ptr)
+        if src && !is_ptr { continue }   // (a value, or an immutable slice: read only)
+        a := o.op
+        for a < CONST && graph_op_of(pg, a) == .Cast { a = graph_operands(pg, a)[0].op }
+        if _, is_text := graph_const_text(pg, a); is_text { continue }
+        // (Storage handed over: `&place`'s place, an aggregate's own — a
+        // pointer variable handed on is its value.)
+        place := NO_NODE
+        #partial switch graph_op_of(pg, a) {
+        case .Address:
+            place = graph_operands(pg, a)[0].op
+        case .Var, .Field, .Index, .Deref, .Variant:
+            if _, is_ptr := distinct_base(graph_type(pg, a)).(^Type_Ptr); !is_ptr { place = a }
+        }
+        if place != NO_NODE {
+            if !is_plain_data(graph_type(pg, place)) || storage_view_overlaps(s, p, place) { return true }
+            continue
+        }
+        // (A pointer's value: the callee reaches the object it points at.)
+        ptr, holds := distinct_base(graph_type(pg, a)).(^Type_Ptr)
+        if !holds || !is_plain_data(ptr.elem) { return true }
+        pw := storage_view_where(s, p)
+        pt_, pown := storage_view_object(s, pw)
+        if pt_ == nil { return true }
+        if pown && pw.root not_in s.addressed { continue }   // (no pointer reaches it)
+        if type_can_contain(pt_, ptr.elem) || type_can_contain(ptr.elem, pt_) { return true }
+    }
+    return false
 }
 
 // Which locals are declared from a `let` take: such a local is the carved

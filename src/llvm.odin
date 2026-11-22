@@ -486,8 +486,8 @@ llvm_storage :: proc(e: ^Llvm, d: Node_Id) -> Val {
         llvm_debug_var(e, d, v, addr = true)
         return v
     }
-    if b, ok := e.st.bound[d]; ok {    // the payload
-        v := llvm_val(e, b)
+    if b, ok := e.st.bound[d]; ok {    // the payload, the place a local views (storage_views)
+        v := llvm_place(e, b)
         llvm_debug_var(e, d, v, addr = true)
         return v
     }
