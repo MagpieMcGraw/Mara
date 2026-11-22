@@ -1065,14 +1065,18 @@ llvm_op :: proc(e: ^Llvm, op: Node_Id) -> bool {
         }
         if e.rets != nil {
             // Each result into the caller's slot for it: a register value stored,
-            // an aggregate copied (unless built there), a zero value stored whole.
+            // an aggregate copied (unless built there), an aggregate's zero (a
+            // `?`'s return) set byte by byte — stored whole, a big one is a store
+            // per byte to LLVM unoptimized, and crashes it.
             if len(ops) != len(e.rets) { return false }
             for rt, i in e.rets {
                 at := ir_local(fmt.tprintf("sret.%d", i))
                 v := llvm_operand(e, ops[i], rt) or_return
                 switch {
-                case v.kind == .Zero || llvm_scalar(rt):
+                case llvm_scalar(rt):
                     emit_store(g, llvm_type_from_checker(rt), v, at)
+                case v.kind == .Zero:
+                    emit_memset_zero(g, at, type_size(rt))
                 case v != at:
                     llvm_copy(e, at, v, rt)
                 }
