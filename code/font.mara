@@ -20,6 +20,10 @@ Font256 :: class {
 	metrics: Line_Metrics
 	glyphs: [256]Glyph
 }
+Font_Pixels :: struct {
+	width, height, ch: i64
+	data: [24 * MB]byte
+}
 load_raster256 :: (name: []utf8, px_size: f32) -> Font256, Font_Pixels, err {
 	ttf_data : [2 * MB]byte = void
 	read_entire_file(name, &ttf_data)?
@@ -67,11 +71,6 @@ load_raster256 :: (name: []utf8, px_size: f32) -> Font256, Font_Pixels, err {
 		}
 	}
 	return this_font, pix
-}
-
-Font_Pixels :: struct {
-	width, height, ch: i64
-	data: [24 * MB]byte
 }
 
 raster_box :: fun(ttf: ^TTF, outline: ^Outline, index: u16, scale: f32)
@@ -125,8 +124,8 @@ Atlas :: struct (bytes: ^[]byte, u_per_em: u16) {
 // pixel: the median of the three is the distance to the outline, 128 on it,
 // more inside, MSDF_PX_RANGE pixels from 0 to 255), each one's place there
 // and metrics in glyphs; the font's line metrics in metrics. In the atlas's
-// pixels, 32 to the em, y down. (For text at one size, load_coverage_glyphs
-// is sharper.)
+// pixels, 32 to the em, y down. (For text at one size, load_raster256 is
+// sharper.)
 load_glyphs_and_metrics :: fun(
 	font: []utf8,
 	glyphs: ^[]Glyph,
@@ -185,35 +184,9 @@ load_glyphs_and_metrics :: fun(
 
 COVERAGE_CELL :: 128   // the biggest glyph bitmap, each side, in pixels
 
-// A font's glyphs for drawing text `pixels` high (its em), pixel for pixel:
-// characters first .. first + glyphs.cap - 1, each one's coverage (0..255:
-// how much of the pixel it covers) packed into `atlas`, size by size bytes,
-// and its place there and metrics in glyphs; the font's line metrics in
-// metrics. In pixels, y down: a glyph's bitmap is drawn bearing_x right of
-// the pen and bearing_y above the baseline, both whole pixels. Unlike an
-// MSDF (rasterize_msdf), it is for this size only, and sharp at it.
-// (load_coverage_chars takes any characters: these, and — or ∞, say.)
-load_coverage_glyphs :: fun(
-	font: []utf8,
-	pixels: f32,
-	glyphs: ^[]Glyph,
-	metrics: ^Line_Metrics,
-	atlas: ^[]byte,
-	size: i64,
-	first: u32 = 32) -> err
-{
-	chars : [1024]u32
-	if glyphs.cap > chars.cap do return Too_Many_Chars
-	for i in 0:glyphs.cap {
-		&chars ++ (first + u32(i))
-	}
-	load_coverage_chars(font, pixels, chars, glyphs, metrics, atlas, size)?
-}
-
-// A font's glyphs for the characters `chars` — code points, glyphs[i] for
-// chars[i] — as load_coverage_glyphs makes them: for text with more than
-// one range of characters, such as ASCII's and a few marks (— · ∞ →). A
-// character the font hasn't, its missing-glyph box.
+// A font's glyphs for drawing text `pixels` high (its em), pixel for pixel,
+// glyphs[i] for chars[i]: load_raster256 for any characters (— → ∞), into
+// an atlas `size` pixels a side, one byte a pixel.
 load_coverage_chars :: fun(
 	font: []utf8,
 	pixels: f32,
@@ -234,47 +207,31 @@ load_coverage_chars :: fun(
 	metrics.descent  = f32(ttf.hhea.descent)  * scale
 	metrics.line_gap = f32(ttf.hhea.line_gap) * scale
 
-	sky := Skyline(size, size)
+	glyphs.len = chars.len
+	outline : Outline
+	for i in 0:chars.len {
+		index := char_glyph(&ttf, chars[i])
+		parse_glyph(&ttf, index, &outline)?
+		glyphs[i] = raster_box(&ttf, &outline, index, scale)?
+	}
+	if not raster_packs(glyphs, size) do return Atlas_Full
+
 	atlas.len = size * size
 	for i in 0:atlas.len {
 		atlas[i] = u8(0)
 	}
 	acc : [(COVERAGE_CELL + 2) * COVERAGE_CELL]f32
 	cell : [COVERAGE_CELL * COVERAGE_CELL]byte
-
-	glyphs.len = chars.len
-	outline : Outline
-	for i in 0:glyphs.len {
-		glyph_index := char_glyph(&ttf, chars[i])
-		parse_glyph(&ttf, glyph_index, &outline)?
-		m := min(glyph_index, ttf.hhea.num_of_long_hor_metrics - 1)
-		glyphs[i] = Glyph{all 0}
-		glyphs[i].advance = f32(ttf.hmtx.long_metrics[m].advance_width) * scale
-		if outline.contour_end_pts.len == 0 do continue   // (a space: nothing drawn)
-
-		// (Its box in pixels, whole ones, a pixel of room around it.)
-		left   := floor_f32(f32(outline.header.x_min) * scale) - 1.0
-		right  := ceil_f32(f32(outline.header.x_max) * scale) + 1.0
-		top    := ceil_f32(f32(outline.header.y_max) * scale) + 1.0
-		bottom := floor_f32(f32(outline.header.y_min) * scale) - 1.0
-		w := i64(right - left)
-		h := i64(top - bottom)
-		if w > COVERAGE_CELL or h > COVERAGE_CELL do return Glyph_Too_Big
-		rasterize_coverage(&outline, scale, -left, top, w, h, &acc, &cell)
-
-		px, py, ok := pack_rect(&sky, w, h)
-		if not ok do return Atlas_Full
+	for i in 0:chars.len {
+		g := glyphs[i]
+		if g.w == 0 do continue
+		parse_glyph(&ttf, char_glyph(&ttf, chars[i]), &outline)?
+		w, h := i64(g.w), i64(g.h)
+		rasterize_coverage(&outline, scale, -g.bearing_x, g.bearing_y, w, h, &acc, &cell)
 		for y in 0:h {
-			for x in 0:w {
-				atlas[(py + y) * size + px + x] = cell[y * w + x]
-			}
+			row := (i64(g.y) + y) * size + i64(g.x)
+			atlas[row : row + w] = cell[y * w : y * w + w]
 		}
-		glyphs[i].x = i32(px)
-		glyphs[i].y = i32(py)
-		glyphs[i].w = i32(w)
-		glyphs[i].h = i32(h)
-		glyphs[i].bearing_x = left
-		glyphs[i].bearing_y = top
 	}
 }
 
