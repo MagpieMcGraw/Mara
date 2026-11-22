@@ -24,8 +24,6 @@ Font_Pixels :: struct {
 	width, height, ch: i64
 	data: [24 * MB]byte
 }
-COVERAGE_CELL :: 128
-
 load_raster256 :: (name: []utf8, px_size: f32) -> Font256, Font_Pixels, err {
 	ttf_data : [2 * MB]byte = void
 	read_entire_file(name, &ttf_data)?
@@ -46,7 +44,7 @@ load_raster256 :: (name: []utf8, px_size: f32) -> Font256, Font_Pixels, err {
 	for c in 0:256 {
 		index := char_glyph(&ttf, u32(c))
 		parse_glyph(&ttf, index, &outline)?
-		this_font.glyphs[c] = raster_box(&ttf, &outline, index, scale)?
+		this_font.glyphs[c] = raster_box(&ttf, &outline, index, scale)
 	}
 	side := 64 // find the size that will fit all glyphs
 	for not raster_packs(&this_font.glyphs, side) {
@@ -58,19 +56,11 @@ load_raster256 :: (name: []utf8, px_size: f32) -> Font256, Font_Pixels, err {
 	pix.height = side
 	pix.ch = 1
 	pix.data.len = side * side
-	acc : [(COVERAGE_CELL + 2) * COVERAGE_CELL]f32
-	cell : [COVERAGE_CELL * COVERAGE_CELL]byte
 	for c in 0:256 {
 		g := this_font.glyphs[c]
 		if g.w == 0 do continue   // (a space: nothing drawn)
 		parse_glyph(&ttf, char_glyph(&ttf, u32(c)), &outline)?
-		w, h := i64(g.w), i64(g.h)
-		rasterize_coverage(&outline, scale, -g.bearing_x, g.bearing_y,
-						   w, h, &acc, &cell)
-		for y in 0:h {
-			row := (i64(g.y) + y) * side + i64(g.x)
-			pix.data[row : row + w] = cell[y * w : y * w + w]
-		}
+		rasterize_coverage(&outline, scale, g, &pix.data, side)?
 	}
 	return this_font, pix
 }
@@ -100,7 +90,7 @@ load_coverage_chars :: fun(
 	for i in 0:chars.len {
 		index := char_glyph(&ttf, chars[i])
 		parse_glyph(&ttf, index, &outline)?
-		glyphs[i] = raster_box(&ttf, &outline, index, scale)?
+		glyphs[i] = raster_box(&ttf, &outline, index, scale)
 	}
 	if not raster_packs(glyphs, size) do return Atlas_Full
 
@@ -108,24 +98,16 @@ load_coverage_chars :: fun(
 	for i in 0:atlas.len {
 		atlas[i] = u8(0)
 	}
-	acc : [(COVERAGE_CELL + 2) * COVERAGE_CELL]f32
-	cell : [COVERAGE_CELL * COVERAGE_CELL]byte
 	for i in 0:chars.len {
 		g := glyphs[i]
 		if g.w == 0 do continue
 		parse_glyph(&ttf, char_glyph(&ttf, chars[i]), &outline)?
-		w, h := i64(g.w), i64(g.h)
-		rasterize_coverage(&outline, scale, -g.bearing_x, g.bearing_y,
-						   w, h, &acc, &cell)
-		for y in 0:h {
-			row := (i64(g.y) + y) * size + i64(g.x)
-			atlas[row : row + w] = cell[y * w : y * w + w]
-		}
+		rasterize_coverage(&outline, scale, g, atlas, size)?
 	}
 }
 
 raster_box :: fun(ttf: ^TTF, outline: ^Outline, index: u16, scale: f32)
- -> Glyph, err
+ -> Glyph
 {
 	g := Glyph{all 0}
 	m := min(index, ttf.hhea.num_of_long_hor_metrics - 1)
@@ -135,8 +117,6 @@ raster_box :: fun(ttf: ^TTF, outline: ^Outline, index: u16, scale: f32)
 	right  := ceil_f32(f32(outline.header.x_max) * scale) + 1.0
 	top    := ceil_f32(f32(outline.header.y_max) * scale) + 1.0
 	bottom := floor_f32(f32(outline.header.y_min) * scale) - 1.0
-	if right - left > COVERAGE_CELL or top - bottom > COVERAGE_CELL
-	{return g, Glyph_Too_Big}
 	g.w = i32(right - left)
 	g.h = i32(top - bottom)
 	g.bearing_x = left
@@ -162,15 +142,19 @@ raster_packs :: fun(glyphs: ^[]Glyph, side: i64) -> bool {
 // glyphs[i] for chars[i]: load_raster256 for any characters (— → ∞), into
 // an atlas `size` pixels a side, one byte a pixel.
 
-// A glyph's coverage bitmap: how much of each pixel its outline covers, 0
-// to 255. The outline at `scale` pixels a font unit, its origin (the pen,
-// on the baseline) at (origin_x, origin_y) in the bitmap: `out`, w by h
-// bytes, row-major, y down. `acc` is room to work in: (w + 2) * h at least.
-// (Signed-area accumulation, as in font-rs: each edge adds the area it
-// covers to the cells of the rows it crosses; a running sum along a row is
-// its coverage.)
-rasterize_coverage :: fun(outline: ^Outline, scale: f32, origin_x: f32, origin_y: f32,
-                          w: i64, h: i64, acc: ^[]f32, out: ^[]byte) {
+COVERAGE_CELL :: 128   // the biggest glyph drawn, each side, in pixels
+
+// A glyph drawn at its place (g.x, g.y) in `atlas`, `side` pixels a side, one
+// byte a pixel: how much of each pixel its outline covers, 0 to 255, the
+// outline at `scale` pixels a font unit. (Signed-area accumulation, as in
+// font-rs: each edge adds the area it covers to the cells of the rows it
+// crosses; a running sum along a row is its coverage.)
+rasterize_coverage :: fun(outline: ^Outline, scale: f32, g: Glyph,
+                          atlas: ^[]byte, side: i64) -> err
+{
+	w, h := i64(g.w), i64(g.h)
+	if w > COVERAGE_CELL or h > COVERAGE_CELL do return Glyph_Too_Big
+	acc : [(COVERAGE_CELL + 2) * COVERAGE_CELL]f32 = void
 	stride := w + 2
 	acc.len = stride * h
 	for i in 0:acc.len {
@@ -179,15 +163,16 @@ rasterize_coverage :: fun(outline: ^Outline, scale: f32, origin_x: f32, origin_y
 	start : i64 = 0
 	for c in 0:outline.contour_end_pts.len {
 		stop := i64(outline.contour_end_pts[c])
-		coverage_contour(outline, start, stop, scale, origin_x, origin_y, w, h, acc)
+		coverage_contour(outline, start, stop, scale, -g.bearing_x, g.bearing_y,
+		                 w, h, &acc)
 		start = stop + 1
 	}
-	out.len = w * h
 	for y in 0:h {
+		row := (i64(g.y) + y) * side + i64(g.x)
 		sum : f32 = 0
 		for x in 0:w {
 			sum += acc[y * stride + x]
-			out[y * w + x] = u8(min_f32(abs_f32(sum), 1.0) * 255.0 + 0.5)
+			atlas[row + x] = u8(min_f32(abs_f32(sum), 1.0) * 255.0 + 0.5)
 		}
 	}
 }
