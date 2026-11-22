@@ -544,9 +544,22 @@ is_diagnostic :: fun(line: []utf8) -> bool {
 // the path — as Mara code.
 cursor_style :: fun(n: i64, line: []utf8) -> i64 {
 	if n == 0 do return STYLE_TITLE
-	if n > 1 and (line == "declared" or line == "defined" or starts_with(line, "made ") or starts_with(line, "used in ") or starts_with(line, "matched ") or starts_with(line, "written ") or starts_with(line, "read ") or starts_with(line, "pointer taken ") or starts_with(line, "maybe ")) do return STYLE_TITLE
+	if n > 1 and (line == "declared" or line == "defined" or starts_with(line, "maybe ") or is_heading(line)) do return STYLE_TITLE
+	// (A type's lists, under where it's defined: indented as that is.)
+	if n > 1 and line.len > 2 and line[0] == ' ' and line[1] == ' ' and is_heading(line[2 : line.len]) do return STYLE_TITLE
 	if starts_with(line, "  declared") or starts_with(line, "  defined") or starts_with(line, "  built into") do return STYLE_DIM
 	return STYLE_MARA
+}
+
+// Whether a line heads a list: a word, then a count — `written 3`, `read
+// 12`, `pointer taken 1`, `made 2`, `matched 4`, `used in 3 funs`.
+is_heading :: fun(s: []utf8) -> bool {
+	return counted(s, "made ") or counted(s, "used in ") or counted(s, "matched ") or counted(s, "written ") or counted(s, "read ") or counted(s, "pointer taken ")
+}
+
+// Whether s is `word`, then a number.
+counted :: fun(s: []utf8, word: []utf8) -> bool {
+	return starts_with(s, word) and s.len > word.len and s[word.len] >= '0' and s[word.len] <= '9'
 }
 
 // Where a place's `<file>:<line>` ends in a line of the answer —
@@ -584,6 +597,11 @@ number_colon :: fun(s: []utf8, stop: i64) -> i64 {
 cursor_add :: fun(l: ^Lines, h: ^Hub, line: []utf8) {
 	shown_stop, stop := place_end(line)
 	if stop == 0 {
+		at := row_place(line)
+		if at > 0 {
+			row_add(l, h, line, at)
+			return
+		}
 		lines_add(l, line, cursor_style(l.lines.len, line))
 		return
 	}
@@ -604,6 +622,42 @@ cursor_add :: fun(l: ^Lines, h: ^Hub, line: []utf8) {
 		&link ++ "/"
 	}
 	&link ++ line[2 : min_int(stop, 900)]
+	lines_link(l, link)
+}
+
+// Where a row's place begins, the place last — a type's list's `    <fun>
+// <file>:<line>` — after the row's last two spaces; 0 for a line that ends
+// in no place.
+row_place :: fun(line: []utf8) -> i64 {
+	colon := number_colon(line, line.len)
+	if colon < 7 or line[colon - 5 : colon] != ".mara" do return 0
+	at := colon
+	for at > 1 {
+		if line[at - 1] == ' ' and line[at - 2] == ' ' do return at
+		at -= 1
+	}
+	return 0
+}
+
+// A row naming its place last (row_place, at `at`): shown with the file's
+// name alone, and opening there, clicked.
+row_add :: fun(l: ^Lines, h: ^Hub, line: []utf8, at: i64) {
+	name := line.len
+	for name > at {
+		if line[name - 1] == '\\' or line[name - 1] == '/' do break
+		name -= 1
+	}
+	shown : [1000]utf8
+	&shown ++ line[0 : min_int(at, 400)]
+	&shown ++ line[name : min_int(line.len, name + 500)]
+	lines_add(l, shown, STYLE_DIM)
+	link : [2000]utf8
+	whole := line[at] == '/' or line[at] == '\\' or (at + 1 < line.len and line[at + 1] == ':')
+	if not whole {
+		&link ++ h.dir
+		&link ++ "/"
+	}
+	&link ++ line[at : min_int(line.len, at + 900)]
 	lines_link(l, link)
 }
 

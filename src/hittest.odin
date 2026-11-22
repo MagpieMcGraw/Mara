@@ -1133,14 +1133,25 @@ HIT_MADE_ROWS :: 20   // the places a struct is made, listed at most
 // Where a struct's values are made: its constructor run (hit_made).
 hit_write_made :: proc(b: ^strings.Builder, t: ^Tree, a: ^Annotations, decl: Token_Id) {
     made := hit_made(t, a, decl)
-    fmt.sbprintf(b, "\nmade %d\n", len(made))
-    for u, i in made {
-        if i == HIT_MADE_ROWS {
-            fmt.sbprintf(b, "  (%d more)\n", len(made) - i)
-            break
-        }
-        fmt.sbprintf(b, "  %s  %s  %s\n", ask_loc(token_span(build_tokens[u.tok])), hit_holder_name(t, u.node), hit_source_line(build_tokens[u.tok]))
+    fmt.sbprintf(b, "\n  made %d\n", len(made))
+    hit_write_rows(b, t, made, HIT_MADE_ROWS)
+}
+
+// Places as rows under a section of a type's view, each `    <fun>
+// <file>:<line>` — the funs' names padded to one width — at most `most`, then
+// how many more.
+@(private="file")
+hit_write_rows :: proc(b: ^strings.Builder, t: ^Tree, rows: []Hit_Use, most: int) {
+    shown := rows[:min(len(rows), most)]
+    width := 0
+    for u in shown { width = max(width, len(hit_holder_name(t, u.node))) }
+    for u in shown {
+        name := hit_holder_name(t, u.node)
+        fmt.sbprintf(b, "    %s", name)
+        for _ in len(name) ..< width { strings.write_byte(b, ' ') }
+        fmt.sbprintf(b, "  %s\n", ask_loc(token_span(build_tokens[u.tok])))
     }
+    if len(rows) > most { fmt.sbprintf(b, "    (%d more)\n", len(rows) - most) }
 }
 
 // --- a struct's values used ----------------------------------------------------
@@ -1219,7 +1230,7 @@ hit_write_type_uses :: proc(b: ^strings.Builder, t: ^Tree, a: ^Annotations, ty: 
     uses := hit_type_uses(t, a, ty)
     funs := make(map[string]bool, allocator = context.temp_allocator)
     for u in uses { funs[hit_holder_name(t, u.node)] = true }
-    fmt.sbprintf(b, "\nused in %d funs\n", len(funs))
+    fmt.sbprintf(b, "\n  used in %d funs\n", len(funs))
     for kind in Use_Kind {
         rows := make([dynamic]Hit_Use, context.temp_allocator)
         last: Token
@@ -1232,14 +1243,8 @@ hit_write_type_uses :: proc(b: ^strings.Builder, t: ^Tree, a: ^Annotations, ty: 
         }
         if len(rows) == 0 { continue }
         word := "written" if kind == .Written else "pointer taken" if kind == .Pointer else "read"
-        fmt.sbprintf(b, "%s %d\n", word, len(rows))
-        for u, i in rows {
-            if i == HIT_TYPE_ROWS {
-                fmt.sbprintf(b, "  (%d more)\n", len(rows) - i)
-                break
-            }
-            fmt.sbprintf(b, "  %s  %s  %s\n", ask_loc(token_span(build_tokens[u.tok])), hit_holder_name(t, u.node), hit_source_line(build_tokens[u.tok]))
-        }
+        fmt.sbprintf(b, "  %s %d\n", word, len(rows))
+        hit_write_rows(b, t, rows[:], HIT_TYPE_ROWS)
     }
 }
 
