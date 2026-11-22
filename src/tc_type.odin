@@ -250,6 +250,10 @@ tc_type_size :: proc(k: ^TC, n: Tree_Id, elem: Type, span: Span) -> (int, bool) 
             tc_unresolved(k, k.names.misses[n] or_else {}, span, name, TYPE_UNDEFINED_IDENTIFIER)   // (nothing in sight by that name)
             return 0, false
         }
+        if kc == nil && k.names.refs[n].kind == .Param {
+            tc_error(k, span, TYPE_ARRAY_SIZE_PARAM, name, name)   // (`struct(n: i64) { a: [n]T }`)
+            return 0, false
+        }
         if kc == nil {
             tc_error(k, span, TYPE_RUNTIME_SIZED_ARRAYS_SUPPORTED_USE_2, name, type_name(elem))
             return 0, false
@@ -522,6 +526,10 @@ tc_type_named :: proc(k: ^TC, name: string, span: Span, n: Tree_Id) -> Type {
     ref := k.names.refs[n]
     if tc_hider_use(k, ref, name, span) { return Type_Error{} }
     if t, ok := tc_ref_type(k, ref, name); ok { return t }
+    // (A generic struct named bare: its params' defaults'.)
+    if tmpl, is_template := tc_template(k, ref); is_template && k.t.tag[tmpl.node] == .Struct_Def {
+        return tc_struct_defaults(k, tmpl, name, span)
+    }
     // (Two modules' type, said so.)
     if owners := (k.names.misses[n] or_else {}).owners; ref.kind == .None && len(owners) > 1 {
         tc_error(k, span, TYPE_TYPE_NAME_AMBIGUOUS_DEFINED_USE, name, strings.join(owners[:], ", ", context.temp_allocator), name)

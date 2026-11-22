@@ -1392,6 +1392,7 @@ tp_multi_values :: proc(p: ^Tree_Parser, n_names: int, group_break: bool) -> u32
         if group_break {
             ofs := 1
             for tp_peek(p, ofs) == .Newline { ofs += 1 }
+            if tp_peek(p, ofs) == .Dollar { break }   // (`, $n := 256`)
             if tp_peek(p, ofs) == .Identifier {
                 next := ofs + 1
                 for tp_peek(p, next) == .Newline { next += 1 }
@@ -1415,11 +1416,14 @@ tp_generic_param :: proc(p: ^Tree_Parser) -> Tree_Id {
     tp_advance(p)   // `$`
     name := tp_expect(p, .Identifier)
     tp_expect(p, .Colon)
-    kind := tp_expect(p, .Identifier)
-    default: Token_Id
-    if token_text(build_tokens[kind]) != "type" && tp_kind(p) == .Equals {
+    // (Its kind: `type`, or a constant's type, one word — none written for
+    // `$n := 256`; then its default.)
+    kind: Token_Id
+    if tp_kind(p) != .Equals { kind = tp_advance(p) }
+    default: Tree_Id
+    if (kind == 0 || token_text(build_tokens[kind]) != "type") && tp_kind(p) == .Equals {
         tp_advance(p)
-        default = tp_expect(p, .Number)
+        default = tp_expr(p)
     }
     return tp_node(p, .Generic_Param, name, start, u32(kind), u32(default))
 }
@@ -1442,23 +1446,12 @@ tp_scope_def :: proc(p: ^Tree_Parser, tag: Tree_Tag, packed: Token_Id, bare := f
     }
     tp_expect(p, .Left_Paren)
     tp_skip_newlines(p)
+    // (Its `$` params, anywhere among the others: what it's made for.)
     gs := tp_items()
-    for tp_kind(p) == .Dollar {
-        append(&gs, tp_generic_param(p))
-        if tp_kind(p) == .Comma {
-            tp_advance(p)
-            tp_skip_newlines(p)
-        }
-    }
+    params = tp_param_loop(p, true, &gs)
+    tp_expect(p, .Right_Paren)
     generics = tp_list(p, gs)
-    if tp_kind(p) == .Right_Paren {
-        tp_advance(p)
-        returns = tp_optional_returns(p)
-    } else {
-        params = tp_param_loop(p, true)
-        tp_expect(p, .Right_Paren)
-        returns = tp_optional_returns(p)
-    }
+    returns = tp_optional_returns(p)
     // (Its params typed `^T`, for its body: `out = v` writes what out points
     // at — tp_write_target. A fun inside has its own.)
     saved_ptrs := p.ptr_params
@@ -1475,16 +1468,24 @@ tp_scope_def :: proc(p: ^Tree_Parser, tag: Tree_Tag, packed: Token_Id, bare := f
 }
 
 // A parameter list's groups, between parens the caller consumes.
-tp_param_loop :: proc(p: ^Tree_Parser, defaults: bool) -> u32 {
+tp_param_loop :: proc(p: ^Tree_Parser, defaults: bool, generics: ^[dynamic]Tree_Id = nil) -> u32 {
     groups := tp_items()
     tp_skip_newlines(p)
     if tp_kind(p) == .Right_Paren { return 0 }
-    append(&groups, tp_param_group(p, defaults))
+    // (A `$` param, where they're taken: into `generics`.)
+    one :: proc(p: ^Tree_Parser, defaults: bool, generics: ^[dynamic]Tree_Id, groups: ^[dynamic]Tree_Id) {
+        if generics != nil && tp_kind(p) == .Dollar {
+            append(generics, tp_generic_param(p))
+            return
+        }
+        append(groups, tp_param_group(p, defaults))
+    }
+    one(p, defaults, generics, &groups)
     for tp_kind(p) == .Comma || tp_kind(p) == .Newline {
         if tp_kind(p) == .Comma { tp_advance(p) }
         tp_skip_newlines(p)
         if tp_kind(p) == .Right_Paren { break }
-        append(&groups, tp_param_group(p, defaults))
+        one(p, defaults, generics, &groups)
     }
     tp_skip_newlines(p)
     return tp_list(p, groups)

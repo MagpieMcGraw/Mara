@@ -1,6 +1,8 @@
 package mara
 
 import "core:fmt"
+import "core:slice"
+import "core:strings"
 
 // Generics in the checker. A definition is a template when its signature
 // names a type it is given (`$T`), a struct's param is a shape (`~T`), or a
@@ -109,18 +111,9 @@ tc_is_generic :: proc(k: ^TC, node: Tree_Id) -> bool {
         if tc_type_has_dollar(k, rt) { return true }
     }
     if !is_struct { return false }
-    // A struct's params its fields' types use; `$T` in them.
+    // (`$T` in its fields' types.)
     for s in v.body {
-        if t.tag[s] != .Decl { continue }
-        ft := decl_view(t, s).type_
-        if tc_type_has_dollar(k, ft) { return true }
-        for g in v.params {
-            pv := params_view(t, g)
-            if pv.type_ == 0 || (t.tag[pv.type_] != .Type_Name && t.tag[pv.type_] != .Type_Keyword) { continue }
-            for name in pv.names {
-                if tc_type_uses(k, ft, name) { return true }
-            }
-        }
+        if t.tag[s] == .Decl && tc_type_has_dollar(k, decl_view(t, s).type_) { return true }
     }
     return false
 }
@@ -143,38 +136,6 @@ tc_type_has_dollar :: proc(k: ^TC, n: Tree_Id) -> bool {
         for a in tree_list(t, t.b[n]) { if tc_type_has_dollar(k, a) { return true } }
     }
     return false
-}
-
-// Whether a type as written uses a declaration (decl: the token that
-// declares it) — names it as a type, or as an array's size: what the
-// name table says those names refer to.
-tc_type_uses :: proc(k: ^TC, n: Tree_Id, decl: Token_Id) -> bool {
-    if n == 0 { return false }
-    t := k.t
-    #partial switch t.tag[n] {
-    case .Type_Name:
-        return len(tree_token_list(t, t.a[n])) == 1 && k.names.refs[n].decl == decl
-    case .Ident:
-        return k.names.refs[n].decl == decl
-    case .Type_Pointer, .Type_Paren, .Type_Slice:
-        inner := Tree_Id(t.a[n]) if t.tag[n] != .Type_Slice else Tree_Id(t.b[n])
-        return tc_type_uses(k, inner, decl)
-    case .Type_Partial:
-        return tc_size_names(k, Tree_Id(t.a[n]), decl) || tc_type_uses(k, Tree_Id(t.b[n]), decl)
-    case .Type_Array:
-        return tc_size_names(k, Tree_Id(tree_rec(t, t.a[n], 2)[0]), decl) || tc_type_uses(k, Tree_Id(t.b[n]), decl)
-    case .Type_Generic:
-        for a in tree_list(t, t.a[n]) { if tc_type_uses(k, a, decl) { return true } }
-    case .Type_Fun:
-        for a in tree_list(t, t.a[n]) { if tc_type_uses(k, a, decl) { return true } }
-        for a in tree_list(t, t.b[n]) { if tc_type_uses(k, a, decl) { return true } }
-    }
-    return false
-}
-
-// Whether an array's size is written as a bare name of the declaration.
-tc_size_names :: proc(k: ^TC, n: Tree_Id, decl: Token_Id) -> bool {
-    return n != 0 && k.t.tag[n] == .Ident && k.names.refs[n].decl == decl
 }
 
 // A fun template's type params, in order — those it declares, then each
@@ -387,6 +348,7 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
     // (A body's: the body it's made for — `owner`, a receiver's struct.)
     tmpl := tmpl
     tmpl.owner = owner if owner != nil else tc_template_owner(k, tmpl)
+    if tr.tag[tmpl.node] == .Struct_Def { return tc_struct_construction(k, n, name, tmpl, args) }
     if tr.tag[tmpl.node] != .Fun_Def {
         tc_unsupported(k, n, "a generic struct's construction")
         return Type_Error{}
@@ -626,7 +588,8 @@ tc_struct_generics :: proc(k: ^TC, node: Tree_Id) -> (gps: [dynamic]TC_Generic_P
         return false
     }
     for g in v.generics {
-        append(&gps, TC_Generic_Param{decl = t.main[g], value = tc_text(Token_Id(t.a[g])) != "type"})
+        kind := Token_Id(t.a[g])
+        append(&gps, TC_Generic_Param{decl = t.main[g], value = kind == 0 || tc_text(kind) != "type", def = Tree_Id(t.b[g])})
     }
     dropped := make(map[Token_Id]bool, context.temp_allocator)   // (a `$T` a param named)
     for g in v.params {
@@ -642,14 +605,6 @@ tc_struct_generics :: proc(k: ^TC, node: Tree_Id) -> (gps: [dynamic]TC_Generic_P
                 append(&gps, TC_Generic_Param{decl = name})
                 dropped[tc_type_param_named(k, pv.type_)] = true
                 promoted[name] = true
-            case .Type_Name, .Type_Keyword:
-                for s in v.body {
-                    if t.tag[s] == .Decl && tc_type_uses(k, decl_view(t, s).type_, name) {
-                        append(&gps, TC_Generic_Param{decl = name, value = true, def = def})
-                        promoted[name] = true
-                        break
-                    }
-                }
             }
         }
     }
@@ -705,24 +660,54 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) ->
             append(&targs, tc_type(k, a, span))
             continue
         }
-        // (A value: a number, a constant, an operation of them.)
-        at := a
-        if t.tag[a] == .Type_Name {
-            kc := k.const_at[k.names.refs[a].decl] if k.names.refs[a].kind == .Const else nil
-            if kc == nil {
-                tc_unsupported(k, a, "a generic's size known at run time")
-                return Type_Error{}
-            }
-            at = kc.value
-        }
-        v, known := tc_comptime_int(k, at)
-        if !known {
-            tc_unsupported(k, a, "a generic's size known at run time")
-            return Type_Error{}
-        }
-        append(&targs, Type_Const_Int{value = int(v)})
+        v, ok := tc_generic_value(k, a)
+        if !ok { return Type_Error{} }
+        append(&targs, v)
     }
-    // (The params it leaves off: their defaults.)
+    if len(args) > len(gps) {
+        tc_error(k, span, TYPE_GENERIC_STRUCT_TYPE_ARGS, name, len(gps), len(args))
+        return Type_Error{}
+    }
+    return tc_struct_instance_of(k, tmpl, name, gps[:], promoted, targs[:], span)
+}
+
+// A generic struct named bare (`x : Font`): its instance for its params'
+// defaults — an error, said, for one with none.
+tc_struct_defaults :: proc(k: ^TC, tmpl: TC_Template, name: string, span: Span) -> Type {
+    tmpl := tmpl
+    tmpl.owner = tc_template_owner(k, tmpl)
+    gps, promoted := tc_struct_generics(k, tmpl.node)
+    return tc_struct_instance_of(k, tmpl, name, gps[:], promoted, nil, span)
+}
+
+// A generic struct's value param's argument: a number, a constant, an
+// operation of them, or a size param an instance has bound (`N` in
+// `Font(N)`, a `$N` of the fun it's in). False, said, when it's known only
+// at run time.
+tc_generic_value :: proc(k: ^TC, a: Tree_Id) -> (Type_Const_Int, bool) {
+    t := k.t
+    at := tc_unparen(k, a)
+    #partial switch t.tag[at] {
+    case .Type_Dollar, .Type_Name, .Ident:
+        if ty, ok := tc_ref_type(k, k.names.refs[at], ""); ok {
+            if ci, is_int := ty.(Type_Const_Int); is_int { return ci, true }
+        }
+        if k.names.refs[at].kind == .Const {
+            if kc := k.const_at[k.names.refs[at].decl]; kc != nil { at = kc.value }
+        }
+    }
+    if v, known := tc_comptime_int(k, at); known { return Type_Const_Int{value = int(v)}, true }
+    tc_error(k, tree_span(t, a), TYPE_GENERIC_VALUE_RUNTIME, tc_written(k, a))
+    return {}, false
+}
+
+// A generic struct's instance for its params' arguments `given`, in their
+// order (tc_struct_generics) — the ones left off their defaults — made once.
+tc_struct_instance_of :: proc(k: ^TC, tmpl: TC_Template, name: string, gps: []TC_Generic_Param, promoted: map[Token_Id]bool,
+                              given: []Type, span: Span) -> Type {
+    t := k.t
+    targs := make([dynamic]Type, context.temp_allocator)
+    append(&targs, ..given)
     for i := len(targs); i < len(gps); i += 1 {
         gp := gps[i]
         if gp.def == 0 { break }
@@ -734,12 +719,12 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) ->
             tc_unsupported(k, gp.def, "a generic type param's default")
             return Type_Error{}
         }
-        v, known := tc_comptime_int(k, gp.def)
-        if !known { break }
-        append(&targs, Type_Const_Int{value = int(v)})
+        v, ok := tc_generic_value(k, gp.def)
+        if !ok { return Type_Error{} }
+        append(&targs, v)
     }
-    if len(targs) != len(gps) || len(args) > len(gps) {
-        tc_error(k, span, TYPE_EXPECTS_TYPE_ARGUMENT, name, len(gps), len(args))
+    if len(targs) != len(gps) {
+        tc_error(k, span, TYPE_EXPECTS_TYPE_ARGUMENT, name, len(gps), len(given))
         return Type_Error{}
     }
     mangled := tc_instance_name(k, tmpl, name, targs[:])
@@ -753,6 +738,73 @@ tc_struct_instance :: proc(k: ^TC, n: Tree_Id, tmpl: TC_Template, span: Span) ->
     subst := make(TC_Bindings)
     for gp, i in gps { subst[gp.decl] = targs[i] }
     return tc_instantiate_struct(k, tmpl, subst, targs[:], promoted, mangled)
+}
+
+// `Name(args)` called, Name a generic struct: its arguments in its params'
+// written order — a `$` param's its instance's (a constant, a type), the
+// rest its constructor's — then the instance made for them, built by those
+// (tc_call_core). `Font(32, 4096)` for `Font :: class(f := 0, $n := 256)`.
+tc_struct_construction :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, args: []Tree_Id) -> Type {
+    t := k.t
+    span := tree_span(t, n)
+    gps, promoted := tc_struct_generics(k, tmpl.node)
+    v := scope_view(t, tmpl.node)
+    // (Its params as written: a `$` one's place among the generics, else -1,
+    // a constructor's.)
+    Slot :: struct { tok: Token_Id, generic: int }
+    slots := make([dynamic]Slot, context.temp_allocator)
+    for g in v.generics {
+        for gp, i in gps { if gp.decl == t.main[g] { append(&slots, Slot{t.main[g], i}) } }
+    }
+    for g in v.params {
+        for pn in params_view(t, g).names {
+            gi := -1
+            for gp, i in gps { if gp.decl == pn { gi = i } }
+            append(&slots, Slot{pn, gi})
+        }
+    }
+    slice.sort_by(slots[:], proc(x, y: Slot) -> bool { return x.tok < y.tok })
+    if len(args) > len(slots) {
+        for a in args { tc_check(k, a) }
+        names := make([dynamic]string, context.temp_allocator)
+        for sl in slots { append(&names, fmt.tprintf("$%s", tc_text(sl.tok)) if sl.generic >= 0 else tc_text(sl.tok)) }
+        tc_error(k, span, TYPE_EXPECTS_ARGS, name, len(slots), strings.join(names[:], ", ", context.temp_allocator), len(args))
+        return Type_Error{}
+    }
+    // (The generics given, in their own order, up to the first left off.)
+    given := make([]Type, len(gps), context.temp_allocator)
+    have := make([]bool, len(gps), context.temp_allocator)
+    built := make([dynamic]Tree_Id, context.temp_allocator)
+    for a, i in args {
+        s := slots[i]
+        if s.generic < 0 {
+            append(&built, a)
+            continue
+        }
+        gp := gps[s.generic]
+        if !gp.value || gp.shape != 0 {
+            given[s.generic] = tc_type(k, a, span)
+        } else {
+            gv, ok := tc_generic_value(k, a)
+            if !ok { return Type_Error{} }
+            given[s.generic] = gv
+        }
+        have[s.generic] = true
+    }
+    count := 0
+    for count < len(gps) && have[count] { count += 1 }
+    for i in count ..< len(gps) {
+        if have[i] {
+            tc_unsupported(k, n, "a generic's param given after one left off")
+            return Type_Error{}
+        }
+    }
+    tmpl := tmpl
+    tmpl.owner = tc_template_owner(k, tmpl)
+    inst := tc_struct_instance_of(k, tmpl, name, gps[:], promoted, given[:count], span)
+    st, is_scope := inst.(^Type_Scope)
+    if !is_scope { return Type_Error{} }
+    return tc_call_core(k, n, name, built[:], qual = st)
 }
 
 // A generic struct's instance: its type (named for its arguments), its

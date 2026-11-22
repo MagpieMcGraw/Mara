@@ -368,6 +368,7 @@ Hider :: struct { word, what: string, at: Token_Id }
 // A variable (decl) named as a definition in sight (hidden): noted.
 tc_hider_note :: proc(k: ^TC, decl: Token_Id, name: string, hidden: Ref) {
     word := "fun" if hidden.kind == .Fun else "type" if hidden.kind == .Type else "module" if hidden.kind == .Module else "constant"
+    if hidden.kind == .Type && hidden.decl > 0 && build_tokens[hidden.decl - 1].kind == .Dollar { word = "`$` param" }
     k.hiders[decl] = {word, fmt.aprintf("'%s'", name), hidden.decl}
 }
 

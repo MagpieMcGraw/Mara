@@ -80,7 +80,8 @@ Tree_Tag :: enum u8 {
     Intrinsic_Body, // `{ @llvm.a.b }`: main: `@`; a: tokens — the name's parts
     Param_Group,    // `a, b: T = x, y`, `a := x`: main: the first name; a: tokens — the
                     // names; b: rec {type (none: `:=`), values: list}
-    Generic_Param,  // `$T: type`, `$N: int = 256`: main: the name; a: the kind; b: the default
+    Generic_Param,  // `$T: type`, `$N: i64 = 256`, `$n := 256`: main: the name; a: its kind (`type`, a
+                    // constant's type; 0 none written); b: its default
     Union_Def,      // main: `union`; a: list — the header's options; b: list — the variants
     Union_Tag,      // `tag u32`: main: `tag`; a: the type keyword
     Union_Pad,      // `pad T`: main: `pad`; a: the type
@@ -196,7 +197,7 @@ tree_shapes := [Tree_Tag]Tree_Shape{
     .Struct_Def     = {a = .Rec, b = .Token, rec = {0 = .List, 1 = .List, 2 = .List, 3 = .List, 4 = .Node}},
     .Intrinsic_Body = {a = .Tokens},
     .Param_Group    = {a = .Tokens, b = .Rec, rec = {0 = .Node, 1 = .List}},
-    .Generic_Param  = {a = .Token, b = .Token},
+    .Generic_Param  = {a = .Token, b = .Node},
     .Union_Def      = {a = .List, b = .List},
     .Union_Tag      = {a = .Token},
     .Union_Pad      = {a = .Node},
