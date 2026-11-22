@@ -22,20 +22,6 @@ Line_Metrics :: struct {
 	ascent, descent, line_gap : f32
 }
 
-// What reading a font and loading its glyphs can fail with.
-Font_Error :: error {
-	Atlas_Full         // the atlas has no room left for a glyph
-	Atlas_Too_Small    // the atlas's buffer holds fewer bytes than the atlas needs
-	Glyph_Too_Big      // a glyph's bitmap is bigger than the room to draw it in
-	Glyph_Too_Complex  // a glyph has more points, contours or edges than an outline holds
-	Too_Many_Chars     // more characters than the glyphs' list holds
-	Not_TrueType       // not a TrueType font: CFF outlines (most .otf), a collection (.ttc), not a font
-	Missing_Table      // the font lacks a table it must have
-	Bad_Table          // a table runs past the file's end, or its counts don't agree
-	Bad_Glyph          // a glyph record that doesn't decode, or a glyph past the font's last
-	Unsupported_Cmap   // no character map in a format this reads (0, 4, 6 or 12)
-}
-
 MSDF_ATLAS :: 1024   // an MSDF atlas's side, in pixels (3 bytes each)
 
 // The atlas's cells: the bytes they're written into (bytes, a mutable
@@ -60,20 +46,20 @@ load_glyphs_and_metrics :: fun(
 	font: []utf8,
 	glyphs: ^[]Glyph,
 	metrics: ^Line_Metrics,
-	atlas: ^[]byte,
+	pixels: ^[]byte,
 	first: u32 = 0) -> err
 {
-	if atlas.cap < MSDF_ATLAS * MSDF_ATLAS * 3 do return Atlas_Too_Small
+	if pixels.cap < MSDF_ATLAS * MSDF_ATLAS * 3 do return Atlas_Too_Small
 	ttf_file : [2 * MB]byte = void
 	read_entire_file(font, &ttf_file)?
 	check_ttf(&ttf_file)?
 	ttf := TTF(&ttf_file)
 
-	atlas.len = MSDF_ATLAS * MSDF_ATLAS * 3
-	for i in 0:atlas.len {
-		atlas[i] = u8(0)
+	pixels.len = MSDF_ATLAS * MSDF_ATLAS * 3
+	for i in 0:pixels.len {
+		pixels[i] = u8(0)
 	}
-	cells := Atlas(atlas, ttf.head.units_per_em)
+	cells := Atlas(pixels, ttf.head.units_per_em)
 	sky := Skyline(cells.size, cells.size)
 
 	metrics.ascent   = f32(ttf.hhea.ascent)   * cells.px_scale
@@ -93,7 +79,7 @@ load_glyphs_and_metrics :: fun(
 		w, h := msdf_cell(&outline, &cells)
 		px, py, ok := pack_rect(&sky, i64(w), i64(h))
 		if not ok do return Atlas_Full
-		glyphs[i] = Glyph{all 0}
+		//glyphs[i] = Glyph{all 0}
 		glyphs[i].x = i32(px)
 		glyphs[i].y = i32(py)
 
@@ -1505,8 +1491,7 @@ TTF :: struct (bytes: ^[]byte) {
 		}
 		return hmtx
 	}
-
-} // TTF END
+}
 
 MAX_TTF_TABLES :: 64   // the tables a font's directory may list
 
@@ -1716,4 +1701,18 @@ char_glyph :: fun(t: ^TTF, char: u32) -> u16 {
 		}
 		return 0
 	}
+}
+
+// What reading a font and loading its glyphs can fail with.
+Font_Error :: error {
+	Atlas_Full         // the atlas has no room left for a glyph
+	Atlas_Too_Small    // the atlas's buffer holds fewer bytes than the atlas needs
+	Glyph_Too_Big      // a glyph's bitmap is bigger than the room to draw it in
+	Glyph_Too_Complex  // a glyph has more points, contours or edges than an outline holds
+	Too_Many_Chars     // more characters than the glyphs' list holds
+	Not_TrueType       // not a TrueType font: CFF outlines (most .otf), a collection (.ttc), not a font
+	Missing_Table      // the font lacks a table it must have
+	Bad_Table          // a table runs past the file's end, or its counts don't agree
+	Bad_Glyph          // a glyph record that doesn't decode, or a glyph past the font's last
+	Unsupported_Cmap   // no character map in a format this reads (0, 4, 6 or 12)
 }
