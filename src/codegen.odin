@@ -335,14 +335,23 @@ emit_alloca :: proc(g: ^Codegen, dst: Val, ir_type: Ir_Type, align: i32 = 0) {
     append(&g.allocas if g.hoist_allocas else &g.code, Ir{op = .Alloca, dest = dst, ty = ir_type, align = align})
 }
 
+// A debug build copies and zeroes up to this many bytes in place, no call:
+// unoptimized, LLVM calls memcpy and memset for anything past a few words,
+// and with no C library those are `rep movsb` / `rep stosb` (x86.odin's
+// support code), slow to start — a struct copy a few times slower than the
+// C library's. (Optimized, LLVM inlines them itself.)
+MEM_INLINE_MAX :: 512
+
 // `call void @llvm.memcpy.p0.p0.i64(ptr <dst>, ptr <src>, i64 <bytes>, i1 false)`
 emit_memcpy :: proc(g: ^Codegen, dst, src: Val, bytes: int) {
-    ir_call(g, {}, IR_VOID, ir_global("llvm.memcpy.p0.p0.i64"), {IR_PTR, dst, {}}, {IR_PTR, src, {}}, {IR_I64, ir_int(bytes), {}}, {IR_I1, IR_FALSE, {}})
+    f := "llvm.memcpy.inline.p0.p0.i64" if g.dbg != nil && bytes <= MEM_INLINE_MAX else "llvm.memcpy.p0.p0.i64"
+    ir_call(g, {}, IR_VOID, ir_global(f), {IR_PTR, dst, {}}, {IR_PTR, src, {}}, {IR_I64, ir_int(bytes), {}}, {IR_I1, IR_FALSE, {}})
 }
 
 // `call void @llvm.memset.p0.i64(ptr <dst>, i8 0, i64 <bytes>, i1 false)`
 emit_memset_zero :: proc(g: ^Codegen, dst: Val, bytes: int) {
-    ir_call(g, {}, IR_VOID, ir_global("llvm.memset.p0.i64"), {IR_PTR, dst, {}}, {IR_I8, ir_int(0), {}}, {IR_I64, ir_int(bytes), {}}, {IR_I1, IR_FALSE, {}})
+    f := "llvm.memset.inline.p0.i64" if g.dbg != nil && bytes <= MEM_INLINE_MAX else "llvm.memset.p0.i64"
+    ir_call(g, {}, IR_VOID, ir_global(f), {IR_PTR, dst, {}}, {IR_I8, ir_int(0), {}}, {IR_I64, ir_int(bytes), {}}, {IR_I1, IR_FALSE, {}})
 }
 
 emit_br :: proc(g: ^Codegen, label: Ir_Label) {
