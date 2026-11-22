@@ -20,23 +20,21 @@ Font256 :: class {
 	metrics: Line_Metrics
 	glyphs: [256]Glyph
 }
-load_raster256 :: (name: []utf8, pixel_size: f32) -> Font256, Font_Pixels, err {
+load_raster256 :: (name: []utf8, px_size: f32) -> Font256, Font_Pixels, err {
 	ttf_data : [2 * MB]byte = void
 	read_entire_file(name, &ttf_data)?
 	check_ttf(&ttf_data)?
 	ttf := TTF(&ttf_data)
-	scale := pixel_size / f32(ttf.head.units_per_em)
+	scale := px_size / f32(ttf.head.units_per_em)
 
 	this_font : Font256
 	pix : Font_Pixels
 
-	this_font.ideal_size = pixel_size
+	this_font.ideal_size = px_size
 	this_font.metrics.ascent   = f32(ttf.hhea.ascent)   * scale
 	this_font.metrics.descent  = f32(ttf.hhea.descent)  * scale
 	this_font.metrics.line_gap = f32(ttf.hhea.line_gap) * scale
 
-	// Each character's box first, then the smallest square that packs them
-	// all, then each one drawn in its place.
 	this_font.glyphs.len = 256
 	outline : Outline
 	for c in 0:256 {
@@ -44,7 +42,7 @@ load_raster256 :: (name: []utf8, pixel_size: f32) -> Font256, Font_Pixels, err {
 		parse_glyph(&ttf, index, &outline)?
 		this_font.glyphs[c] = raster_box(&ttf, &outline, index, scale)?
 	}
-	side : i64 = 64
+	side := 64 // find the size that will fit all glyphs
 	for not raster_packs(&this_font.glyphs, side) {
 		side *= 2
 		if side * side > pix.data.cap do return this_font, pix, Atlas_Full
@@ -61,30 +59,14 @@ load_raster256 :: (name: []utf8, pixel_size: f32) -> Font256, Font_Pixels, err {
 		if g.w == 0 do continue   // (a space: nothing drawn)
 		parse_glyph(&ttf, char_glyph(&ttf, u32(c)), &outline)?
 		w, h := i64(g.w), i64(g.h)
-		rasterize_coverage(&outline, scale, -g.bearing_x, g.bearing_y, w, h, &acc, &cell)
+		rasterize_coverage(&outline, scale, -g.bearing_x, g.bearing_y,
+						   w, h, &acc, &cell)
 		for y in 0:h {
-			for x in 0:w {
-				pix.data[(i64(g.y) + y) * side + i64(g.x) + x] = cell[y * w + x]
-			}
+			row := (i64(g.y) + y) * side + i64(g.x)
+			pix.data[row : row + w] = cell[y * w : y * w + w]
 		}
 	}
 	return this_font, pix
-}
-
-Font :: class(start := 0, $n := 256) {
-	first := start
-	ideal_size: f32
-	metrics: Line_Metrics
-	glyphs: [n]Glyph
-
-	glyph_of :: fun(f: Font, c: u32) -> Glyph {
-		n := f.glyphs.len - 1
-		if c >= f.first and i64(c - f.first) < n do return f.glyphs[c - f.first]
-		return f.glyphs[n]
-	}
-	line_height :: fun(f: Font) -> f32 {
-		return f.metrics.ascent - f.metrics.descent + f.metrics.line_gap
-	}
 }
 
 Font_Pixels :: struct {
@@ -92,71 +74,9 @@ Font_Pixels :: struct {
 	data: [24 * MB]byte
 }
 
-/*load_raster :: fun(name: []utf8, pixels: f32, i64, u64) -> (font: Font, atlas: Raster_Pixels, e: err) {
-	if range.last < range.first or i64(range.last - range.first) >= FONT_GLYPHS do return font, atlas, Too_Many_Chars
-	ttf_file : [2 * MB]byte = void
-	read_entire_file(name, &ttf_file)?
-	check_ttf(&ttf_file)?
-	ttf := TTF(&ttf_file)
-	scale := pixels / f32(ttf.head.units_per_em)
-	font.pixels = pixels
-	font.first = range.first
-	font.metrics.ascent   = f32(ttf.hhea.ascent)   * scale
-	font.metrics.descent  = f32(ttf.hhea.descent)  * scale
-	font.metrics.line_gap = f32(ttf.hhea.line_gap) * scale
-
-	// Each glyph's box first — the range's characters', then the missing
-	// glyph's — then the smallest side that packs them, then each drawn in
-	// its place.
-	font.glyphs.len = i64(range.last - range.first) + 2
-	outline : Outline
-	for i in 0:font.glyphs.len {
-		index := raster_glyph_index(&ttf, range, i, font.glyphs.len)
-		parse_glyph(&ttf, index, &outline)?
-		font.glyphs[i] = raster_box(&ttf, &outline, index, scale)?
-	}
-	side : i64 = 64
-	for not raster_packs(&font.glyphs, side) {
-		side *= 2
-		if side > RASTER_ATLAS do return font, atlas, Atlas_Full
-	}
-
-	atlas.width = side
-	atlas.height = side
-	for i in 0:side * side {
-		atlas.data[i] = u8(0)
-	}
-	acc : [(COVERAGE_CELL + 2) * COVERAGE_CELL]f32
-	cell : [COVERAGE_CELL * COVERAGE_CELL]byte
-	for i in 0:font.glyphs.len {
-		g := font.glyphs[i]
-		if g.w == 0 do continue   // (a space: nothing drawn)
-		parse_glyph(&ttf, raster_glyph_index(&ttf, range, i, font.glyphs.len), &outline)?
-		w, h := i64(g.w), i64(g.h)
-		rasterize_coverage(&outline, scale, -g.bearing_x, g.bearing_y, w, h, &acc, &cell)
-		for y in 0:h {
-			for x in 0:w {
-				atlas.data[(i64(g.y) + y) * side + i64(g.x) + x] = cell[y * w + x]
-			}
-		}
-	}
-	return font, atlas
-}
-
-// ---------------------------------------------------------------------------
-// Below: how load_raster does it, the MSDF loader, rasterizing, parsing
-// ---------------------------------------------------------------------------
-
-// The font's glyph for a raster font's i-th of n: the range's characters,
-// then the missing glyph (0).
-raster_glyph_index :: fun(ttf: ^TTF, range: Char_Range, i: i64, n: i64) -> u16 {
-	if i == n - 1 do return 0
-	return char_glyph(ttf, range.first + u32(i))
-}
-*/
-// A glyph's box at `scale` pixels a font unit, whole pixels with one of room
-// around it, and its advance; not yet placed. A space: no box.
-raster_box :: fun(ttf: ^TTF, outline: ^Outline, index: u16, scale: f32) -> Glyph, err {
+raster_box :: fun(ttf: ^TTF, outline: ^Outline, index: u16, scale: f32)
+ -> Glyph, err
+{
 	g := Glyph{all 0}
 	m := min(index, ttf.hhea.num_of_long_hor_metrics - 1)
 	g.advance = f32(ttf.hmtx.long_metrics[m].advance_width) * scale
@@ -165,7 +85,8 @@ raster_box :: fun(ttf: ^TTF, outline: ^Outline, index: u16, scale: f32) -> Glyph
 	right  := ceil_f32(f32(outline.header.x_max) * scale) + 1.0
 	top    := ceil_f32(f32(outline.header.y_max) * scale) + 1.0
 	bottom := floor_f32(f32(outline.header.y_min) * scale) - 1.0
-	if right - left > COVERAGE_CELL or top - bottom > COVERAGE_CELL do return g, Glyph_Too_Big
+	if right - left > COVERAGE_CELL or top - bottom > COVERAGE_CELL
+	{return g, Glyph_Too_Big}
 	g.w = i32(right - left)
 	g.h = i32(top - bottom)
 	g.bearing_x = left
@@ -173,8 +94,6 @@ raster_box :: fun(ttf: ^TTF, outline: ^Outline, index: u16, scale: f32) -> Glyph
 	return g
 }
 
-// Whether glyphs' boxes all pack into a square `side` pixels a side: each
-// placed (x, y) if they do.
 raster_packs :: fun(glyphs: ^[]Glyph, side: i64) -> bool {
 	sky := Skyline(side, side)
 	for i in 0:glyphs.len {
