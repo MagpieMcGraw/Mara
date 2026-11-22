@@ -13,6 +13,151 @@ use mara.files
 use mara.memory
 use mara.skyline
 
+// ---------------------------------------------------------------------------
+// The API: a font's glyphs drawn at one size (load_raster)
+// ---------------------------------------------------------------------------
+
+// Characters to load: first to last, both in.
+Char_Range :: struct {
+	first, last: u32
+}
+
+FONT_GLYPHS  :: 4096   // a Font's characters, at most
+RASTER_ATLAS :: 2048   // a raster atlas's side, at most, in pixels
+
+// A font's glyphs, drawn: one for each character of its range, from first,
+// then the font's missing-glyph box, for any other character; its line
+// metrics, and the size they were drawn at (pixels to the em). Each glyph's
+// place in its atlas, and how to set it: drawn bearing_x right of the pen
+// and bearing_y above the baseline, the pen then moved by advance.
+Font :: struct {
+	metrics: Line_Metrics
+	pixels: f32
+	first: u32
+	glyphs: [FONT_GLYPHS + 1]Glyph
+
+	// Character c's glyph: the missing-glyph box for one the font lacks or
+	// that wasn't loaded.
+	glyph_of :: fun(f: Self, c: u32) -> Glyph {
+		n := f.glyphs.len - 1
+		if c >= f.first and i64(c - f.first) < n do return f.glyphs[c - f.first]
+		return f.glyphs[n]
+	}
+
+	// One baseline to the next, in pixels.
+	line_height :: fun(f: Self) -> f32 {
+		return f.metrics.ascent - f.metrics.descent + f.metrics.line_gap
+	}
+}
+
+// A raster atlas: width by height pixels, a byte each — how much of the
+// pixel a glyph covers, 0 to 255 — row by row, top down.
+Raster_Pixels :: struct {
+	width, height: i64
+	data: [RASTER_ATLAS * RASTER_ATLAS!]byte
+}
+
+// The font file `name`'s glyphs for the characters of `range`, drawn
+// `pixels` high (the em), pixel for pixel: their coverage packed into the
+// smallest square atlas, a power of two a side, that holds them all. Sharp at
+// that size, and blurred scaled: for text at any size, MSDF
+// (load_glyphs_and_metrics).
+load_raster :: fun(name: []utf8, pixels: f32, range: Char_Range) -> (font: Font, atlas: Raster_Pixels, e: err) {
+	if range.last < range.first or i64(range.last - range.first) >= FONT_GLYPHS do return font, atlas, Too_Many_Chars
+	ttf_file : [2 * MB]byte = void
+	read_entire_file(name, &ttf_file)?
+	check_ttf(&ttf_file)?
+	ttf := TTF(&ttf_file)
+	scale := pixels / f32(ttf.head.units_per_em)
+	font.pixels = pixels
+	font.first = range.first
+	font.metrics.ascent   = f32(ttf.hhea.ascent)   * scale
+	font.metrics.descent  = f32(ttf.hhea.descent)  * scale
+	font.metrics.line_gap = f32(ttf.hhea.line_gap) * scale
+
+	// Each glyph's box first — the range's characters', then the missing
+	// glyph's — then the smallest side that packs them, then each drawn in
+	// its place.
+	font.glyphs.len = i64(range.last - range.first) + 2
+	outline : Outline
+	for i in 0:font.glyphs.len {
+		index := raster_glyph_index(&ttf, range, i, font.glyphs.len)
+		parse_glyph(&ttf, index, &outline)?
+		font.glyphs[i] = raster_box(&ttf, &outline, index, scale)?
+	}
+	side : i64 = 64
+	for not raster_packs(&font.glyphs, side) {
+		side *= 2
+		if side > RASTER_ATLAS do return font, atlas, Atlas_Full
+	}
+
+	atlas.width = side
+	atlas.height = side
+	for i in 0:side * side {
+		atlas.data[i] = u8(0)
+	}
+	acc : [(COVERAGE_CELL + 2) * COVERAGE_CELL]f32
+	cell : [COVERAGE_CELL * COVERAGE_CELL]byte
+	for i in 0:font.glyphs.len {
+		g := font.glyphs[i]
+		if g.w == 0 do continue   // (a space: nothing drawn)
+		parse_glyph(&ttf, raster_glyph_index(&ttf, range, i, font.glyphs.len), &outline)?
+		w, h := i64(g.w), i64(g.h)
+		rasterize_coverage(&outline, scale, -g.bearing_x, g.bearing_y, w, h, &acc, &cell)
+		for y in 0:h {
+			for x in 0:w {
+				atlas.data[(i64(g.y) + y) * side + i64(g.x) + x] = cell[y * w + x]
+			}
+		}
+	}
+	return font, atlas
+}
+
+// ---------------------------------------------------------------------------
+// Below: how load_raster does it, the MSDF loader, rasterizing, parsing
+// ---------------------------------------------------------------------------
+
+// The font's glyph for a raster font's i-th of n: the range's characters,
+// then the missing glyph (0).
+raster_glyph_index :: fun(ttf: ^TTF, range: Char_Range, i: i64, n: i64) -> u16 {
+	if i == n - 1 do return 0
+	return char_glyph(ttf, range.first + u32(i))
+}
+
+// A glyph's box at `scale` pixels a font unit, whole pixels with one of room
+// around it, and its advance; not yet placed. A space: no box.
+raster_box :: fun(ttf: ^TTF, outline: ^Outline, index: u16, scale: f32) -> Glyph, err {
+	g := Glyph{all 0}
+	m := min(index, ttf.hhea.num_of_long_hor_metrics - 1)
+	g.advance = f32(ttf.hmtx.long_metrics[m].advance_width) * scale
+	if outline.contour_end_pts.len == 0 do return g
+	left   := floor_f32(f32(outline.header.x_min) * scale) - 1.0
+	right  := ceil_f32(f32(outline.header.x_max) * scale) + 1.0
+	top    := ceil_f32(f32(outline.header.y_max) * scale) + 1.0
+	bottom := floor_f32(f32(outline.header.y_min) * scale) - 1.0
+	if right - left > COVERAGE_CELL or top - bottom > COVERAGE_CELL do return g, Glyph_Too_Big
+	g.w = i32(right - left)
+	g.h = i32(top - bottom)
+	g.bearing_x = left
+	g.bearing_y = top
+	return g
+}
+
+// Whether glyphs' boxes all pack into a square `side` pixels a side: each
+// placed (x, y) if they do.
+raster_packs :: fun(glyphs: ^[]Glyph, side: i64) -> bool {
+	sky := Skyline(side, side)
+	for i in 0:glyphs.len {
+		g := &glyphs[i]
+		if g.w == 0 do continue
+		x, y, ok := pack_rect(&sky, i64(g.w), i64(g.h))
+		if not ok do return false
+		g.x = i32(x)
+		g.y = i32(y)
+	}
+	return true
+}
+
 Glyph :: struct {
 	x, y, w, h: i32
 	bearing_x, bearing_y, advance :f32
