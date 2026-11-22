@@ -10,8 +10,7 @@ use mara.string
 // coverage), white in a texture, drawn in any color by color mod. Text is
 // UTF-8: ASCII's characters and EXTRA's have glyphs; any other shows '?'.
 
-ATLAS  :: 512   // the glyphs' texture, each side, in pixels
-GLYPHS :: 128   // room for ASCII's 95 and EXTRA's
+ATLAS :: 1024   // the biggest glyph texture, each side, in pixels
 
 // Characters past ASCII's with glyphs: marks mara ask's answers and doc
 // comments use.
@@ -19,9 +18,7 @@ EXTRA :: "—–·∞…←→↑↓⟵⟶•×≤≥≠✦"
 
 Text :: struct {
 	texture: Texture
-	chars:   [GLYPHS]u32     // the character each glyph is: ASCII's from ' ', then EXTRA's
-	glyphs:  [GLYPHS]Glyph
-	metrics: Line_Metrics
+	font:    Font_Chars   // ASCII's characters from ' ', then EXTRA's
 	ascent:  f32   // a line's top to its baseline, whole pixels
 	line:    f32   // a line's height, whole pixels
 }
@@ -35,36 +32,39 @@ Color :: struct {
 
 // The font's glyphs, `pixels` high (its em), in a texture of the renderer's.
 text_load :: fun(t: ^Text, renderer: Renderer, font_path: []utf8, pixels: f32) -> err {
-	t.chars.len = 0
+	chars : [256]u32
 	for c in 32:127 {
-		&t.chars ++ u32(c)
+		&chars ++ u32(c)
 	}
 	extra_text := EXTRA
 	extra : []utf8 = extra_text
 	at : i64 = 0
 	for at < extra.len {
 		c, n := char_at(extra, at)
-		&t.chars ++ c
+		&chars ++ c
 		at += n
 	}
-	atlas : [ATLAS * ATLAS]byte
-	load_coverage_chars(font_path, pixels, t.chars, &t.glyphs, &t.metrics, &atlas, ATLAS)?
+	loaded, pix := load_raster_chars(font_path, pixels, chars)?
+	if pix.width > ATLAS do return Atlas_Too_Small
+	t.font = loaded
 	// (Each texel white, its alpha the coverage.)
 	rgba : [ATLAS * ATLAS * 4]byte
-	rgba.len = rgba.cap
-	for i in 0:atlas.len {
+	rgba.len = pix.data.len * 4
+	for i in 0:pix.data.len {
 		rgba[i * 4] = u8(255)
 		rgba[i * 4 + 1] = u8(255)
 		rgba[i * 4 + 2] = u8(255)
-		rgba[i * 4 + 3] = atlas[i]
+		rgba[i * 4 + 3] = pix.data[i]
 	}
 	if t.texture != void do DestroyTexture(t.texture)
-	t.texture = CreateTexture(renderer, PIXELFORMAT_RGBA32, TEXTUREACCESS_STATIC, ATLAS, ATLAS)?
-	_ = UpdateTexture(t.texture, void, rgba.ptr, ATLAS * 4)
+	side := i32(pix.width)
+	t.texture = CreateTexture(renderer, PIXELFORMAT_RGBA32, TEXTUREACCESS_STATIC, side, side)?
+	_ = UpdateTexture(t.texture, void, rgba.ptr, side * 4)
 	_ = SetTextureBlendMode(t.texture, BLENDMODE_BLEND)
 	_ = SetTextureScaleMode(t.texture, SCALEMODE_NEAREST)
-	t.ascent = ceil_f32(t.metrics.ascent)
-	t.line = ceil_f32(t.metrics.ascent - t.metrics.descent + t.metrics.line_gap)
+	m := loaded.metrics
+	t.ascent = ceil_f32(m.ascent)
+	t.line = ceil_f32(m.ascent - m.descent + m.line_gap)
 }
 
 // The window's fonts at its size: the text's, and code's — a monospace one,
@@ -90,7 +90,7 @@ text_width :: fun(t: ^Text, s: []utf8) -> f32 {
 
 // How far a character moves the pen, in pixels.
 char_width :: fun(t: ^Text, c: u32) -> f32 {
-	return t.glyphs[glyph_of(t, c)].advance
+	return t.font.glyphs[glyph_of(t, c)].advance
 }
 
 // The text drawn at x, its line's top at y, in a color: each glyph at the
@@ -104,7 +104,7 @@ text_draw :: fun(t: ^Text, renderer: Renderer, s: []utf8, x: f32, y: f32, color:
 	for at < s.len {
 		c, n := char_at(s, at)
 		at += n
-		g := t.glyphs[glyph_of(t, c)]
+		g := t.font.glyphs[glyph_of(t, c)]
 		if g.w > 0 {
 			from := SDL_FRect{x = f32(g.x), y = f32(g.y), w = f32(g.w), h = f32(g.h)}
 			to := SDL_FRect{x = floor_f32(pen + 0.5) + g.bearing_x, y = baseline - g.bearing_y, w = f32(g.w), h = f32(g.h)}
@@ -118,8 +118,8 @@ text_draw :: fun(t: ^Text, renderer: Renderer, s: []utf8, x: f32, y: f32, color:
 // A character's glyph: '?' for one the glyphs don't have.
 glyph_of :: fun(t: ^Text, c: u32) -> i64 {
 	if c >= 32 and c < 127 do return i64(c) - 32
-	for k in 95:t.chars.len {
-		if t.chars[k] == c do return k
+	for k in 95:t.font.chars.len {
+		if t.font.chars[k] == c do return k
 	}
 	return i64('?') - 32
 }

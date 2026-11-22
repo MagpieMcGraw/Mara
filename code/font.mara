@@ -20,6 +20,12 @@ Font256 :: class {
 	metrics: Line_Metrics
 	glyphs: [256]Glyph
 }
+Font_Chars :: class {
+	ideal_size : f32
+	metrics: Line_Metrics
+	chars: [256]u32      // the characters asked for
+	glyphs: [256]Glyph   // glyphs[i] for chars[i]
+}
 Font_Pixels :: struct {
 	width, height, ch: i64
 	data: [24 * MB]byte
@@ -39,70 +45,60 @@ load_raster256 :: (name: []utf8, px_size: f32) -> Font256, Font_Pixels, err {
 	this_font.metrics.descent  = f32(ttf.hhea.descent)  * scale
 	this_font.metrics.line_gap = f32(ttf.hhea.line_gap) * scale
 
-	this_font.glyphs.len = 256
+	chars : [256!]u32
+	for c in 0:256 do chars[c] = u32(c)
+	raster_chars(&ttf, scale, chars, &this_font.glyphs, &pix)?
+	return this_font, pix
+}
+
+load_raster_chars :: (name: []utf8, px_size: f32, chars: []u32)
+ -> Font_Chars, Font_Pixels, err
+{
+	this_font : Font_Chars
+	pix : Font_Pixels
+	if chars.len > this_font.chars.cap do return this_font, pix, Too_Many_Chars
+	ttf_data : [2 * MB]byte = void
+	read_entire_file(name, &ttf_data)?
+	check_ttf(&ttf_data)?
+	ttf := TTF(&ttf_data)
+	scale := px_size / f32(ttf.head.units_per_em)
+
+	this_font.ideal_size = px_size
+	this_font.metrics.ascent   = f32(ttf.hhea.ascent)   * scale
+	this_font.metrics.descent  = f32(ttf.hhea.descent)  * scale
+	this_font.metrics.line_gap = f32(ttf.hhea.line_gap) * scale
+	&this_font.chars ++ chars
+	raster_chars(&ttf, scale, chars, &this_font.glyphs, &pix)?
+	return this_font, pix
+}
+
+// Both loaders' work: glyphs[i] for chars[i] measured, packed into the
+// smallest square that holds them, and drawn into pix.
+raster_chars :: fun(ttf: ^TTF, scale: f32, chars: []u32, glyphs: ^[]Glyph,
+                    pix: ^Font_Pixels) -> err
+{
+	glyphs.len = chars.len
 	outline : Outline
-	for c in 0:256 {
-		index := char_glyph(&ttf, u32(c))
-		parse_glyph(&ttf, index, &outline)?
-		this_font.glyphs[c] = raster_box(&ttf, &outline, index, scale)
+	for i in 0:chars.len {
+		index := char_glyph(ttf, chars[i])
+		parse_glyph(ttf, index, &outline)?
+		glyphs[i] = raster_box(ttf, &outline, index, scale)
 	}
 	side := 64 // find the size that will fit all glyphs
-	for not raster_packs(&this_font.glyphs, side) {
+	for not raster_packs(glyphs, side) {
 		side *= 2
-		if side * side > pix.data.cap do return this_font, pix, Atlas_Full
+		if side * side > pix.data.cap do return Atlas_Full
 	}
 
 	pix.width = side
 	pix.height = side
 	pix.ch = 1
 	pix.data.len = side * side
-	for c in 0:256 {
-		g := this_font.glyphs[c]
-		if g.w == 0 do continue   // (a space: nothing drawn)
-		parse_glyph(&ttf, char_glyph(&ttf, u32(c)), &outline)?
-		rasterize_coverage(&outline, scale, g, &pix.data, side)?
-	}
-	return this_font, pix
-}
-
-load_coverage_chars :: fun(
-	font: []utf8,
-	pixels: f32,
-	chars: []u32,
-	glyphs: ^[]Glyph,
-	metrics: ^Line_Metrics,
-	atlas: ^[]byte,
-	size: i64) -> err
-{
-	if chars.len > glyphs.cap do return Too_Many_Chars
-	if size < 0 or atlas.cap < size * size do return Atlas_Too_Small
-	ttf_file : [2 * MB]byte = void
-	read_entire_file(font, &ttf_file)?
-	check_ttf(&ttf_file)?
-	ttf := TTF(&ttf_file)
-	scale := pixels / f32(ttf.head.units_per_em)
-	metrics.ascent   = f32(ttf.hhea.ascent)   * scale
-	metrics.descent  = f32(ttf.hhea.descent)  * scale
-	metrics.line_gap = f32(ttf.hhea.line_gap) * scale
-
-	glyphs.len = chars.len
-	outline : Outline
-	for i in 0:chars.len {
-		index := char_glyph(&ttf, chars[i])
-		parse_glyph(&ttf, index, &outline)?
-		glyphs[i] = raster_box(&ttf, &outline, index, scale)
-	}
-	if not raster_packs(glyphs, size) do return Atlas_Full
-
-	atlas.len = size * size
-	for i in 0:atlas.len {
-		atlas[i] = u8(0)
-	}
 	for i in 0:chars.len {
 		g := glyphs[i]
-		if g.w == 0 do continue
-		parse_glyph(&ttf, char_glyph(&ttf, chars[i]), &outline)?
-		rasterize_coverage(&outline, scale, g, atlas, size)?
+		if g.w == 0 do continue   // (a space: nothing drawn)
+		parse_glyph(ttf, char_glyph(ttf, chars[i]), &outline)?
+		rasterize_coverage(&outline, scale, g, &pix.data, side)?
 	}
 }
 
