@@ -747,8 +747,9 @@ storage_carved :: proc(s: ^Storage) {
 // What a fun returning aggregates builds in its caller's slots rather than in
 // storage of its own: the local every return returns (NRVO), and a
 // temporary whose one read is a return (a literal or construction returned).
-// With several results, each aggregate one's slot — a returned local only
-// when a fixed array (the others: later).
+// With several results, each aggregate one's slot. (A caller hands over a
+// fresh slot for each: a variable its declaration makes, or a temporary —
+// storage_declared_at — so nothing the fun is handed is in it.)
 @(private="file")
 storage_result_slot :: proc(s: ^Storage, rets: []Type) {
     if s.one_slot {
@@ -757,7 +758,22 @@ storage_result_slot :: proc(s: ^Storage, rets: []Type) {
     }
     for rt, i in rets {
         if !llvm_aggregate(rt) { continue }
-        storage_result_slot_at(s, i, len(rets), named = llvm_array(rt) != nil)
+        storage_result_slot_at(s, i, len(rets), named = true)
+    }
+}
+
+// Local d built in the caller's k-th slot: no storage of its own — a big
+// one's arena alloc (lowering's) does nothing.
+@(private="file")
+storage_in_slot :: proc(s: ^Storage, d: Node_Id, k: int) {
+    pg := s.pg
+    s.result[d] = k
+    if d not_in s.arena { return }
+    delete_key(&s.arena, d)
+    for r in s.runs {
+        for op in graph_run(pg, int(r)) {
+            if graph_op_of(pg, op) == .Arena_Alloc && graph_refers(pg, graph_operands(pg, op)[0].op) == d { s.done[op] = true }
+        }
     }
 }
 
@@ -776,10 +792,12 @@ storage_result_slot_at :: proc(s: ^Storage, k, n: int, named: bool) {
             if len(ops) == n && ops[k].op != NO_NODE && graph_op_of(pg, ops[k].op) == .Read {
                 if d := graph_leaf_decl(pg, graph_operands(pg, ops[k].op)[0].op); d >= 0 && graph_kind_of(pg, d) == .Local { v = d }
             }
-            if v in s.carved { v, every = NO_NODE, false }   // the carved memory: copied out
+            // (The carved memory, or the place a local views — storage_views:
+            // copied out.)
+            if v in s.carved || v in s.bound { v, every = NO_NODE, false }
             if v != NO_NODE && graph_written(pg, v) == .Synthetic {
                 // (Not an `if` expression's, written by its arms: its own.)
-                if storage_reads(s, v) == 1 && storage_written_only_in(s, v, r) { s.result[v] = k }
+                if storage_reads(s, v) == 1 && storage_written_only_in(s, v, r) { storage_in_slot(s, v, k) }
                 v = NO_NODE   // a temporary is no named local
             }
             switch {
@@ -789,7 +807,7 @@ storage_result_slot_at :: proc(s: ^Storage, k, n: int, named: bool) {
             }
         }
     }
-    if named && every && returned != NO_NODE { s.result[returned] = k }
+    if named && every && returned != NO_NODE { storage_in_slot(s, returned, k) }
 }
 
 // Whether a variable lives in the fun's result slot — the one slot, not one
@@ -1180,7 +1198,7 @@ storage_big_temps :: proc(s: ^Storage) {
         case .Fun, .Struct: id = graph_last(pg, id); continue   // (another scope's)
         }
         if pg.kind[id] != .Local || !routes_to_arena(graph_type(pg, id)) || id in s.arena || id in s.in_place || id in s.carved || id in s.bound || id in s.swapped { continue }
-        if s.one_slot && id in s.result { continue }
+        if id in s.result { continue }
         if pg.written[id] != .Synthetic {
             s.stop = id
             return
