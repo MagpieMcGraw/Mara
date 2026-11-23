@@ -43,35 +43,30 @@ load_raster_chars :: (name: []utf8, px_size: f32, chars: []u32)
 	this_font.metrics.descent  = f32(ttf.hhea.descent)  * scale
 	this_font.metrics.line_gap = f32(ttf.hhea.line_gap) * scale
 	&this_font.chars ++ chars
-	raster_chars(&ttf, scale, chars, &this_font.glyphs, &pix)?
-	return this_font, pix
-}
 
-raster_chars :: fun(ttf: ^TTF, scale: f32, chars: []u32, glyphs: ^[]Glyph,
-                    pix: ^Font_Pixels) -> err
-{
-	glyphs.len = chars.len
+	this_font.glyphs.len = chars.len
 	outline : Outline
 	for i in 0:chars.len {
-		index := char_glyph(ttf, chars[i])
-		parse_glyph(ttf, index, &outline)?
-		glyphs[i] = raster_box(ttf, &outline, index, scale)
+		index := char_glyph(&ttf, chars[i])
+		parse_glyph(&ttf, index, &outline)?
+		this_font.glyphs[i] = raster_box(&ttf, &outline, index, scale)
 	}
 	side := 64 // find the size that will fit all glyphs
-	for not raster_packs(glyphs, side) {
+	for not raster_packs(&this_font.glyphs, side) {
 		side *= 2
-		if side * side > pix.data.cap do return Atlas_Full
+		if side * side > pix.data.cap do return this_font, pix, Atlas_Full
 	}
 	pix.width = side
 	pix.height = side
 	pix.ch = 1
 	pix.data.len = side * side
 	for i in 0:chars.len {
-		g := glyphs[i]
+		g := this_font.glyphs[i]
 		if g.w == 0 do continue   // (a space: nothing drawn)
-		parse_glyph(ttf, char_glyph(ttf, chars[i]), &outline)?
+		parse_glyph(&ttf, char_glyph(&ttf, chars[i]), &outline)?
 		rasterize_coverage(&outline, scale, g, &pix.data, side)?
 	}
+	return this_font, pix
 }
 
 raster_box :: fun(ttf: ^TTF, outline: ^Outline, index: u16, scale: f32)
