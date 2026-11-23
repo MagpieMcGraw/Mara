@@ -189,9 +189,12 @@ Codegen :: struct {
     // -profile time: the build, as the profile's header names it ("" when not
     // profiling). Funs worth timing tell the profiler (runtime/mara_prof.c)
     // when they're entered and left (llvm.odin, llvm_probe) — but those in
-    // profile_skip's modules (-skip), which are left as any build has them.
+    // profile_skip's modules (-skip), which are left as any build has them:
+    // a call into one from timed code is timed around the call instead
+    // (llvm_call_probe), its slot made once a module (profile_calls).
     profile: string,
     profile_skip: []string,
+    profile_calls: map[string]bool,
     // -profile memory: how full each partial array gets, told to the memory
     // profiler (runtime/mara_mem.c; codegen_mem.odin). mem_name, mem_where:
     // the site partial arrays laid down or copied in now are of — where

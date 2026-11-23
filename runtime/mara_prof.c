@@ -180,6 +180,12 @@ void __mara_prof_start(const char* build) {
 
 static Mara_Prof_Fun* prof_register(Mara_Prof_Slot* slot) {
     if (!prof.started) __mara_prof_start(NULL);
+    // (A fun timed around its calls has a slot in each module that calls it:
+    // one line for all of them.)
+    for (size_t i = 0; i < prof.nfuns; i++) {
+        Mara_Prof_Fun* had = prof.funs[i];
+        if (strcmp(had->name, slot->name) == 0 && strcmp(had->where, slot->where) == 0) { slot->fun = had; return had; }
+    }
     Mara_Prof_Fun* f = (Mara_Prof_Fun*)calloc(1, sizeof *f);
     if (!f) prof_fail("out of memory");
     f->name = slot->name;

@@ -1597,10 +1597,10 @@ WEB_TURNED_OFF :: "mara build -web is turned off for now: the web build isn't up
 USAGE :: "Usage: mara build [module|build] [-shared] [-release] [-x86] [-profile time|memory] [-skip module] [-no assert] [-no console] [-crt]\n       mara ask <name> [types|call|flow] [above|below] [depth] [in <scope>] [-show]\n       mara serve [module]\n       mara view [module]\n       mara docs [at <file>:<line>:<col>] <words>\n       mara edit [module] <name>.<fields|results|params> <part> ...\n       mara editor <program>\n       mara colors <name>=#rrggbb ...\n       mara lsp\n       mara version\n\nA build.mara here (`module build`) declares builds, constants of mara.build's Build:\n`mara build` builds the one named as the folder, or the only one; `mara build <build>` that one."
 PROFILE_USAGE :: `-profile needs what to measure:
     -profile time     how long each fun takes: profile.txt, next to the program, when it ends
-                      (-skip <module> leaves a module's funs untimed: see below)
+                      (-skip <module> times a module's funs only as called from outside it: see below)
     -profile memory   how full each partial array and arena gets: memory.txt`
-SKIP_USAGE :: `-skip needs a module, with -profile time: its funs aren't timed, so they're optimized
-as in any build and their time is their callers' own.
+SKIP_USAGE :: `-skip needs a module, with -profile time: its funs aren't timed inside, so they're
+optimized as in any build; a call into it from outside is timed around the call, its time its own line.
     mara build -profile time -release -skip mara.math
 Several: -skip again, or commas between (-skip mara.math,mara.string).`
 
@@ -2409,7 +2409,7 @@ main :: proc() {
                 os.exit(1)
             }
         }
-        profile = strings.concatenate({build, ", not timed: ", strings.join(args.profile_skip[:], ", ")})
+        profile = strings.concatenate({build, ", timed only from outside: ", strings.join(args.profile_skip[:], ", ")})
     }
     if args.profile_memory { profile_memory = build }
 

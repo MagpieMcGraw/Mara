@@ -173,8 +173,9 @@ llvm_debug_var :: proc(e: ^Llvm, d: Node_Id, at: Val, addr: bool, param := 0) {
 // (llvm_ret). Both name its slot: its name and where it's written, for its
 // line in the profile, and the profiler's record of it, filled on its first
 // call. Straight-line code that calls nothing costs its caller less than the
-// probes would; its time is the caller's own. So is a fun's in a module the
-// build skips (-skip): no probe, so it's inlined and optimized as ever.
+// probes would; its time is the caller's own. A fun in a module the build
+// skips (-skip) has no probe, so it's inlined and optimized as ever: a call
+// into it from timed code is timed around the call (llvm_call_probe).
 @(private="file")
 llvm_probe :: proc(e: ^Llvm) {
     g, cf := e.g, e.ft
@@ -188,6 +189,42 @@ llvm_probe :: proc(e: ^Llvm) {
     slots := [3]Ir_Type{IR_PTR, IR_PTR, IR_PTR}
     append(&g.globals, Ir_Global{name = e.probe, linkage = .Internal, ty = ir_struct_type(slots[:]), init = {kind = .Struct, parts = parts}})
     ir_call(g, {}, IR_VOID, ir_global("__mara_prof_enter"), {IR_PTR, ir_global(e.probe), {}})
+}
+
+// -profile time: a call from timed code into a fun of a module the build
+// skips (-skip), timed around the call: the fun keeps no probe of its own,
+// inlined and optimized as ever, and the calls inside the module stay
+// untimed — but its time is its own line, not its caller's. Told the
+// profiler before the call, here; after it, llvm_call_probe_end. Its slot:
+// one a module's code, the profiler merging them by name and place. ""
+// when the call isn't timed so.
+@(private="file")
+llvm_call_probe :: proc(e: ^Llvm, callee: ^Type_Scope) -> string {
+    g := e.g
+    if g.profile == "" || len(g.profile_skip) == 0 { return "" }
+    skipped :: proc(g: ^Codegen, module: string) -> bool {
+        for s in g.profile_skip { if module == s { return true } }
+        return false
+    }
+    if !skipped(g, callee.home_package) || !e.main && skipped(g, e.ft.home_package) { return "" }
+    c := g.checked.code.funs[callee] or_else nil
+    if c == nil || !llvm_works(&g.checked.code, c, constructs = true) { return "" }
+    slot := strings.concatenate({".prof.call.", mara_fn_name(g, callee.name)}, codegen_keep(g))
+    if slot not_in g.profile_calls {
+        g.profile_calls[slot] = true
+        at := fmt.tprintf("%s:%d", filepath.base(span_file(callee.body_span)), span_line(callee.body_span))
+        parts := make([]Ir_Const, 3, codegen_keep(g))
+        parts[0], parts[1], parts[2] = ir_const(IR_PTR, get_string_literal(g, scope_path_name(callee))), ir_const(IR_PTR, get_string_literal(g, at)), ir_const(IR_PTR, IR_NULL)
+        slots := [3]Ir_Type{IR_PTR, IR_PTR, IR_PTR}
+        append(&g.globals, Ir_Global{name = slot, linkage = .Internal, ty = ir_struct_type(slots[:]), init = {kind = .Struct, parts = parts}})
+    }
+    ir_call(g, {}, IR_VOID, ir_global("__mara_prof_enter"), {IR_PTR, ir_global(slot), {}})
+    return slot
+}
+
+@(private="file")
+llvm_call_probe_end :: proc(e: ^Llvm, slot: string) {
+    if slot != "" { ir_call(e.g, {}, IR_VOID, ir_global("__mara_prof_exit"), {IR_PTR, ir_global(slot), {}}) }
 }
 
 // Whether a code does work worth a probe: it loops, or calls something — a
@@ -2794,7 +2831,9 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
             if at[i].kind == .None { at[i] = llvm_temporary(e, {op, i32(i)}, rt, as_local = true) }
             append(&args, Ir_Arg{ty = IR_PTR, v = at[i]})
         }
+        probe := llvm_call_probe(e, callee)
         ir_call(g, {}, IR_VOID, name, ..args[:])
+        llvm_call_probe_end(e, probe)
         e.outs[op], e.out_run[op] = at, e.run
         e.value[op] = at[0]
         return true
@@ -2803,10 +2842,14 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         // A struct result, built where it goes (llvm_result_place).
         at := llvm_result_place(e, op, callee, result) or_return
         append(&args, Ir_Arg{ty = IR_PTR, v = at})
+        probe := llvm_call_probe(e, callee)
         ir_call(g, {}, IR_VOID, name, ..args[:])
+        llvm_call_probe_end(e, probe)
         e.value[op] = at
         return true
     }
+    probe := llvm_call_probe(e, callee)
+    defer llvm_call_probe_end(e, probe)
     if ret == IR_VOID {
         ir_call(g, {}, IR_VOID, name, ..args[:])
         return true
