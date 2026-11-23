@@ -747,9 +747,16 @@ lw_return :: proc(k: ^TC, s: Tree_Id) {
             return
         }
     }
-    vals := make([dynamic]Operand, 0, len(values), context.temp_allocator)
+    vals := make([dynamic]Operand, 0, len(rts), context.temp_allocator)
+    // (A failure alone, `return Too_Many_Chars` (tc_lone_failure): each other
+    // result zero, as a `?` gives them, the err last.)
+    first := 0
+    if len(values) == 1 && tc_lone_failure(rts, 1, tc_node_type(k, values[0])) {
+        first = len(rts) - 1
+        for rt in rts[:first] { append(&vals, graph_const(b, .Implied, span, rt, "zero", Const_Value{})) }
+    }
     for val, i in values {
-        want := rts[i]
+        want := rts[first + i]
         text, slot := false, NO_NODE
         vt := tc_node_type(k, val)
         // (Text — a literal, or a text constant's — in a zeroed temporary;

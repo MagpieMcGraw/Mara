@@ -1,6 +1,7 @@
 // How errors work: a function that can fail returns an err last, and `?` passes one on.
 //
-// `-> i64, err` returns a number and an err. `return 0, Not_A_Digit` fails;
+// `-> i64, err` returns a number and an err. `return Not_A_Digit` fails, the
+// number zero (`return 0, Not_A_Digit` when the number says something);
 // `return n` succeeds, and so does reaching the end of a function that
 // only returns an err. The caller takes both, `n, e := parse(s)`, and has
 // to look at e: an err nobody checks is a compile error (`_` in its place
@@ -35,13 +36,13 @@ Parse_Error :: error { Empty, Not_A_Digit }
 // The value of a digit character.
 digit :: fun(c: utf8) -> i64, err {
 	n := i64(c) - i64('0')
-	if n < 0 or n > 9 do return 0, Not_A_Digit
+	if n < 0 or n > 9 do return Not_A_Digit
 	return n
 }
 
 // The number a text of digits spells.
 parse :: fun(s: []utf8) -> i64, err {
-	if s.len == 0 do return 0, Empty
+	if s.len == 0 do return Empty
 	n := 0
 	for c in s {
 		d := digit(c)?    // a failure returns from parse here

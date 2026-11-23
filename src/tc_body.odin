@@ -774,6 +774,24 @@ tc_return :: proc(k: ^TC, s: Tree_Id) {
             }
         }
     }
+    // (A failure alone, `return Too_Many_Chars`: the err its last result's,
+    // the others zero, as a `?` gives them. lw_return.)
+    if supplied == 1 && tc_lone_failure(rts, supplied, nil) {
+        if lone == nil {
+            k.hint = rts[0]
+            lone = tc_check(k, values[0])
+        }
+        if tc_lone_failure(rts, supplied, lone) {
+            want := rts[expected - 1]
+            tc_note_err_pass(k, values[0], returned = true)
+            if !is_any(lone) && !coerce_deferred(k.c, lone, want, span) && !types_equal(want, lone) {
+                got, wanted := type_names_apart(lone, want)
+                tc_error(k, span, TYPE_RETURN_VALUE_TYPE_MATCH_EXPECTED, expected, got, wanted)
+            }
+            tc_value_at(k, values[0], lone, want, span)
+            return
+        }
+    }
     switch {
     case expected == 0 && supplied > 0:
         // (What it gives back named: the `-> T` its fun is missing.)
@@ -810,6 +828,14 @@ tc_return :: proc(k: ^TC, s: Tree_Id) {
         }
         tc_value_at(k, val, vt, want, span)
     }
+}
+
+// A return of one value, an err (`vt`; nil: not yet known), from a fun of
+// several results the last an err: a failure, the others zero (tc_return).
+tc_lone_failure :: proc(rts: []Type, supplied: int, vt: Type) -> bool {
+    n := len(rts)
+    if supplied != 1 || n < 2 || !is_err_type(rts[n - 1]) || is_err_type(rts[0]) { return false }
+    return vt == nil || is_err_type(vt)
 }
 
 // An array — fixed, partial — returned where a slice is given back: an
