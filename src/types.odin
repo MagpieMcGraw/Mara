@@ -2020,6 +2020,27 @@ routes_to_arena :: proc(t: Type) -> bool {
 }
 
 // Whether a param of type t can't be written: one passed by address.
+// Whether a value of t reaches memory beyond its own, for a callee handed it
+// to write through: a pointer in it, a field's, an item's (a slice's items
+// are read only, a pointer among them still reaches out), a variant's, or a
+// fun value (calling it can do anything).
+holds_pointer :: proc(t: Type) -> bool {
+    base := distinct_base(t)
+    if sd := as_struct_body(base); sd != nil {
+        for &f in sd.fields { if holds_pointer(f.type_) { return true } }
+        return false
+    }
+    #partial switch v in base {
+    case ^Type_Ptr, ^Type_Scope: return true
+    case ^Type_Fixed_Array:      return holds_pointer(v.elem)
+    case ^Type_Partial_Array:    return holds_pointer(v.elem)
+    case ^Type_Slice:            return holds_pointer(v.elem)
+    case ^Type_Union:
+        for _, vs in v.variant_structs { if holds_pointer(vs) { return true } }
+    }
+    return false
+}
+
 is_immutable_param_type :: proc(t: Type) -> bool {
     base := distinct_base(t)
     if _, is_ptr := base.(^Type_Ptr); is_ptr { return false }

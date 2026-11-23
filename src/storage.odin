@@ -699,7 +699,9 @@ storage_view_call_writes :: proc(s: ^Storage, op: Node_Id, p: Node_Id, first: in
         if !sum.reaches[k] || o.op == NO_NODE || graph_is_const(o.op) { continue }
         pt := fn_param(callee, k).type_
         _, is_ptr := pt.(^Type_Ptr)
-        if src && !is_ptr { continue }   // (a value, or an immutable slice: read only)
+        // (A value, or an immutable slice: read only — unless a pointer in it
+        // reaches out, `h.p.a = 55` through a Holder handed by value.)
+        if src && !is_ptr && !holds_pointer(pt) { continue }
         a := o.op
         for a < CONST && graph_op_of(pg, a) == .Cast { a = graph_operands(pg, a)[0].op }
         if _, is_text := graph_const_text(pg, a); is_text { continue }
