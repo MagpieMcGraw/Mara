@@ -677,6 +677,8 @@ WARN_LIST_STAYS_EMPTY :: "'%s' is %s, but nothing gives it a len: it stays an em
 WARN_VAR_NEVER_USED :: "'%s' is never used (name it `_` if that's meant)"
 WARN_ARRAY_LITERAL_SHORT :: "%d items for a %s: it holds %d, and the rest are left zero (write them out if that's meant)"
 WARN_VAR_NEVER_READ :: "'%s' is written, but nothing reads it"
+WARN_MATCH_ARM_NEVER_RUNS :: "this arm never runs: the arms before it already take `%s`"
+WARN_MATCH_ELSE_NEVER_RUNS :: "this else never runs: the arms before it take every variant of %s"
 WARN_LOOP_COPY_WRITTEN :: "'%s' is a copy of each item: what's written to it is lost when the loop moves on. To change the items, loop with `for &%s in ...`"
 WARN_VARS_MORE :: "%d more locals are never read (the first %d are listed)"
 WARN_LOOP_NEVER_LOOPS :: "this loop never runs a second time: every run ends in a `break` or `return` — was a statement meant inside a block? (code that runs once reads better as an `if`)"

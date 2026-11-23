@@ -1722,7 +1722,8 @@ type_home :: proc(t: Type) -> string {
 // Two types' names for an error that sets them apart: when they read the
 // same though the types differ (two modules' `State`), each through its
 // module.
-type_names_apart :: proc(a, b: Type) -> (string, string) {
+type_names_apart :: proc(a_, b_: Type) -> (string, string) {
+    a, b := type_shown(a_), type_shown(b_)
     an, bn := type_name(a), type_name(b)
     if an != bn { return an, bn }
     full :: proc(t: Type, name: string) -> string {
@@ -2073,6 +2074,13 @@ solidify_type :: proc(t: Type) -> Type {
     if s, ok := rt.(^Type_Slice); ok && has_open_elems(s.elem) { return type_slice(solidify_type(s.elem)) }
     if pa, ok := rt.(^Type_Partial_Array); ok && has_open_elems(pa.elem) { return type_partial_array(pa.size, solidify_type(pa.elem)) }
     return rt
+}
+
+// A type as a message names it: a literal's width not decided yet (`0`,
+// `[1.0, 2.0]`'s items) as its default, i64 or f64, never the checker's
+// infer_int.
+type_shown :: proc(t: Type) -> Type {
+    return solidify_type(t) if has_open_elems(t) else t
 }
 
 // Whether a type is a width not decided yet, or an array (a slice, a list)

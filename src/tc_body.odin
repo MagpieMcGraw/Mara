@@ -1517,8 +1517,8 @@ tc_match :: proc(k: ^TC, s: Tree_Id) {
         tc_error(k, span, TYPE_MATCH_REQUIRES_UNION, type_name(st))
         return
     }
-    has_else := false
-    for arm in arms { if tr.tag[arm] == .Arm_Else { has_else = true } }
+    has_else, else_arm := false, Tree_Id(0)
+    for arm in arms { if tr.tag[arm] == .Arm_Else { has_else, else_arm = true, arm } }
     if is_err && !has_else { tc_error(k, span, TYPE_MATCH_ERR_REQUIRES_ELSE) }
     for arm, i in arms {
         if tr.tag[arm] == .Arm_Else && i != len(arms) - 1 { tc_error(k, span, TYPE_LAST_ARM_MATCH) }
@@ -1531,6 +1531,10 @@ tc_match :: proc(k: ^TC, s: Tree_Id) {
         }
         a := tc_match_arm(k, subj, arm, et, ut)
         name := a.variant
+        // (A variant an arm before it takes: it never runs.)
+        key := name
+        if tr.tag[arm] == .Arm_Value && name == "" && tr.tag[a.value] == .Field { key = tc_text(Token_Id(tr.b[a.value])) }
+        if key != "" && key in covered { check_warning(k.c, tree_span(tr, arm), WARN_MATCH_ARM_NEVER_RUNS, key) }
         tc_match_arm_ref(k, arm, a, st)
         #partial switch tr.tag[arm] {
         case .Arm_Dot:
@@ -1577,8 +1581,14 @@ tc_match :: proc(k: ^TC, s: Tree_Id) {
         if name != "" { covered[name] = true }
         tc_scope(k, a.body)
     }
-    // (Every variant covered, unless an else says otherwise.)
-    if has_else || !(is_enum || is_union) { return }
+    // (Every variant covered, unless an else says otherwise — one after
+    // arms taking all of them never runs.)
+    if !(is_enum || is_union) { return }
+    if has_else {
+        for v in tc_variant_names(st) { if v not_in covered { return } }
+        check_warning(k.c, tree_span(tr, else_arm), WARN_MATCH_ELSE_NEVER_RUNS, type_name(st))
+        return
+    }
     if is_enum {
         for name in et.variants {
             if name not_in covered { tc_error(k, span, TYPE_MATCH_MISSING_VARIANT_ADD_ARM, type_name(et), name) }
@@ -1669,11 +1679,14 @@ tc_match_many :: proc(k: ^TC, s: Tree_Id) {
             ok = false
         }
     }
+    else_arm: Tree_Id
     for arm, i in arms {
         if tr.tag[arm] != .Arm_Else { continue }
-        has_else = true
+        has_else, else_arm = true, arm
         if i != len(arms) - 1 { tc_error(k, span, TYPE_LAST_ARM_MATCH) }
     }
+    names := make([][]string, len(subjects), context.temp_allocator)
+    for t, i in types { names[i] = tc_variant_names(t) }
     // (Each arm's variants, a value's each: "" for any.)
     rows := make([dynamic][]string, context.temp_allocator)
     Restore :: struct { tok: Token_Id, was: Type, had: bool }
@@ -1724,21 +1737,50 @@ tc_match_many :: proc(k: ^TC, s: Tree_Id) {
         }
         tc_scope(k, body)
         #reverse for r in restores { tc_bound_restore(k, r.tok, r.was, r.had) }
+        // (Every combination it takes, the arms before it take: it never runs.)
+        if ok && tc_match_taken(rows[:], names, row) {
+            written := make([]string, len(row), context.temp_allocator)
+            for v, i in row { written[i] = v if v != "" else "_" }
+            check_warning(k.c, tree_span(tr, arm), WARN_MATCH_ARM_NEVER_RUNS, strings.join(written, ", ", context.temp_allocator))
+        }
         append(&rows, row)
     }
-    if has_else || !ok { return }
+    if !ok { return }
     // (Every combination of the values' variants: a row's, or one in each
-    // place it says any.)
-    names := make([][]string, len(subjects), context.temp_allocator)
-    for t, i in types { names[i] = tc_variant_names(t) }
+    // place it says any — unless an else says otherwise; one after arms
+    // taking all of them never runs.)
     path := make([dynamic]string, context.temp_allocator)
     all := make([]int, len(rows), context.temp_allocator)
     for _, i in rows { all[i] = i }
-    if tc_match_gap(rows[:], names, 0, all, &path) {
-        shown := make([]string, len(types), context.temp_allocator)
-        for t, i in types { shown[i] = type_name(t) }
+    gap := tc_match_gap(rows[:], names, 0, all, &path)
+    shown := make([]string, len(types), context.temp_allocator)
+    for t, i in types { shown[i] = type_name(t) }
+    if has_else {
+        if !gap { check_warning(k.c, tree_span(tr, else_arm), WARN_MATCH_ELSE_NEVER_RUNS, strings.join(shown, ", ", context.temp_allocator)) }
+        return
+    }
+    if gap {
         tc_error(k, span, TYPE_MATCH_MISSING_COMBINATION, strings.join(shown, ", ", context.temp_allocator), strings.join(path[:], ", ", context.temp_allocator))
     }
+}
+
+// Whether the arms `rows` take every combination `row` takes (a variant each,
+// "" for any): an arm of it after them never runs.
+tc_match_taken :: proc(rows: [][]string, names: [][]string, row: []string) -> bool {
+    if len(rows) == 0 { return false }
+    only := make([][]string, len(names), context.temp_allocator)
+    for v, p in row {
+        only[p] = names[p]
+        if v != "" {
+            one := make([]string, 1, context.temp_allocator)
+            one[0] = v
+            only[p] = one
+        }
+    }
+    all := make([]int, len(rows), context.temp_allocator)
+    for _, i in rows { all[i] = i }
+    path := make([dynamic]string, context.temp_allocator)
+    return !tc_match_gap(rows, only, 0, all, &path)
 }
 
 // One value's pattern in an arm of a match on several: the variant it names

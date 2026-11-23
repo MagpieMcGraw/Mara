@@ -371,7 +371,9 @@ example_break :: fun() {
 //
 // `match a, b` takes several values, unions or enums: each arm lists a
 // variant for each, between commas, `_` for any (`Circle c, _`). The first
-// arm that fits runs, and every combination needs one, or an `else`.
+// arm that fits runs, and every combination needs one, or an `else`. An arm
+// (or an `else`) whose every case the arms before it take never runs: a
+// warning says so.
 example_match :: fun() {
 	shape_area :: fun(s: Shape) -> f64 {
 		match s {

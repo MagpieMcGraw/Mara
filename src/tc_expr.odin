@@ -1082,7 +1082,11 @@ tc_array_room :: proc(k: ^TC, n: Tree_Id, vt, t: Type, span: Span) {
         }
         if !literal {
             least := min(fa.size, to.size)
-            tc_error(k, span, TYPE_FIXED_ARRAY_OTHER_LENGTH, type_name(vt), type_name(t), least, least)
+            // (Its items' width not decided, `zs := [1.0, 2.0, 3.0]`: the
+            // place's items' it would take.)
+            shown := vt
+            if has_open_elems(fa.elem) { shown = type_fixed_array(fa.size, to.elem, fa.index_type) }
+            tc_error(k, span, TYPE_FIXED_ARRAY_OTHER_LENGTH, type_name(shown), type_name(t), least, least)
         } else if fa.size > to.size {
             tc_error(k, span, TYPE_ARRAY_PAST_LIST_ROOM, fa.size, type_name(t), to.size)
         } else if fa.size > 0 && n != 0 && k.t.tag[tc_unparen(k, n)] == .Array {
