@@ -27,6 +27,7 @@ div :: dispatch {
 
 overload + add
 add :: dispatch {
+	vec4_add
 	vec3_add
 	vec3_add_scalar
 }
@@ -1016,6 +1017,15 @@ vec3_mul :: fun(a: Vec3, b: Vec3) -> Vec3 {
 // ============================================================================
 // Vec4 operations
 // ============================================================================
+
+vec4_add :: fun(a: Vec4, b: Vec4) -> Vec4 {
+	result : Vec4
+	result.x = a.x + b.x
+	result.y = a.y + b.y
+	result.z = a.z + b.z
+	result.w = a.w + b.w
+	return result
+}
 
 vec4_length :: fun(v: Vec4) -> f32 {
 	return sqrt(v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w)
