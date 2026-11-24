@@ -23,6 +23,7 @@ mul :: dispatch {
 overload / div
 div :: dispatch {
 	vec3_div_scalar
+	vec4_div_scalar
 }
 
 overload + add
@@ -35,6 +36,7 @@ add :: dispatch {
 overload - sub
 sub :: dispatch {
 	vec3_sub
+	vec4_sub
 	vec3_sub_scalar
 	vec3_negate
 }
@@ -1025,6 +1027,14 @@ vec4_add :: fun(a: Vec4, b: Vec4) -> Vec4 {
 	result.z = a.z + b.z
 	result.w = a.w + b.w
 	return result
+}
+
+vec4_sub :: fun(a: Vec4, b: Vec4) -> Vec4 {
+	return Vec4{a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w}
+}
+
+vec4_div_scalar :: fun(v: Vec4, s: f32) -> Vec4 {
+	return Vec4{v.x / s, v.y / s, v.z / s, v.w / s}
 }
 
 vec4_length :: fun(v: Vec4) -> f32 {
