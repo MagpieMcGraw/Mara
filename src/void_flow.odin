@@ -53,7 +53,7 @@ Void_Fact_Key :: struct {
 
 Void_Facts :: struct {
     pc:      ^Program_Code,
-    leaves:  map[^Type_Scope][]string,  // what each constructor leaves zeroed (void_ctor_leaves)
+    leaves:  map[^Type_Scope][]Void_Leaf,  // what each constructor leaves zeroed (void_ctor_leaves)
     ids:     map[Void_Fact_Key]int,
     void:    [dynamic]bool,
     why:     [dynamic]string,           // what made it void: said after the error
@@ -104,7 +104,7 @@ void_flow_program :: proc(checked: ^Checked_Program) -> []Flow_Finding {
     vf: Void_Facts
     vf.pc = &checked.code
     defer {
-        for _, l in vf.leaves { for p in l { delete(p) }; delete(l) }
+        for _, l in vf.leaves { for p in l { delete(p.path); delete(p.why) }; delete(l) }
         delete(vf.leaves)
     }
     // (What a code's run works out is its own: freed once it's done.)
@@ -911,10 +911,17 @@ void_construct :: proc(c: ^Void_Code, state: []u64, dest: Node_Id, ts: ^Type_Sco
     var, path, ok := void_place_path(c, dest)
     if !ok { return }
     name := ts.source_name if ts.source_name != "" else ts.name
-    why := fmt.tprintf("%s's constructor leaves it void (at %s)", name, void_where(span))
     for l in leaves {
-        if k, has := c.key_of[Void_Place{var, strings.concatenate({path, l}, context.temp_allocator)}]; has { void_set_zeroed(c, state, k, why) }
+        why := fmt.tprintf("%s, so %s() leaves it void (at %s)", l.why, name, void_where(span))
+        if k, has := c.key_of[Void_Place{var, strings.concatenate({path, l.path}, context.temp_allocator)}]; has { void_set_zeroed(c, state, k, why) }
     }
+}
+
+// A pointer a constructor leaves zeroed: its path (`.next`, `.pos.owner`),
+// and why — the field declared with no value, or given a literal that
+// leaves it out, where it's written.
+Void_Leaf :: struct {
+    path, why: string,
 }
 
 // The pointers a struct's constructor leaves zeroed, by path (`.next`,
@@ -922,13 +929,13 @@ void_construct :: proc(c: ^Void_Code, state: []u64, dest: Node_Id, ts: ^Type_Sco
 // leaves them out) or built by a constructor that leaves them so, that its
 // code never writes — nor hands out the address of. Worked out once a
 // struct, from its code.
-void_ctor_leaves :: proc(vf: ^Void_Facts, ts: ^Type_Scope, depth := 0) -> []string {
+void_ctor_leaves :: proc(vf: ^Void_Facts, ts: ^Type_Scope, depth := 0) -> []Void_Leaf {
     if ts == nil || vf.pc == nil || depth > VOID_PATH_DEPTH { return nil }
     if known, ok := vf.leaves[ts]; ok { return known }
     vf.leaves[ts] = nil   // (while it's worked out: a struct that builds itself leaves nothing)
     g := graph_fun_code(vf.pc, ts)
     if g == nil || graph_kind_of(g, 0) != .Struct { return nil }
-    zeroed := make([dynamic]string, context.temp_allocator)
+    zeroed := make([dynamic]Void_Leaf, context.temp_allocator)
     written := make([dynamic]string, context.temp_allocator)
     for id := Node_Id(1); id <= g.end; id += 1 {
         #partial switch g.kind[id] {
@@ -951,24 +958,59 @@ void_ctor_leaves :: proc(vf: ^Void_Facts, ts: ^Type_Scope, depth := 0) -> []stri
         if root == NO_NODE { continue }
         whole := graph_is_leaf(d)
         if whole && g.op[id] == .Zero && (g.written[id] == .Synthetic || flow_is_literal_name(graph_name(g, id))) {
-            void_pointer_paths(graph_type(g, root), path, &zeroed, 0)
+            paths := make([dynamic]string, context.temp_allocator)
+            void_pointer_paths(graph_type(g, root), path, &paths, 0)
+            at := void_where(graph_origin(g, id))
+            for z in paths {
+                why := fmt.tprintf("'%s' is given a literal that leaves it out (at %s)", graph_name(g, root), at)
+                if g.written[id] == .Synthetic {
+                    why = fmt.tprintf("'%s' is declared with no value (at %s)", graph_name(g, root), at)
+                    // (A pointer inside it: the field of its type that's bare.)
+                    if owner, f, found := void_inner_field(graph_type(g, root), z[len(path):]); found && f.decl != 0 {
+                        why = fmt.tprintf("'%s' in %s is declared with no value (at %s)", f.name, owner, void_where(Span{at = f.decl, tok = f.decl, end = f.decl + 1}))
+                    }
+                }
+                append(&zeroed, Void_Leaf{z, why})
+            }
             continue
         }
         if whole && g.op[id] == .Construct && !flow_is_literal_name(graph_name(g, id)) {
-            for l in void_ctor_leaves(vf, graph_called(g, id), depth + 1) { append(&zeroed, strings.concatenate({path, l}, context.temp_allocator)) }
+            for l in void_ctor_leaves(vf, graph_called(g, id), depth + 1) { append(&zeroed, Void_Leaf{strings.concatenate({path, l.path}, context.temp_allocator), l.why}) }
             continue
         }
         append(&written, path)
     }
-    left := make([dynamic]string)
+    left := make([dynamic]Void_Leaf)
     each: for z in zeroed {
         for w in written {
-            if z == w || len(z) > len(w) && strings.has_prefix(z, w) && z[len(w)] == '.' { continue each }
+            if z.path == w || len(z.path) > len(w) && strings.has_prefix(z.path, w) && z.path[len(w)] == '.' { continue each }
         }
-        append(&left, strings.clone(z))
+        append(&left, Void_Leaf{strings.clone(z.path), strings.clone(z.why)})
     }
     vf.leaves[ts] = left[:]
     return left[:]
+}
+
+// The field a path (`.pos.owner`) ends at under a value of t, and the
+// struct it's a field of. False for an empty path or one t's fields don't
+// follow.
+@(private="file")
+void_inner_field :: proc(t: Type, path: string) -> (owner: string, field: Struct_Type_Field, ok: bool) {
+    if path == "" { return }
+    at := t
+    for name in strings.split(path[1:], ".", context.temp_allocator) {
+        sd := as_struct_body(distinct_base(at))
+        if sd == nil { return "", {}, false }
+        found := false
+        for f in sd.fields {
+            if f.name != name { continue }
+            owner, field, found = type_name(distinct_base(at)), f, true
+            at = f.type_
+            break
+        }
+        if !found { return "", {}, false }
+    }
+    return owner, field, true
 }
 
 // A constructor's own field a place is rooted at (`.wrap.data`; past an
@@ -1054,6 +1096,10 @@ Void_Zero :: enum u8 {
 void_zero :: proc(c: ^Void_Code, state: []u64, dest: Node_Id, mode: Void_Zero, span: Span) {
     var, path, ok := void_place_path(c, dest)
     why := fmt.tprintf("it's zeroed at %s", void_where(span))
+    #partial switch mode {
+    case .Bare:    if ok { why = fmt.tprintf("'%s' is declared with no value (at %s)", graph_name(c.g, var), void_where(span)) }
+    case .Literal: why = fmt.tprintf("the literal at %s leaves it out", void_where(span))
+    }
     if !ok {
         // (Somewhere else: every pointer field under its type may be void.)
         if mode == .All { void_raise_zeroed(c, graph_type(c.g, dest), why, 0) }
@@ -1208,11 +1254,12 @@ void_args :: proc(c: ^Void_Code, state: []u64, op: Node_Id) {
         }
         if to_c || k >= len(sig.params) { continue }
         if void_is_value(sig.params[k].type_) {
-            is_void, _ := void_value_is(c, x, a.out, state)
+            is_void, because := void_value_is(c, x, a.out, state)
             if !is_void { continue }
             at := void_where(graph_origin(g, x))
             if callee != nil {
                 why := fmt.tprintf("'%s' is given void for '%s' at %s", void_fun_name(callee), sig.params[k].name, at)
+                if because != "" { why = fmt.tprintf("%s, because %s", why, because) }
                 void_raise(c, void_fact(c.vf, {.Param, rawptr(callee), "", k}), why)
             } else {
                 // (Any fun used as a value of its signature may be the one called.)
