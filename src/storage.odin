@@ -389,6 +389,7 @@ storage_in_place_updates :: proc(s: ^Storage) {
             k, consumes := graph_consumed(s.pc, callee).?
             u := s.user[graph_ix(s.pg, op)]
             if !consumes || u < 0 || graph_op_of(pg, u) != .Write { continue }
+            if llvm_small(fn_result(callee, 0)) { continue }   // (taken as a value: x is no argument's storage)
             uops := graph_operands(pg, u)
             dest := uops[0].op
             if uops[1].op != op || storage_direct(s, dest) || !storage_updates_in_place(s, op, k, dest) { continue }
@@ -1254,7 +1255,7 @@ storage_reads_its_dest :: proc(pg: ^Program_Graph, op, arg, dest: Node_Id, calle
 storage_passes_storage :: proc(callee: ^Type_Scope) -> bool {
     for _, i in callee.params {
         p := fn_param(callee, i)
-        if ir, _ := llvm_param_type(p.type_); ir == IR_PTR { return true }
+        if ir, _ := llvm_param_type(p.type_); ir == IR_PTR && !llvm_small(p.type_) { return true }
     }
     return false
 }

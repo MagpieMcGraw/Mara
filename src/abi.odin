@@ -6,7 +6,8 @@ import "core:strings"
 // The C calling convention, per platform: how a foreign function's arguments
 // and result cross the boundary — Linux and macOS by SysV AMD64, Windows by
 // Win64. (A Mara function takes its aggregates by address and returns them
-// through a hidden slot on every platform: the emitter's own rule.)
+// through a hidden slot on every platform; a small value it takes in
+// registers: the emitter's own rule, llvm_small.)
 //
 // classify lowers one type on its own; classify_args a function's arguments
 // together, as C counts them. Both pure, over `Type`.

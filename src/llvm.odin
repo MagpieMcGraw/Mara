@@ -314,12 +314,19 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     }
     // A fun that consumes a param into its result: its opening copy is
     // skipped when the caller passes that storage as the slot.
-    if k, consumes := graph_consumed(&e.g.checked.code, cf).?; consumes { e.consumed = ir_local(fmt.tprintf("%s.arg", cf.params[k].name)) }
+    if k, consumes := graph_consumed(&e.g.checked.code, cf).?; consumes && !llvm_small(cf.params[k].type_) { e.consumed = ir_local(fmt.tprintf("%s.arg", cf.params[k].name)) }
+    // (A small value's parts are its params: llvm_small. Its memory is the
+    // fun's own, made and filled first thing — below.)
     params := make([dynamic]Ir_Arg, 0, len(cf.params))
     for _, pi in cf.params {
         p := fn_param(cf, pi)
         ir, ok := llvm_param_type(p.type_)
         if !ok { e.note = fmt.tprintf("param '%s'", p.name); return false }
+        if llvm_small(p.type_) {
+            parts, n := llvm_small_parts(p.type_)
+            for k in 0 ..< n { append(&params, Ir_Arg{ty = parts[k].ir, v = ir_local(fmt.tprintf("%s.arg.%d", p.name, k))}) }
+            continue
+        }
         append(&params, Ir_Arg{ty = ir, v = ir_local(fmt.tprintf("%s.arg", p.name))})
     }
     if e.rets != nil {
@@ -329,6 +336,18 @@ llvm_emit :: proc(e: ^Llvm) -> bool {
     }
     // (The result slots' names taken: a local named `sret` gets another.)
     for p in params { if strings.has_prefix(p.v.name, "sret") { e.used[p.v.name] = true } }
+    // Each small param's memory, its parts stored.
+    llvm_into_fields(e, true)
+    for _, pi in cf.params {
+        p := fn_param(cf, pi)
+        if !llvm_small(p.type_) { continue }
+        at := ir_local(fmt.tprintf("%s.arg", p.name))
+        emit_alloca(g, at, llvm_type_from_checker(p.type_))
+        vals: [4]Val
+        for k in 0 ..< 4 { vals[k] = ir_local(fmt.tprintf("%s.arg.%d", p.name, k)) }
+        llvm_small_store(g, at, p.type_, vals)
+    }
+    llvm_into_fields(e, false)
     // `#expose`: in a DLL's export table, and — when the DLL names an arena's
     // kind — its host's arena, its first param, the one the DLL's code puts
     // big values on, set first thing.
@@ -1714,14 +1733,18 @@ llvm_ctor_args :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> (args: []Ir_Arg
     if len(ops) == 1 { return nil, true }
     callee := graph_called(e.pg, op)
     if callee == nil || len(ops) - 1 != len(callee.params) { return nil, false }
-    args = make([]Ir_Arg, len(callee.params), context.temp_allocator)
+    all := make([dynamic]Ir_Arg, 0, len(callee.params), context.temp_allocator)
     for _, i in callee.params {
         p := fn_param(callee, i)
         ir := llvm_param_type(p.type_) or_return
         v := llvm_operand(e, ops[i + 1], p.type_) or_return
-        args[i] = {ty = ir, v = v}
+        if llvm_small(p.type_) {
+            llvm_small_args(e.g, &all, v, p.type_)
+            continue
+        }
+        append(&all, Ir_Arg{ty = ir, v = v})
     }
-    return args, true
+    return all[:], true
 }
 
 // A variant's constructor run at `at` on `args` (its params'), when it has
@@ -2818,6 +2841,10 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
         if text, is_text := llvm_text(e, ops[i].op); is_text && llvm_partial(p.type_) != nil {
             v = emit_build_temp_slice(g, v, ir_int(len(text)), ir_int(len(text) + 1))
         }
+        if llvm_small(p.type_) {
+            llvm_small_args(g, &args, v, p.type_)
+            continue
+        }
         append(&args, Ir_Arg{ty = ir, v = v})
     }
     if fn_result_count(callee) > 1 {
@@ -3750,7 +3777,136 @@ llvm_zero :: proc(t: Type) -> Val {
     return ir_int(0)
 }
 
-// A param's IR type: an aggregate goes by address.
+// A small value: a struct or fixed array of plain data — numbers, bools,
+// bytes, enums, no pointer — 16 bytes at most. A Mara fun takes one as a
+// value, in registers (llvm_small_parts), into memory of its own: it hands
+// over none of its caller's storage. A bigger aggregate, or one holding a
+// pointer, a list, a slice or a union, goes by address. (Every aggregate
+// result comes back through the caller's slot, small ones too.)
+llvm_small :: proc(t: Type) -> bool {
+    plain :: proc(t: Type) -> bool {
+        base := distinct_base(t)
+        if ts, is_scope := base.(^Type_Scope); is_scope && (ts.kind != .Struct || ts.is_union_variant) { return false }
+        if sd := as_struct_body(base); sd != nil {
+            for &f in sd.fields { if !plain(f.type_) { return false } }
+            return true
+        }
+        #partial switch v in base {
+        case Type_F64, Type_Bool, Type_Utf8, Type_Byte, Type_Numeric, ^Type_Enum, Type_Err, Type_Atom: return true
+        case ^Type_Fixed_Array: return plain(v.elem)
+        }
+        return false
+    }
+    if t == nil || is_infer(t) || llvm_scalar(t) || (llvm_struct(t) == nil && llvm_array(t) == nil) || !plain(t) { return false }
+    size := type_size(t)
+    return size > 0 && size <= 16
+}
+
+// One of a small value's parts: its IR type, where its bytes are in the
+// value, and how many they are (fewer than the type's: an odd tail in 8).
+Small_Part :: struct {
+    ir:  Ir_Type,
+    off: int,
+    len: int,
+}
+
+// A small value's parts: its fields and elements, each at its own type — a
+// float a float, the rest an integer as wide — when they are four at most
+// (a Vec3, a Rect, a Color); else its bytes in eights, each an integer.
+llvm_small_parts :: proc(t: Type) -> (parts: [4]Small_Part, n: int) {
+    whole :: proc(len: int) -> Ir_Type {
+        switch len {
+        case 1: return IR_I8
+        case 2: return IR_I16
+        case 4: return IR_I32
+        }
+        return IR_I64
+    }
+    leaves :: proc(t: Type, at: int, parts: ^[4]Small_Part, n: ^int) -> bool {
+        base := distinct_base(t)
+        if sd := as_struct_body(base); sd != nil {
+            for &f, i in sd.fields { leaves(f.type_, at + struct_field_offset(sd, i), parts, n) or_return }
+            return true
+        }
+        if fa, is_array := base.(^Type_Fixed_Array); is_array {
+            for i in 0 ..< fa.size { leaves(fa.elem, at + i * type_size(fa.elem), parts, n) or_return }
+            return true
+        }
+        if n^ == len(parts) { return false }
+        ir := llvm_type_from_checker(t)
+        if !is_ir_float(ir) { ir = whole(type_size(t)) }
+        parts[n^] = {ir, at, type_size(t)}
+        n^ += 1
+        return true
+    }
+    if leaves(t, 0, &parts, &n) { return }
+    n = 0
+    size := type_size(t)
+    for at := 0; at < size; at += 8 {
+        parts[n] = {whole(min(8, size - at)), at, min(8, size - at)}
+        n += 1
+    }
+    return
+}
+
+// A small value's parts read from where it is. (Its memory is aligned as its
+// own type is, not as each part is.)
+llvm_small_load :: proc(g: ^Codegen, at: Val, t: Type) -> (vals: [4]Val, parts: [4]Small_Part, n: int) {
+    parts, n = llvm_small_parts(t)
+    for k in 0 ..< n {
+        p := parts[k]
+        if at.kind == .Zero {
+            vals[k] = IR_FZERO if is_ir_float(p.ir) else ir_int(0)
+            continue
+        }
+        from := at
+        if p.off > 0 {
+            from = fresh_tmp(g)
+            ir_gep(g, from, IR_I8, at, {IR_I64, ir_int(p.off), {}})
+        }
+        vals[k] = fresh_tmp(g)
+        if p.ir != IR_I64 || p.len == 8 {
+            ir_load(g, vals[k], p.ir, from, 1)
+            continue
+        }
+        held := fresh_tmp(g)
+        emit_alloca(g, held, IR_I64)
+        emit_store(g, IR_I64, ir_int(0), held)
+        emit_memcpy(g, held, from, p.len)
+        emit_load_into(g, vals[k], IR_I64, held)
+    }
+    return
+}
+
+// ... and written where it goes.
+llvm_small_store :: proc(g: ^Codegen, at: Val, t: Type, vals: [4]Val) {
+    parts, n := llvm_small_parts(t)
+    for k in 0 ..< n {
+        p := parts[k]
+        to := at
+        if p.off > 0 {
+            to = fresh_tmp(g)
+            ir_gep(g, to, IR_I8, at, {IR_I64, ir_int(p.off), {}})
+        }
+        if p.ir != IR_I64 || p.len == 8 {
+            ir_store(g, p.ir, vals[k], to, 1)
+            continue
+        }
+        held := fresh_tmp(g)
+        emit_alloca(g, held, IR_I64)
+        emit_store(g, IR_I64, vals[k], held)
+        emit_memcpy(g, to, held, p.len)
+    }
+}
+
+// ... and as a call's arguments.
+llvm_small_args :: proc(g: ^Codegen, args: ^[dynamic]Ir_Arg, at: Val, t: Type) {
+    vals, parts, n := llvm_small_load(g, at, t)
+    for k in 0 ..< n { append(args, Ir_Arg{ty = parts[k].ir, v = vals[k]}) }
+}
+
+// A param's IR type: an aggregate goes by address (a small value's parts are
+// its params instead: llvm_small).
 llvm_param_type :: proc(t: Type) -> (Ir_Type, bool) {
     if llvm_scalar(t) { return llvm_type_from_checker(t), true }
     if llvm_aggregate(t) { return IR_PTR, true }
