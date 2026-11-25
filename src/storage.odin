@@ -1,5 +1,8 @@
 package mara
 
+import "core:fmt"
+import "core:os"
+
 // storage.odin — where each value of a fun's code lives, decided for the
 // whole fun before a backend emits it: which locals need storage of their own
 // and which are a value, a view's header values, carved memory, a match's
@@ -75,12 +78,103 @@ storage_of :: proc(checked: ^Checked_Program, pg: ^Program_Graph, summaries: ^Re
     storage_in_place(s)
     storage_swaps(s)
     storage_big_temps(s)
-    if s.stop == NO_NODE { storage_calls(s, sret) }
+    if s.stop == NO_NODE {
+        storage_calls(s, sret)
+        storage_census(s)
+    }
     if len(s.temps) > 0 && !checked.table.has_scope_allocator && !checked.table.context_expected_at_runtime {
         tp := s.temps[0]
         storage_fatal(graph_origin(pg, tp.at.op), CODE_TEMPORARY_NO_ARENA, type_name(tp.t), type_size(tp.t))
     }
     return s
+}
+
+// MARA_TEMPS=1: each temporary an aggregate is held in, a line to stderr —
+// what it is (a call's result, one of several results, a local lowering
+// made), what uses it (a write copies it, a call takes it as an argument),
+// its type, its size, its place. A census: what a rule against temporaries
+// would stop.
+@(private="file") storage_census_on: i8
+
+@(private="file")
+storage_census :: proc(s: ^Storage) {
+    if storage_census_on == 0 { storage_census_on = 1 if os.get_env("MARA_TEMPS", context.temp_allocator) != "" else 2 }
+    if storage_census_on != 1 { return }
+    pg := s.pg
+    said :: proc(pg: ^Program_Graph, what, use: string, t: Type, at: Node_Id) {
+        fmt.eprintf("TEMP\t%s\t%s\t%s\t%d\t%s\n", what, use, type_name(t), type_size(t), span_location(graph_origin(pg, at)))
+    }
+    use_of :: proc(s: ^Storage, u: Node_Id) -> string {
+        if u == NO_NODE { return "unused" }
+        if u < 0 { return "several" }
+        #partial switch graph_op_of(s.pg, u) {
+        case .Write:            return "copied"
+        case .Call, .Construct: return "argument"
+        }
+        return fmt.tprintf("%v", graph_op_of(s.pg, u))
+    }
+    for r in s.runs {
+        for op in graph_run(pg, int(r)) {
+            if graph_op_of(pg, op) != .Call { continue }
+            callee := graph_called(pg, op)
+            what := "call"
+            if callee == nil {
+                callee = graph_signature(pg, op)
+            } else if _, src := callee.origin.(Origin_Source); !src || callee.kind != .Fun {
+                what = "c call"
+            }
+            if callee == nil { continue }
+            n := fn_result_count(callee)
+            for i in 0 ..< n {
+                rt := fn_result(callee, i)
+                if llvm_scalar(rt) || !llvm_aggregate(rt) { continue }
+                if n == 1 {
+                    if op not_in s.calls { said(pg, what, use_of(s, s.user[graph_ix(pg, op)]), rt, op) }
+                    continue
+                }
+                o := Operand{op, i32(i)}
+                if o in s.out_at { continue }
+                u, used := s.out_user[o]
+                said(pg, "result" if what == "call" else "c result", use_of(s, u if used else NO_NODE), rt, op)
+            }
+        }
+    }
+    for id := Node_Id(1); id <= pg.end; id += 1 {
+        #partial switch pg.kind[id] {
+        case .Fun, .Struct: id = graph_last(pg, id); continue   // (another scope's)
+        }
+        if pg.kind[id] != .Local || pg.written[id] != .Synthetic { continue }
+        t := graph_type(pg, id)
+        if t == nil || llvm_scalar(t) || !llvm_aggregate(t) { continue }
+        if id in s.in_place || id in s.result || id in s.carved || id in s.bound || id in s.swapped || id in s.views || s.held[id] { continue }
+        copied, argument, parts, other := false, false, false, ""
+        for r in s.runs {
+            for op in graph_run(pg, int(r)) {
+                for o, k in graph_operands(pg, op) {
+                    if graph_leaf_decl(pg, o.op) != id { continue }
+                    use := ""
+                    #partial switch graph_op_of(pg, op) {
+                    case .Read:    use = use_of(s, s.user[graph_ix(pg, op)])
+                    case .Address: use = use_of(s, s.user[graph_ix(pg, op)])
+                    case .Write, .Zero, .Construct, .Fill, .Byte_Read, .Arena_Alloc:
+                        if k == 0 { continue }   // (its building)
+                        use = "copied" if graph_op_of(pg, op) == .Write else "argument"
+                    case .Call:    use = "argument"
+                    case .Field, .Index, .Slice, .Variant, .View, .Swizzle: use = "parts"
+                    case:          use = fmt.tprintf("%v", graph_op_of(pg, op))
+                    }
+                    switch use {
+                    case "copied":   copied = true
+                    case "argument": argument = true
+                    case "parts":    parts = true
+                    case:            other = use
+                    }
+                }
+            }
+        }
+        use := "copied" if copied else "argument" if argument else "parts" if parts else other if other != "" else "unused"
+        said(pg, fmt.tprintf("local %s", graph_name(pg, id)), use, t, id)
+    }
 }
 
 // What storage can't be had for — a big temporary with no arena to live on,
