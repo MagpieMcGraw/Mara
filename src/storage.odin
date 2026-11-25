@@ -873,10 +873,13 @@ storage_written_only_in :: proc(s: ^Storage, v: Node_Id, r: i32) -> bool {
 // in a temporary — it may read what it replaces; it is built in place when,
 // from its first write on, nothing it reads can be that storage
 // (storage_overlaps), and — a construction — its callee is handed none of the
-// caller's storage (the rule for calls).
+// caller's storage (the rule for calls). One built before a `?`, `x =
+// Holder(1)?`, is built in place too: a failure leaves x part built, as a
+// failing constructor leaves what it was building.
 @(private="file")
 storage_in_place :: proc(s: ^Storage) {
     pg := s.pg
+    tries := storage_tries(s)
     for r in s.runs {
         ops := graph_run(pg, int(r))
         for w, at in ops {
@@ -891,9 +894,50 @@ storage_in_place :: proc(s: ^Storage) {
             t := graph_refers(pg, tv)
             if t <= 0 || t > pg.end || graph_kind_of(pg, t) != .Local || graph_written(pg, t) != .Synthetic { continue }
             if t in s.result || storage_reads(s, t) != 1 { continue }
-            if storage_builds_alone(s, ops[:at], t, x) { s.in_place[t] = x }
+            before := ops[:at]
+            if _, tried := tries[r]; tried {
+                // (The runs each `?` went on from, in order, then this one's.)
+                back := make([dynamic]i32, context.temp_allocator)
+                for q, more := tries[r]; more; q, more = tries[q] { append(&back, q) }
+                all := make([dynamic]Node_Id, context.temp_allocator)
+                #reverse for q in back { append(&all, ..graph_run(pg, int(q))) }
+                append(&all, ..ops[:at])
+                before = all[:]
+            }
+            if storage_builds_alone(s, before, t, x) { s.in_place[t] = x }
         }
     }
+}
+
+// Whether a run is a `?`'s failure: it returns the err, implied.
+@(private="file")
+storage_fails :: proc(s: ^Storage, r: i32) -> bool {
+    ops := graph_run(s.pg, int(r))
+    if len(ops) == 0 { return false }
+    last := ops[len(ops) - 1]
+    return graph_op_of(s.pg, last) == .Return && graph_written(s.pg, last) == .Implied
+}
+
+// The run each `?` goes on from, by the run it goes on in: the one ending in
+// the `?`'s branch, whose other way is its failure.
+@(private="file")
+storage_tries :: proc(s: ^Storage) -> map[i32]i32 {
+    pg := s.pg
+    tries := make(map[i32]i32, 8, context.temp_allocator)
+    for r in s.runs[:s.own] {
+        ops := graph_run(pg, int(r))
+        if len(ops) == 0 { continue }
+        last := ops[len(ops) - 1]
+        if graph_op_of(pg, last) != .Branch || graph_written(pg, last) != .Implied { continue }
+        on, fails, ways := i32(-1), false, 0
+        for edge in graph_out(pg, last) {
+            to := i32(graph_run_starting(pg, edge.to))
+            ways += 1
+            if storage_fails(s, to) { fails = true } else { on = to }
+        }
+        if ways == 2 && fails && on >= 0 { tries[on] = r }
+    }
+    return tries
 }
 
 // Whether temporary t, built in `before` (the operations of one run ahead of
@@ -1260,11 +1304,19 @@ storage_calls :: proc(s: ^Storage, sret: Type) {
             }
             placed = placed && args == len(callee.params)
             if fn_result_count(callee) > 1 {
+                assigned := false
                 for i in 0 ..< fn_result_count(callee) {
                     rt := fn_result(callee, i)
                     if !llvm_aggregate(rt) { continue }
                     o := Operand{op, i32(i)}
-                    if d := storage_declared_at(s, o) if placed else NO_NODE; d != NO_NODE {
+                    d := NO_NODE
+                    if placed { d = storage_declared_at(s, o) }
+                    // (One at most into a place that was there: two could overlap.)
+                    if placed && d == NO_NODE && !assigned {
+                        d = storage_assigned_at(s, op, o, rt)
+                        assigned = d != NO_NODE
+                    }
+                    if d != NO_NODE {
                         s.out_at[o] = d
                     } else {
                         storage_held(s, o, rt)
@@ -1329,6 +1381,45 @@ storage_declared_at :: proc(s: ^Storage, o: Operand) -> Node_Id {
     field := s.ctor && graph_kind_of(pg, d) == .Field && pg.parent[d] == 0
     if graph_kind_of(pg, d) != .Local && !field { return NO_NODE }
     if graph_written(pg, d) != .Synthetic && graph_stmt(pg, d).node != graph_stmt(pg, u).node { return NO_NODE }
+    return dest
+}
+
+// Where an assignment takes one of a call's several results, `x = f()?`,
+// `g.big, n = f()`, a literal's field given `f()?`: the place written, of
+// the result's type, when the call can't reach it while it runs
+// (storage_call_reaches), its address can be had when the call is made, and
+// nothing from the call to the write reads or writes it — a `?`'s failure
+// apart, which leaves it part built. NO_NODE: none.
+@(private="file")
+storage_assigned_at :: proc(s: ^Storage, op: Node_Id, o: Operand, rt: Type) -> Node_Id {
+    pg := s.pg
+    u, ok := s.out_user[o]
+    if !ok || u < 0 || graph_op_of(pg, u) != .Write { return NO_NODE }
+    uops := graph_operands(pg, u)
+    dest := uops[0].op
+    if uops[1] != o || storage_direct(s, dest) { return NO_NODE }
+    if graph_op_of(pg, dest) == .Swizzle || graph_op_of(pg, dest) == .Slice || !llvm_same_type(graph_type(pg, dest), rt) { return NO_NODE }
+    from, to := s.pos[graph_ix(pg, op)], s.pos[graph_ix(pg, u)]
+    if from < 0 || to <= from { return NO_NODE }
+    if reaches, _ := storage_call_reaches(s, op, dest); reaches || !storage_had(s, dest, op) { return NO_NODE }
+    for r in s.runs[:s.own] {
+        if storage_fails(s, r) { continue }
+        for x in graph_run(pg, int(r)) {
+            if at := s.pos[graph_ix(pg, x)]; at <= from || at >= to { continue }
+            xops := graph_operands(pg, x)
+            #partial switch graph_op_of(pg, x) {
+            case .Read, .Address:
+                if graph_op_of(pg, x) == .Read && storage_direct(s, xops[0].op) { continue }   // a value, in no memory
+                if storage_overlaps(s, xops[0].op, dest) { return NO_NODE }
+            case .Write, .Zero, .Fill, .Construct, .Byte_Read:
+                if storage_overlaps(s, xops[0].op, dest) { return NO_NODE }
+                if len(xops) > 1 && graph_is_leaf(xops[1].op) && graph_leaf_decl(pg, xops[1].op) >= 0 && storage_overlaps(s, xops[1].op, dest) { return NO_NODE }
+            case .Field, .Variant, .Index, .Deref, .Const, .Arith, .Compare, .Unary, .Cast, .Swizzle, .Global, .Branch:
+            case:
+                return NO_NODE
+            }
+        }
+    }
     return dest
 }
 

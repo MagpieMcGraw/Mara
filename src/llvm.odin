@@ -2822,12 +2822,17 @@ llvm_call :: proc(e: ^Llvm, op: Node_Id, ops: []Operand) -> bool {
     }
     if fn_result_count(callee) > 1 {
         // Several results: each into a temporary, where its uses find it —
-        // an aggregate that a declaration takes, straight into its storage.
+        // an aggregate that a declaration or an assignment takes, straight
+        // into its storage (its address at hand, as storage_had found:
+        // computed now if not yet).
         at := make([]Val, fn_result_count(callee))
         for i in 0 ..< fn_result_count(callee) {
             rt := fn_result(callee, i)
             if !llvm_scalar(rt) && !llvm_aggregate(rt) { e.note = "result type"; return false }
-            if d, declared := e.st.out_at[Operand{op, i32(i)}]; declared { at[i] = llvm_place(e, d) }
+            if d, declared := e.st.out_at[Operand{op, i32(i)}]; declared {
+                if !llvm_ahead(e, d) { e.note = "a call's destination ahead of it"; return false }
+                at[i] = llvm_place(e, d)
+            }
             if at[i].kind == .None { at[i] = llvm_temporary(e, {op, i32(i)}, rt, as_local = true) }
             append(&args, Ir_Arg{ty = IR_PTR, v = at[i]})
         }
