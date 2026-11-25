@@ -417,6 +417,24 @@ tc_generic_call :: proc(k: ^TC, n: Tree_Id, name: string, tmpl: TC_Template, arg
                     return Type_Error{}
                 }
             }
+            // (The param that names it, given something its type doesn't
+            // take: a struct for a list, `has_space(batch)`. Said so.)
+            i = 0
+            dollar := fmt.tprintf("$%s", tc_text(p))
+            for g in v.params {
+                pv := params_view(tr, g)
+                ps := tree_span(tr, pv.type_)
+                written := span_text(build_files[build_tokens[ps.tok].file].source, ps) if pv.type_ != 0 else ""
+                at := strings.index(written, dollar)
+                named := at >= 0 && (at + len(dollar) == len(written) || !tc_name_byte(written[at + len(dollar)]))
+                for pname in pv.names {
+                    defer i += 1
+                    if !named || i >= len(arg_types) || arg_types[i] == nil { continue }
+                    if _, bad := arg_types[i].(Type_Error); bad { continue }
+                    tc_error(k, span, TYPE_GENERIC_PARAM_GIVEN, tc_text(p), name, tc_text(pname), written, tc_source_desc(k, args[i], arg_types[i]))
+                    return Type_Error{}
+                }
+            }
             tc_error(k, span, TYPE_COULD_INFER_TYPE_PARAMETER_CALL, tc_text(p), name)
             return Type_Error{}
         }
@@ -853,4 +871,9 @@ tc_instantiate_struct :: proc(k: ^TC, tmpl: TC_Template, subst: TC_Bindings, tar
     append(&k.scopes, new_clone(TC_Scope{ts = st, def = tmpl.def, node = tmpl.node, subst = subst, synthetic = true}))
     tc_struct_ensure(k, st)
     return st
+}
+
+// Whether c can be part of a name.
+tc_name_byte :: proc(c: u8) -> bool {
+    return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
 }
