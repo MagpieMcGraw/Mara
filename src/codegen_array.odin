@@ -301,7 +301,7 @@ emit_slice_header_at :: proc(g: ^Codegen, at, data_ptr, len_val, cap_val: Val) {
 
 // The address of `count` elements of `size` bytes at byte `offset` of the
 // buffer at data_ptr, cap_val bytes long — checked to lie within it.
-emit_byte_count_ptr :: proc(g: ^Codegen, data_ptr, cap_val, offset, count: Val, size: int, label: string) -> Val {
+emit_byte_count_ptr :: proc(g: ^Codegen, data_ptr, cap_val, offset, count: Val, size: int, label: string, span: Span = {}, name := "") -> Val {
     w := SLICE_LEN_IR
     ok_lbl := fresh_label(g, fmt.tprintf("byte.%s.ok", label))
     err_lbl := fresh_label(g, fmt.tprintf("byte.%s.err", label))
@@ -310,7 +310,7 @@ emit_byte_count_ptr :: proc(g: ^Codegen, data_ptr, cap_val, offset, count: Val, 
     emit_label(g, err_lbl)
     bytes := fresh_tmp(g)
     ir_bin(g, bytes, .Mul, w, count, ir_int(size))
-    emit_fail(g, fmt.tprintf("runtime error: byte buffer %s out of bounds: offset %%lld + %%lld > capacity %%lld\n", label),
+    emit_fail(g, fmt.tprintf("%sruntime error: byte buffer %s out of bounds: offset %%lld + %%lld > capacity %%lld%s\n", byte_fail_at(span), label, byte_fail_for(name)),
               fail_i64(offset), fail_i64(bytes), fail_i64(cap_val))
     emit_label(g, ok_lbl)
 
@@ -343,21 +343,35 @@ emit_byte_span_outside :: proc(g: ^Codegen, off, n, cap_val: Val, size := 1) -> 
     return outside
 }
 
+// A byte check's message: where it is, and the bytes' name, when known.
+byte_fail_at :: proc(span: Span) -> string {
+    if span == {} { return "" }
+    loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
+    return strings.concatenate({loc, " "}, context.temp_allocator)
+}
+
+byte_fail_for :: proc(name: string) -> string {
+    if name == "" { return "" }
+    n, _ := strings.replace_all(name, "%", "%%", context.temp_allocator)
+    return fmt.tprintf(" for '%s'", n)
+}
+
 // Bounds check for byte-buffer access at offset [low, low+size), at
 // SLICE_LEN_IR: the caller has low and cap_val at that width.
-emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val, low: Val, size: int, label: string, span: Span = {}) {
+emit_byte_size_bounds_check :: proc(g: ^Codegen, cap_val, low: Val, size: int, label: string, span: Span = {}, name := "", what := "") {
     ok_lbl := fresh_label(g, fmt.tprintf("byte.%s.ok", label))
     err_lbl := fresh_label(g, fmt.tprintf("byte.%s.err", label))
     cmp := emit_byte_span_outside(g, low, ir_int(size), cap_val)
     emit_cond_br(g, cmp, err_lbl, ok_lbl)
     emit_label(g, err_lbl)
-    // (Where, when the caller knows: as a bounds check's message says it.)
-    at := ""
-    if span != {} {
-        loc, _ := strings.replace_all(span_location(span), "%", "%%", context.temp_allocator)
-        at = strings.concatenate({loc, " "}, context.temp_allocator)
+    // (Where, what and in which bytes, when the caller knows: as a bounds
+    // check's message says it.)
+    of := ""
+    if what != "" {
+        w, _ := strings.replace_all(what, "%", "%%", context.temp_allocator)
+        of = fmt.tprintf(" (as %s)", w)
     }
-    emit_fail(g, fmt.tprintf("%sruntime error: byte buffer %s out of bounds: offset %%lld + %d > capacity %%lld\n", at, label, size),
+    emit_fail(g, fmt.tprintf("%sruntime error: byte buffer %s out of bounds: offset %%lld + %d%s > capacity %%lld%s\n", byte_fail_at(span), label, size, of, byte_fail_for(name)),
               fail_i64(low), fail_i64(cap_val))
     emit_label(g, ok_lbl)
 }
@@ -580,7 +594,7 @@ emit_partial_array_zero :: proc(g: ^Codegen, addr: Val, pa: ^Type_Partial_Array,
 // size, and produces count <= cap.
 gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: Val, pa: ^Type_Partial_Array,
                                              src_data_ptr, src_cap, src_low, src_bytes: Val,
-                                             is_big_endian: bool, span: Span) {
+                                             is_big_endian: bool, span: Span, name := "") {
     cap_n := pa.size
     elem_bytes := type_size(pa.elem)
 
@@ -594,7 +608,7 @@ gen_partial_array_byte_fill_at_core :: proc(g: ^Codegen, slot_ptr: Val, pa: ^Typ
     src_err := fresh_label(g, "byte.view.err")
     emit_cond_br(g, emit_byte_span_outside(g, src_low, src_bytes, src_cap), src_err, src_ok)
     emit_label(g, src_err)
-    emit_fail(g, "runtime error: byte buffer view out of bounds: offset %lld + %lld > capacity %lld\n",
+    emit_fail(g, fmt.tprintf("%sruntime error: byte buffer view out of bounds: offset %%lld + %%lld > capacity %%lld%s\n", byte_fail_at(span), byte_fail_for(name)),
               fail_i64(src_low), fail_i64(src_bytes), fail_i64(src_cap))
     emit_label(g, src_ok)
 

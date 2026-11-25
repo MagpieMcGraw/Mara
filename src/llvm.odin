@@ -2046,7 +2046,7 @@ llvm_view :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
     if llvm_direct(e, base) || (!llvm_scalar(t) && !llvm_aggregate(t)) || (value_has_partial_array(g, t) && !bound_here && !copied && !written) { return false }
     off := llvm_operand(e, ops[1], slice_header_width_type) or_return
     data, bound := llvm_bytes(e, base) or_return
-    emit_byte_size_bounds_check(g, bound, off, type_size(t), "view", span)
+    emit_byte_size_bounds_check(g, bound, off, type_size(t), "view", span, graph_place_name(pg, ops[0]), type_name(t))
     // (A span written, lo:hi: as many bytes as the value has — where its
     // bounds aren't numbers; the checker said so where they are.)
     if len(ops) > 2 && ops[2].op != NO_NODE {
@@ -2138,7 +2138,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         in_ok, in_bad := fresh_label(g, "byte.read.in"), fresh_label(g, "byte.read.past")
         emit_cond_br(g, emit_byte_span_outside(g, lo, count, dst.bound), in_bad, in_ok)
         emit_label(g, in_bad)
-        emit_fail(g, fmt.tprintf("%s runtime error: byte read out of bounds: offset %%lld + %%lld elements > capacity %%lld\n", loc),
+        emit_fail(g, fmt.tprintf("%s runtime error: byte read out of bounds: offset %%lld + %%lld elements > capacity %%lld%s\n", loc, byte_fail_for(graph_place_name(pg, rops[0]))),
                   fail_i64(lo), fail_i64(count), fail_i64(dst.bound))
         emit_label(g, in_ok)
         at := fresh_tmp(g)
@@ -2169,7 +2169,7 @@ llvm_copy_into :: proc(e: ^Llvm, ops: []Operand, span: Span) -> bool {
         ok, bad := fresh_label(g, "byte.copy.ok"), fresh_label(g, "byte.copy.err")
         emit_cond_br(g, emit_byte_span_outside(g, lo, count, dst.bound, size), bad, ok)
         emit_label(g, bad)
-        emit_fail(g, fmt.tprintf("%s runtime error: byte buffer write out of bounds: offset %%lld + %%lld bytes > capacity %%lld\n", loc),
+        emit_fail(g, fmt.tprintf("%s runtime error: byte buffer write out of bounds: offset %%lld + %%lld bytes > capacity %%lld%s\n", loc, byte_fail_for(graph_place_name(pg, rops[0]))),
                   fail_i64(lo), fail_i64(nbytes), fail_i64(dst.bound))
         emit_label(g, ok)
         at := fresh_tmp(g)
@@ -2385,7 +2385,7 @@ llvm_byte_read :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> boo
         bytes = fresh_tmp(g)
         ir_bin(g, bytes, .Sub, w, hi, lo)
     }
-    gen_partial_array_byte_fill_at_core(g, llvm_val(e, dest), pa, data, bound, lo, bytes, graph_name(pg, op) == "#big_endian", span)
+    gen_partial_array_byte_fill_at_core(g, llvm_val(e, dest), pa, data, bound, lo, bytes, graph_name(pg, op) == "#big_endian", span, graph_place_name(pg, ops[1]))
     return true
 }
 
@@ -2464,7 +2464,7 @@ llvm_carve :: proc(e: ^Llvm, op: Node_Id, ops: []Operand, span: Span) -> bool {
         vops := graph_operands(pg, storage)
         off := llvm_operand(e, vops[1], slice_header_width_type) or_return
         data, bound := llvm_bytes(e, vops[0].op) or_return
-        at := emit_byte_count_ptr(g, data, bound, off, n, type_size(sl.elem), "slice")
+        at := emit_byte_count_ptr(g, data, bound, off, n, type_size(sl.elem), "slice", span, graph_place_name(pg, vops[0]))
         llvm_carve_header(e, op, at, n, n)
         return true
     }
