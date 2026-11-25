@@ -2011,10 +2011,11 @@ graph_try_after :: proc(b: ^Graph_Builder, span: Span, inner: Operand, passed: ^
 }
 
 // The operation whose outputs a call's value `v` is the first of: the call; a
-// fallible construction's, its construct (the value is the built place, read).
+// fallible construction's, its construct (the value is the built place, read —
+// or the construct itself, built where it goes).
 @(private="file")
 graph_outputs_op :: proc(b: ^Graph_Builder, v: Operand, span: Span) -> Node_Id {
-    if v.op != NO_NODE && graph_op_of(b.g, v.op) == .Call { return v.op }
+    if v.op != NO_NODE && (graph_op_of(b.g, v.op) == .Call || graph_op_of(b.g, v.op) == .Construct) { return v.op }
     if v.op != NO_NODE && graph_op_of(b.g, v.op) == .Read && b.code.constructed != NO_NODE { return b.code.constructed }
     graph_fatal(span, "a call's outputs, built as no call")
 }

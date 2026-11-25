@@ -790,6 +790,8 @@ storage_result_slot_at :: proc(s: ^Storage, k, n: int, named: bool) {
         for op in graph_run(pg, int(r)) {
             if graph_op_of(pg, op) != .Return || graph_written(pg, op) == .Implied { continue }
             ops := graph_operands(pg, op)
+            // (A failure alone, `return Too_Many_Chars`: zeros too.)
+            if len(ops) == n && ops[k].op != NO_NODE && graph_is_const(ops[k].op) && graph_written(pg, ops[k].op) == .Implied && graph_name(pg, ops[k].op) == "zero" { continue }
             v := NO_NODE
             if len(ops) == n && ops[k].op != NO_NODE && graph_op_of(pg, ops[k].op) == .Read {
                 if d := graph_leaf_decl(pg, graph_operands(pg, ops[k].op)[0].op); d >= 0 && graph_kind_of(pg, d) == .Local { v = d }
@@ -1323,7 +1325,10 @@ storage_declared_at :: proc(s: ^Storage, o: Operand) -> Node_Id {
     dest := uops[0].op
     if uops[1] != o || !graph_is_leaf(dest) || storage_direct(s, dest) { return NO_NODE }
     d := graph_refers(pg, dest)
-    if graph_kind_of(pg, d) != .Local || (graph_written(pg, d) != .Synthetic && graph_stmt(pg, d).node != graph_stmt(pg, u).node) { return NO_NODE }
+    // (A constructor's field, declared there: new as a local is — Self's slot is.)
+    field := s.ctor && graph_kind_of(pg, d) == .Field && pg.parent[d] == 0
+    if graph_kind_of(pg, d) != .Local && !field { return NO_NODE }
+    if graph_written(pg, d) != .Synthetic && graph_stmt(pg, d).node != graph_stmt(pg, u).node { return NO_NODE }
     return dest
 }
 

@@ -1073,6 +1073,18 @@ lw_expr_impl :: proc(k: ^TC, n: Tree_Id, want: Build_Want, w: Written, dest: Des
         return lw_hash_name(k, n, want, w, span)
     case .Try:
         if want == .Place { return {} }
+        // (A fallible constructor's struct into a new place, `h := Holder(1)?`:
+        // built there — a failure returns, and nothing reads the place.)
+        _, variant := distinct_base(ty).(^Type_Union)   // (a union's variant: built as the union, in a temporary)
+        if callee := tc_callee(k, Tree_Id(t.a[n])); want == .Into && !temp && !variant && callee != nil && callee.kind == .Struct {
+            r := lw_expr(k, Tree_Id(t.a[n]), .Into, w, dest = dest, temp_span = temp_span)
+            if !r.ok { return {} }
+            if r.into {
+                graph_try_after(b, span, {b.code.constructed, 0}, k.checked.err_passed, lw_err_pass(k, n))
+                return {v = NO_VALUE, ok = true, into = true}
+            }
+            return {v = graph_try_after(b, span, r.v, k.checked.err_passed, lw_err_pass(k, n)), ok = true}
+        }
         r := lw_expr(k, Tree_Id(t.a[n]), .Value, w)
         if !r.ok { return {} }
         return {v = graph_try_after(b, span, r.v, k.checked.err_passed, lw_err_pass(k, n)), ok = true}
