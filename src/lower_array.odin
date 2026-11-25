@@ -308,6 +308,15 @@ lw_slice_assign :: proc(k: ^TC, s, target, value: Tree_Id) {
         }
     }
     r := lw_expr(k, value, .Into, dest = Dest{kind = .At, at = NO_VALUE}, temp = true, temp_span = span)
+    // (A list's elements into bytes, raw: the list seen as a slice of its own
+    // elements, whose bytes the copy counts — llvm_copy_into. Seen as the
+    // bytes' type its count of elements would be taken for one of bytes.)
+    if elem := index_elem_type(vt); view == nil && bytes && graph_partial_of(vt) && elem != nil && !r.temp && !r.into {
+        own := type_slice(elem)
+        v := graph_op_value(b, .Cast, .Implied, span, own, type_name(own), lw_value(k, r, value, vt))
+        graph_build_write_at(b, place, v, span)
+        return
+    }
     lw_store(k, value, vt, r, lw_parallel_hold(k, Dest{kind = .At, at = place, type_ = tt}, span), span, settle = true)
 }
 
